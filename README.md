@@ -70,13 +70,15 @@ BUILD_ARCH="arm64 x64" ./scripts/build-mac.sh   # 双架构
 # 系统 Node < 22 时: NODE22_BIN=/path/to/node22 ./scripts/build-mac.sh
 ```
 
-## 一键双平台（GitHub Actions）
+## 一键构建（GitHub Actions）
 
 推送本仓库到 GitHub 后，手动运行 **Build Desktop Apps** 工作流（或打 `v*` tag），
-自动产出 Windows + macOS 全部安装包：
+自动产出安装包：
 
-- Windows job：`windows-latest` runner → NSIS + 便携版
-- macOS job：`macos-latest` runner → arm64 + x64 的 dmg/zip
+- Windows job：`windows-latest` runner → NSIS 安装版 + 便携版（x64）
+- macOS job：`macos-latest`（Intel）runner → x64 的 dmg/zip
+- **arm64（Apple Silicon）包**：GitHub 免费托管暂无 arm64 公共 runner，
+  请在 Apple Silicon 本机运行 `BUILD_ARCH="arm64 x64" ./scripts/build-mac.sh` 构建
 
 ## 版本升级
 

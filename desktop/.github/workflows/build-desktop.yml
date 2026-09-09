@@ -38,8 +38,10 @@ jobs:
           if-no-files-found: error
 
   # ---------------- macOS ----------------
+  # 说明: GitHub 公共 runner 均为 Intel x64，免费托管无法构建 arm64 包；
+  #       本 job 产出 x64 包；arm64 包请在 Apple Silicon 本机运行 build-mac.sh 构建。
   build-macos:
-    name: macOS (arm64 + x64)
+    name: macOS (x64)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,10 +50,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Build macOS apps
+      - name: Build macOS x64 app
         run: |
           chmod +x scripts/build-mac.sh
-          ./scripts/build-mac.sh
+          BUILD_ARCH="x64" ./scripts/build-mac.sh
         working-directory: desktop
 
       - uses: actions/upload-artifact@v4
