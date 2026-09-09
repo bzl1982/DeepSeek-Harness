@@ -17,7 +17,8 @@
 | Windows | x64 | `DeepSeek-Harness-0.1.2-portable-x64.exe` | 便携版（解压即用，免安装） |
 | macOS | Apple Silicon (arm64) | `DeepSeek-Harness-0.1.2-arm64.dmg` | 双击拖入「应用程序」 |
 | macOS | Apple Silicon (arm64) | `DeepSeek-Harness-0.1.2-arm64.zip` | 备用分发格式 |
-| macOS | Intel (x64) | 即将提供 | 后续发布 |
+| macOS | Intel (x64) | `DeepSeek-Harness-0.1.2-x64.dmg` | 双击拖入「应用程序」 |
+| macOS | Intel (x64) | `DeepSeek-Harness-0.1.2-x64.zip` | 备用分发格式 |
 
 ## 🚀 安装与首次打开
 
