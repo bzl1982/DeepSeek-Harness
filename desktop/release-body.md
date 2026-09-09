@@ -3,7 +3,7 @@
 将 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（官方 Web UI 版）封装为
 **Windows / macOS 原生桌面应用**：无需安装 Node.js、无需打开浏览器，双击即用。
 
-![DeepSeek Harness 主界面](https://raw.githubusercontent.com/bzl1982/DeepSeek-Harness/v0.1.2/desktop/docs/screenshots/01-home.png)
+![蓝色主题主界面](https://raw.githubusercontent.com/bzl1982/DeepSeek-Harness/main/desktop/docs/screenshots/01-home-blue.png)
 
 > 内置捆绑 Node.js 22 运行时 + 官方 dsh 0.1.2-rc.1 完整依赖；本地服务自动启停，数据仅存本机。
 
@@ -39,13 +39,33 @@
 4. 左侧会话列表可管理历史会话；右上角「设置」可配置模型 API 等
 5. 关闭窗口即退出应用，服务进程自动完整清理，不残留后台进程
 
+## 🎨 字体颜色（新功能：蓝色 / 黑色二选一）
+
+桌面版在「**设置 → 通用设置 → 外观**」新增 **字体颜色** 二选一，即时生效、下次启动保持：
+
+| 选项 | 效果 |
+|---|---|
+| **蓝色字体**（默认） | 品牌蓝鲸主题：鲸鱼 logo、首页标题「探索未至之境」、「预览版」徽章为官方品牌蓝 `#4D6BFE`，与 DeepSeek 移动端一致 |
+| **黑色字体** | 官方 Harness 原生黑鲸风格 |
+
+**蓝色主题（默认）**
+
+![蓝色主题主界面](https://raw.githubusercontent.com/bzl1982/DeepSeek-Harness/main/desktop/docs/screenshots/01-home-blue.png)
+
+**设置面板 · 字体颜色选项**
+
+![字体颜色设置](https://raw.githubusercontent.com/bzl1982/DeepSeek-Harness/main/desktop/docs/screenshots/02-settings-fontcolor.png)
+
+**黑色主题**
+
+![黑色主题主界面](https://raw.githubusercontent.com/bzl1982/DeepSeek-Harness/main/desktop/docs/screenshots/03-home-black.png)
+
+> 与「外观」的浅色 / 深色 / 跟随系统互相独立，可自由组合。
+
 ## 🐋 DeepSeek 品牌蓝鲸主题
 
 - 应用图标为 DeepSeek 官方**蓝鲸图标**（与移动端一致）
 - 默认**蓝色字体**主题：侧边栏鲸鱼 logo、首页标题「探索未至之境」、徽章「预览版」为官方品牌蓝 `#4D6BFE`
-- 「设置 → 通用设置 → 外观」新增 **字体颜色** 二选一：
-  - **蓝色字体**（默认）：品牌蓝鲸主题
-  - **黑色字体**：官方 Harness 原生黑鲸风格
 - 选择即时生效并记忆，下次启动保持
 
 ## ⚙️ 工作原理
@@ -63,7 +83,7 @@ DeepSeek Harness.app
 
 ## 📦 本次验证（2026-09-09）
 
-- Windows 11：安装版与便携版均实测启动、服务拉起、页面渲染正常
+- Windows 11：安装版与便携版均实测启动、服务拉起、页面渲染正常；「字体颜色」蓝色/黑色切换均实测生效并持久化
 - macOS 26.6 (Apple Silicon)：arm64 版实机验证通过；x64 版 Rosetta 下验证通过
 - 双架构包内原生二进制与目标架构匹配（Node / koffi / node-addon-require-builtin）
 

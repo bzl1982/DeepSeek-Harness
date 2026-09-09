@@ -14,7 +14,7 @@
     "dist:mac": "bash scripts/build-mac.sh"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
+    "electron": "33.2.0",
     "electron-builder": "^25.1.8",
     "png-to-ico": "^2.1.8"
   }
