@@ -1,21 +1,21 @@
 {
-  "name": "dsh-desktop",
-  "productName": "DeepSeek Harness",
-  "version": "0.1.2",
-  "description": "DeepSeek Harness 桌面版 — 将官方 Web UI 封装为 Windows / macOS 原生桌面应用（单仓库双平台）",
-  "main": "src/main.js",
-  "author": "DeepSeek Harness Desktop",
-  "license": "MIT",
-  "private": true,
-  "scripts": {
-    "start": "electron .",
-    "prepare:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
-    "dist:win": "npm run prepare:win && electron-builder --win",
-    "dist:mac": "bash scripts/build-mac.sh"
-  },
-  "devDependencies": {
-    "electron": "33.2.0",
-    "electron-builder": "^25.1.8",
-    "png-to-ico": "^2.1.8"
-  }
+    "name":  "dsh-desktop",
+    "productName":  "DeepSeek Harness",
+    "version":  "0.1.2",
+    "description":  "DeepSeek Harness 桌面版",
+    "main":  "src/main.js",
+    "author":  "DeepSeek Harness Desktop",
+    "license":  "MIT",
+    "private":  true,
+    "scripts":  {
+                    "start":  "electron .",
+                    "prepare:win":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
+                    "dist:win":  "npm run prepare:win \u0026\u0026 electron-builder --win",
+                    "dist:mac":  "bash scripts/build-mac.sh"
+                },
+    "devDependencies":  {
+                            "electron":  "33.2.0",
+                            "electron-builder":  "^25.1.8",
+                            "png-to-ico":  "^2.1.8"
+                        }
 }
