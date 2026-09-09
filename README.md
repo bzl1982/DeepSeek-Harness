@@ -9,6 +9,9 @@
 dsh-desktop/
 ├── .gitignore                    # 排除构建产物与依赖（node_modules/dist/resources 等）
 ├── README.md                     # 本文件
+├── .github/
+│   └── workflows/
+│       └── build-desktop.yml     # CI：Windows job + macOS job 自动产出安装包
 └── desktop/                      # Electron 封装工程（双平台共用）
     ├── package.json              # 版本号 / 依赖 / 构建命令
     ├── electron-builder.yml      # 打包配置：win 段 + mac 段 + 通用段
@@ -16,11 +19,10 @@ dsh-desktop/
     │   └── main.js               # 主进程：拉起 dsh 本地服务 + 原生窗口（含平台分支）
     ├── build/
     │   └── icon.png              # 应用图标源文件（ico/icns 由脚本生成）
-    ├── scripts/
-    │   ├── prepare-runtime.ps1   # Windows：装 dsh 依赖 + 下载 Node + 生成 icon.ico
-    │   └── build-mac.sh          # macOS：装 dsh 依赖 + 下载 Node + 生成 icon.icns + 打包
-    └── .github/workflows/
-        └── build-desktop.yml     # CI：Windows job + macOS job 自动产出全部安装包
+    ├── docs/screenshots/         # Release 使用截图
+    └── scripts/
+        ├── prepare-runtime.ps1   # Windows：装 dsh 依赖 + 下载 Node + 生成 icon.ico
+        └── build-mac.sh          # macOS：装 dsh 依赖 + 下载 Node + 生成 icon.icns + 打包
 ```
 
 > `resources/`（dsh-runtime、node-runtime）为构建时生成的中间产物，已 gitignore。
