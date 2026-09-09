@@ -39,6 +39,12 @@ if (Test-Path $target) { Remove-Item -Recurse -Force $target }
 Copy-Item -Recurse $staging $target
 Remove-Item -Recurse -Force $staging
 
+Write-Host "[2.5/4] Applying whale-blue theme patch ..." -ForegroundColor Cyan
+$themeClient = Join-Path $target 'node_modules\@deepseek-ai\dsh-client-ui-theme\lib\client.js'
+if (-not (Test-Path $themeClient)) { throw "theme patch target missing: $themeClient" }
+& node (Join-Path $root 'scripts\patch-dsh-theme.js') $themeClient
+if ($LASTEXITCODE -ne 0) { throw 'whale-blue theme patch failed' }
+
 Write-Host "[3/4] Preparing official Node.js runtime ($nodeVer) ..." -ForegroundColor Cyan
 if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
   if (-not (Test-Path $nodeZip)) {

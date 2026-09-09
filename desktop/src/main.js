@@ -17,6 +17,46 @@ const fs = require('node:fs');
 
 const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放宽到 2 分钟
 
+/**
+ * DeepSeek 品牌蓝（官方 --ds-color-brand: #4d6bfe，取自 deepseek.com 设计变量，
+ * 与移动端 App 图标鲸鱼取色一致）。
+ *
+ * 皮肤系统：通过 executeJavaScript 注入到 dsh Web UI——
+ *  - 「蓝色字体」：鲸鱼 logo、首页标题「探索未至之境」、徽章「预览版」渲染为品牌蓝
+ *  - 「黑色字体」：官方默认（Harness 黑鲸）风格
+ *  - 在「设置 → 外观」中追加「字体颜色」二选一控件，选择持久化到 localStorage
+ *  - 选择器基于 dsh 前端 bundle 的 CSS Modules 类名（fish / headlineText / previewBadge）
+ */
+const BRAND_BLUE = '#4D6BFE';
+const SKIN_JS = `
+(() => {
+  var KEY = 'dsh-desktop-skin';
+  var BLUE = '${BRAND_BLUE}';
+  var skinCss = [
+    'html[data-ds-skin="blue"] [class*="fish"]{color:' + BLUE + '!important}',
+    'html[data-ds-skin="blue"] [class*="headlineText"]{color:' + BLUE + '!important}',
+    'html[data-ds-skin="blue"] [class*="previewBadge"]{color:' + BLUE + '!important;border-color:rgba(77,107,254,.4)!important;background:rgba(77,107,254,.12)!important}',
+    'html[data-ds-skin="blue"] [class*="brandIdentity"],html[data-ds-skin="blue"] [class*="brandName"],html[data-ds-skin="blue"] [class*="brandMark"]{color:' + BLUE + '!important}'
+  ].join('\\n');
+  var styleEl = document.createElement('style');
+  styleEl.id = 'ds-skin-style';
+  styleEl.textContent = skinCss;
+  (document.head || document.documentElement).appendChild(styleEl);
+
+  var getSkin = function () {
+    try { return localStorage.getItem(KEY) || 'blue'; } catch (e) { return 'blue'; }
+  };
+  var applySkin = function (skin) {
+    if (skin === 'blue') { document.documentElement.setAttribute('data-ds-skin', 'blue'); }
+    else { document.documentElement.removeAttribute('data-ds-skin'); }
+    try { localStorage.setItem(KEY, skin); } catch (e) {}
+  };
+  applySkin(getSkin());
+  // 「字体颜色」二选一控件由前端源码补丁原生渲染（scripts/patch-dsh-theme.py 注入到
+  // dsh-client-ui-theme 的 AppearanceRow 组件），此处无需再注入 DOM。
+})();
+`;
+
 let win = null;
 let dshProc = null;
 let shuttingDown = false;
@@ -38,7 +78,7 @@ function resolveRuntime() {
   }
   // 开发模式：使用系统 Node 与仓库旁的运行时目录
   return {
-    runtimeDir: path.join(__dirname, '..', '..', 'app'),
+    runtimeDir: path.join(__dirname, '..', '_dev_runtime'),
     nodeExe: process.platform === 'win32' ? 'node.exe' : 'node',
     nodePathDir: null,
   };
@@ -179,6 +219,11 @@ function createWindow(url) {
       event.preventDefault();
       shell.openExternal(target);
     }
+  });
+
+  // 注入皮肤系统（品牌蓝 / 官方黑 切换 + 设置面板「字体颜色」选项）
+  win.webContents.on('dom-ready', () => {
+    win.webContents.executeJavaScript(SKIN_JS).catch(() => {});
   });
 
   win.loadURL(url);

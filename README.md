@@ -45,6 +45,20 @@ dsh-desktop/
 | 构建脚本 | `prepare-runtime.ps1` | `build-mac.sh` |
 | 图标 / Node 运行时 | icon.ico / win-x64 | icon.icns / darwin-arm64+x64 |
 
+## 品牌定制（蓝鲸主题）
+
+桌面版采用 DeepSeek 官方品牌视觉（与移动端 App 一致）：
+
+- **应用图标**：官方 App 图标（白底蓝鲸），源文件 `desktop/build/icon.png`（1024×1024），
+  Windows 的 `.ico` / macOS 的 `.icns` 由构建脚本自动生成
+- **品牌蓝**：`#4D6BFE`（DeepSeek 官网 CSS 变量 `--ds-color-brand` 官方定义）
+- **界面注入**：`src/main.js` 通过 `insertCSS` 将 dsh Web UI 的鲸鱼 logo、
+  首页标题「探索未至之境」、徽章「预览版」渲染为品牌蓝（选择器基于
+  dsh 前端 CSS Modules 类名，跨平台生效）
+
+> 说明：DeepSeek Harness 官方 UI 使用黑色鲸鱼标识（与模型产品线区隔）；
+> 本桌面版按用户要求统一为 DeepSeek 主品牌蓝色鲸鱼。
+
 ## 构建产物
 
 | 平台 | 产物 |

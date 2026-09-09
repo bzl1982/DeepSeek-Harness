@@ -111,6 +111,11 @@ for arch in $BUILD_ARCH; do
   cp -R "$STAGING" "$RES/dsh-runtime"
   rm -rf "$(dirname "$STAGING")"
 
+  # 5a2. 应用蓝鲸主题补丁（「字体颜色」二选一选项原生渲染进设置面板，
+  #       由 scripts/patch-dsh-theme.js 幂等写入 dsh-client-ui-theme）
+  echo "[${arch}] 应用蓝鲸主题补丁 ..."
+  "$NODE_BIN" "$ROOT/scripts/patch-dsh-theme.js" "$RES/dsh-runtime/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js"
+
   # 5b. 该架构的官方 Node 运行时
   rm -rf "$RES/node-runtime"
   mkdir -p "$RES/node-runtime"
