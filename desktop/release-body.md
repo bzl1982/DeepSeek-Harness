@@ -13,8 +13,8 @@
 
 | 平台 | 架构 | 文件 | 说明 |
 |---|---|---|---|
-| Windows | x64 | `DeepSeek Harness-0.1.2-setup-x64.exe` | 安装版（NSIS，可选安装目录/快捷方式） |
-| Windows | x64 | `DeepSeek Harness-0.1.2-portable-x64.exe` | 便携版（解压即用，免安装） |
+| Windows | x64 | `DeepSeek-Harness-0.1.2-setup-x64.exe` | 安装版（NSIS，可选安装目录/快捷方式） |
+| Windows | x64 | `DeepSeek-Harness-0.1.2-portable-x64.exe` | 便携版（解压即用，免安装） |
 | macOS | Apple Silicon (arm64) | `DeepSeek Harness-0.1.2-arm64.dmg` | 双击拖入「应用程序」 |
 | macOS | Apple Silicon (arm64) | `DeepSeek Harness-0.1.2-arm64.zip` | 备用分发格式 |
 | macOS | Intel (x64) | `DeepSeek Harness-0.1.2-x64.dmg` | 双击拖入「应用程序」 |
