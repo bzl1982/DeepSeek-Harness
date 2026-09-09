@@ -15,10 +15,9 @@
 |---|---|---|---|
 | Windows | x64 | `DeepSeek-Harness-0.1.2-setup-x64.exe` | 安装版（NSIS，可选安装目录/快捷方式） |
 | Windows | x64 | `DeepSeek-Harness-0.1.2-portable-x64.exe` | 便携版（解压即用，免安装） |
-| macOS | Apple Silicon (arm64) | `DeepSeek Harness-0.1.2-arm64.dmg` | 双击拖入「应用程序」 |
-| macOS | Apple Silicon (arm64) | `DeepSeek Harness-0.1.2-arm64.zip` | 备用分发格式 |
-| macOS | Intel (x64) | `DeepSeek Harness-0.1.2-x64.dmg` | 双击拖入「应用程序」 |
-| macOS | Intel (x64) | `DeepSeek Harness-0.1.2-x64.zip` | 备用分发格式 |
+| macOS | Apple Silicon (arm64) | `DeepSeek-Harness-0.1.2-arm64.dmg` | 双击拖入「应用程序」 |
+| macOS | Apple Silicon (arm64) | `DeepSeek-Harness-0.1.2-arm64.zip` | 备用分发格式 |
+| macOS | Intel (x64) | 即将提供 | 后续发布 |
 
 ## 🚀 安装与首次打开
 
@@ -84,8 +83,8 @@ DeepSeek Harness.app
 ## 📦 本次验证（2026-09-09）
 
 - Windows 11：安装版与便携版均实测启动、服务拉起、页面渲染正常；「字体颜色」蓝色/黑色切换均实测生效并持久化
-- macOS 26.6 (Apple Silicon)：arm64 版实机验证通过；x64 版 Rosetta 下验证通过
-- 双架构包内原生二进制与目标架构匹配（Node / koffi / node-addon-require-builtin）
+- macOS (Apple Silicon)：arm64 版实机验证通过
+- 包内原生二进制与目标架构匹配（Node / koffi / node-addon-require-builtin）
 
 ## 🧑‍💻 从源码构建
 
@@ -103,7 +102,7 @@ npm install && npm run dist:win
 
 - 未签名、未公证（个人开发者分发限制）；正式分发需 Apple Developer 证书签名
 - dsh 0.1.x 为开发者预览版，官方提示存在破坏性变更，升级请留意官方 Release
-- macOS x64 包由 CI（Intel runner）构建；arm64 包在本机构建后上传，架构已核验
+- macOS arm64 包在本机构建并上传；x64 包将在后续发布
 
 ## 🔗 相关链接
 
