@@ -84,7 +84,7 @@ DeepSeek Harness.app
 ## 📦 本次验证（2026-09-09）
 
 - Windows 11：安装版与便携版均实测启动、服务拉起、页面渲染正常；「字体颜色」蓝色/黑色切换均实测生效并持久化
-- macOS (Apple Silicon)：arm64 版实机验证通过
+- macOS (Apple Silicon)：arm64 版实机验证通过；Intel (x64) 版由 GitHub Actions 构建并核验架构
 - 包内原生二进制与目标架构匹配（Node / koffi / node-addon-require-builtin）
 
 ## 🧑‍💻 从源码构建
@@ -103,7 +103,7 @@ npm install && npm run dist:win
 
 - 未签名、未公证（个人开发者分发限制）；正式分发需 Apple Developer 证书签名
 - dsh 0.1.x 为开发者预览版，官方提示存在破坏性变更，升级请留意官方 Release
-- macOS arm64 包在本机构建并上传；x64 包将在后续发布
+- macOS arm64 包在本机构建并上传；x64 包由 GitHub Actions（Intel runner）构建并上传，两架构均已核验
 
 ## 🔗 相关链接
 
