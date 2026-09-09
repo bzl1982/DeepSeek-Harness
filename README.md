@@ -12,15 +12,15 @@
 
 **蓝色主题（默认 · 品牌蓝鲸）**
 
-![蓝色主题主界面](docs/screenshots/01-home-blue.png)
+![蓝色主题主界面](desktop/docs/screenshots/01-home-blue.png)
 
 **字体颜色设置（设置 → 通用设置 → 外观）**
 
-![字体颜色设置](docs/screenshots/02-settings-fontcolor.png)
+![字体颜色设置](desktop/docs/screenshots/02-settings-fontcolor.png)
 
 **黑色主题**
 
-![黑色主题主界面](docs/screenshots/03-home-black.png)
+![黑色主题主界面](desktop/docs/screenshots/03-home-black.png)
 
 > 主界面标题「探索未至之境」、徽章「预览版」、侧边栏鲸鱼 logo 会随
 > 「字体颜色」选择在 **品牌蓝 `#4D6BFE`** 与 **黑色** 之间即时切换，下次启动保持。
