@@ -1,0 +1,14 @@
+# 构建产物与依赖（不入库，均由构建脚本生成）
+node_modules/
+dist/
+resources/
+.build-cache/
+desktop/build/icon.ico
+desktop/build/icon.icns
+desktop/build/icon-orig.jpg
+
+# 系统与日志
+.DS_Store
+*.log
+*.tgz
+*.zip

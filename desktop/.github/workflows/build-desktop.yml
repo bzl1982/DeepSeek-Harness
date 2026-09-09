@@ -1,0 +1,63 @@
+name: Build Desktop Apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ---------------- Windows ----------------
+  build-windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install build dependencies
+        run: npm install --no-audit --no-fund
+        working-directory: desktop
+
+      - name: Prepare runtime resources
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1
+        working-directory: desktop
+
+      - name: Build Windows installer (NSIS + portable)
+        run: npx electron-builder --win
+        working-directory: desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            desktop/dist/*.exe
+          if-no-files-found: error
+
+  # ---------------- macOS ----------------
+  build-macos:
+    name: macOS (arm64 + x64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build macOS apps
+        run: |
+          chmod +x scripts/build-mac.sh
+          ./scripts/build-mac.sh
+        working-directory: desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+          if-no-files-found: error
