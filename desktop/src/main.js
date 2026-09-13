@@ -17,6 +17,43 @@ const fs = require('node:fs');
 
 const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放宽到 2 分钟
 
+/* ---------- 品牌加载页（服务就绪前立即显示，避免长时间黑屏） ---------- */
+
+const LOADING_HTML = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #0b0e14; color: #e8eaf0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  }
+  .logo { width: 76px; height: 76px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 22px 0 6px; }
+  p { font-size: 13px; color: #9aa3b2; margin: 4px 0; line-height: 1.6; }
+  .spinner {
+    width: 26px; height: 26px; margin-top: 26px;
+    border: 3px solid rgba(77, 107, 254, .22); border-top-color: #4D6BFE; border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <svg class="logo" viewBox="0 0 120 120" aria-hidden="true">
+    <g fill="#4D6BFE">
+      <path d="M60 18c-24 0-42 15-42 36 0 10 5 19 13 25-4 5-8 12-9 19 5-1 10-4 15-7 7 4 15 6 23 6 24 0 42-15 42-36S84 18 60 18z"/>
+      <circle cx="34" cy="53" r="6"/><circle cx="86" cy="53" r="6"/>
+    </g>
+  </svg>
+  <h1>DeepSeek Harness</h1>
+  <p>正在启动本地服务…<br>首次启动需加载 200+ 插件，约需 20–40 秒</p>
+  <div class="spinner"></div>
+  <p style="font-size:11px;color:#6b7280;margin-top:30px">若长时间无响应，请检查杀毒软件是否正在扫描程序文件</p>
+</body>
+</html>`;
+
 /**
  * DeepSeek 品牌蓝（官方 --ds-color-brand: #4d6bfe，取自 deepseek.com 设计变量，
  * 与移动端 App 图标鲸鱼取色一致）。
@@ -226,7 +263,12 @@ function createWindow(url) {
     win.webContents.executeJavaScript(SKIN_JS).catch(() => {});
   });
 
-  win.loadURL(url);
+  if (url) {
+    win.loadURL(url);
+  } else {
+    // 服务尚未就绪：先显示品牌加载页，服务就绪后再切换到真实地址
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOADING_HTML));
+  }
   win.on('closed', () => {
     win = null;
   });
@@ -235,12 +277,24 @@ function createWindow(url) {
 /* ---------- 应用生命周期 ---------- */
 
 app.whenReady().then(async () => {
+  // 窗口先行：立即显示品牌加载页（服务并行启动，就绪后切换真实地址）
+  createWindow(null);
   try {
     const url = await startDshService();
     if (app.isQuitting) return;
-    createWindow(url);
+    if (win) win.loadURL(url);
   } catch (err) {
-    dialog.showErrorBox('DeepSeek Harness 启动失败', String((err && err.message) || err));
+    if (win) {
+      win.loadURL(
+        'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#0b0e14;color:#e8eaf0;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px}h1{font-size:16px}p{font-size:13px;color:#9aa3b2;line-height:1.7;word-break:break-all}</style>' +
+          '<body><h1>DeepSeek Harness 启动失败</h1><p>' + String((err && err.message) || err) + '</p></body>'
+        )
+      );
+    } else {
+      dialog.showErrorBox('DeepSeek Harness 启动失败', String((err && err.message) || err));
+    }
     app.quit();
   }
 });
