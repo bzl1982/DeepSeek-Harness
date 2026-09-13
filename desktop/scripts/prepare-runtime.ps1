@@ -45,6 +45,10 @@ if (-not (Test-Path $themeClient)) { throw "theme patch target missing: $themeCl
 & node (Join-Path $root 'scripts\patch-dsh-theme.js') $themeClient
 if ($LASTEXITCODE -ne 0) { throw 'whale-blue theme patch failed' }
 
+Write-Host "[2.6/4] Applying session-cost patch (V4.1 model list + usage cost) ..." -ForegroundColor Cyan
+& node (Join-Path $root 'scripts\patch-dsh-cost.js') (Join-Path $target 'node_modules')
+if ($LASTEXITCODE -ne 0) { throw 'session-cost patch failed' }
+
 Write-Host "[3/4] Preparing official Node.js runtime ($nodeVer) ..." -ForegroundColor Cyan
 if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
   if (-not (Test-Path $nodeZip)) {
