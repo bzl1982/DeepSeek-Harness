@@ -14,70 +14,29 @@ const { app, BrowserWindow, dialog, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const http = require('node:http');
 
 const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放宽到 2 分钟
 
-/* ---------- 窗口先行：完整空对话界面（服务后台并行启动，就绪后无缝替换） ---------- */
+/* ---------- 窗口先行：极简深色等待（服务没起时只显示一个蓝点，不画假内容；服务起来直接出真实界面） ---------- */
+
+const DSH_PORT = 38123;
+const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
 
 const LOADING_HTML = `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14; color: #e8eaf0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-    display: flex;
-  }
-  .sidebar { width: 260px; flex: none; background: #0e1219; border-right: 1px solid #1a1f2a; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
-  .brand { display: flex; align-items: center; gap: 9px; padding: 6px 8px 14px; }
-  .brand svg { width: 24px; height: 24px; }
-  .brand span { font-size: 14px; font-weight: 600; }
-  .newbtn { height: 38px; border-radius: 9px; background: #4D6BFE; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: #fff; margin-bottom: 8px; }
-  .nav { height: 36px; border-radius: 8px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 13px; color: #8b95a5; }
-  .nav .ic { width: 16px; height: 16px; opacity: .7; }
-  .nav .badge { margin-left: auto; font-size: 11px; color: #5b6472; }
-  .main { flex: 1; display: flex; flex-direction: column; }
-  .topbar { height: 46px; border-bottom: 1px solid #161b25; display: flex; align-items: center; padding: 0 18px; gap: 8px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4D6BFE; box-shadow: 0 0 10px rgba(77,107,254,.7); animation: pulse 1.4s ease-in-out infinite; }
-  .topbar span { font-size: 13px; color: #9aa3b2; }
-  .hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 24px 20px; }
-  .hero h1 { font-size: 26px; font-weight: 600; margin-bottom: 8px; }
-  .hero h1 b { color: #4D6BFE; }
-  .hero p { font-size: 14px; color: #7b8494; margin-bottom: 36px; }
-  .composer { width: min(760px, 100%); }
-  .box { background: #131722; border: 1px solid #232a38; border-radius: 16px; padding: 16px 18px; min-height: 96px; }
-  .box .ph { font-size: 14px; color: #5b6472; }
-  .tools { display: flex; gap: 16px; margin-top: 14px; justify-content: center; }
-  .tools span { font-size: 12px; color: #5b6472; }
-  @keyframes pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+  * { margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0b0e14; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #4D6BFE; box-shadow: 0 0 12px rgba(77,107,254,.8); animation: pulse 1.3s ease-in-out infinite; }
+  p { margin-top: 18px; font-size: 13px; color: #6b7280; font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+  @keyframes pulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
 </style>
 </head>
-<body>
-  <aside class="sidebar">
-    <div class="brand">
-      <svg viewBox="0 0 120 120"><g fill="#4D6BFE"><path d="M60 18c-24 0-42 15-42 36 0 10 5 19 13 25-4 5-8 12-9 19 5-1 10-4 15-7 7 4 15 6 23 6 24 0 42-15 42-36S84 18 60 18z"/><circle cx="34" cy="53" r="6"/><circle cx="86" cy="53" r="6"/></g></svg>
-      <span>DeepSeek Harness</span>
-    </div>
-    <div class="newbtn">＋ 新建会话</div>
-    <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>历史会话<span class="badge">—</span></div>
-    <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/></svg>设置</div>
-  </aside>
-  <main class="main">
-    <div class="topbar"><div class="dot"></div><span>正在唤醒本地工作区…</span></div>
-    <div class="hero">
-      <h1>你好，我是 <b>DeepSeek</b></h1>
-      <p>有什么可以帮你？</p>
-      <div class="composer">
-        <div class="box"><div class="ph">给 DeepSeek 发送消息…</div></div>
-        <div class="tools"><span>附件</span><span>截图</span><span>@ 引用</span></div>
-      </div>
-    </div>
-  </main>
-</body>
+<body><div class="dot"></div><p>正在启动本地工作区…</p></body>
 </html>`;
 
 /**
@@ -170,7 +129,7 @@ function startDshService() {
       env.PATH = nodePathDir + path.delimiter + (env.PATH || '');
     }
 
-    const child = spawn(nodeExe, [binPath, 'web', '--no-open', '--port', '0'], {
+    const child = spawn(nodeExe, [binPath, 'web', '--no-open', '--port', String(DSH_PORT)], {
       cwd: runtimeDir,
       env,
       // detached: 让服务进程独立成组，便于整树清理（macOS/linux 用负 pid 杀组）
@@ -198,14 +157,24 @@ function startDshService() {
       fail(new Error(`dsh 服务启动超时（${DSH_START_TIMEOUT_MS / 1000}s）。\n${errBuf.slice(-2000)}`));
     }, DSH_START_TIMEOUT_MS);
 
+    // 轮询端口，服务能响应 HTTP 即视为就绪（不依赖 stdout 解析 URL）
+    const pollTimer = setInterval(() => {
+      if (settled) { clearInterval(pollTimer); return; }
+      const req = http.get({ host: '127.0.0.1', port: DSH_PORT, timeout: 1500 }, () => {
+        if (!settled) {
+          settled = true;
+          clearInterval(timer);
+          clearInterval(pollTimer);
+          req.destroy();
+          resolve(DSH_URL);
+        }
+      });
+      req.on('error', () => {});
+      req.end();
+    }, 800);
+
     child.stdout.on('data', (chunk) => {
       outBuf += chunk.toString();
-      const url = extractUrl(outBuf);
-      if (url && !settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve(url);
-      }
     });
 
     child.stderr.on('data', (chunk) => {
@@ -289,12 +258,17 @@ function createWindow(url) {
     win.webContents.executeJavaScript(SKIN_JS).catch(() => {});
   });
 
-  if (url) {
-    win.loadURL(url);
-  } else {
-    // 服务尚未就绪：先显示品牌加载页，服务就绪后再切换到真实地址
-    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOADING_HTML));
-  }
+  // 服务还没起时，Chromium 会报 ERR_CONNECTION_REFUSED：拦截错误页，换成极简深色等待，
+  // 等服务就绪后由 whenReady 流程 reload 成真实界面
+  win.webContents.on('did-fail-load', (event, errorCode, errorDesc, validatedURL) => {
+    if (shuttingDown) return;
+    if (validatedURL && validatedURL.startsWith(DSH_URL)) {
+      win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOADING_HTML));
+    }
+  });
+
+  // 窗口一打开就尝试加载真实 dsh 界面（服务没起会被上面的 did-fail-load 接住）
+  win.loadURL(DSH_URL);
   win.on('closed', () => {
     win = null;
   });
@@ -303,12 +277,13 @@ function createWindow(url) {
 /* ---------- 应用生命周期 ---------- */
 
 app.whenReady().then(async () => {
-  // 窗口先行：立即显示品牌加载页（服务并行启动，就绪后切换真实地址）
-  createWindow(null);
+  // 窗口先行：立刻创建窗口并尝试加载真实 dsh 地址；服务没起时由 did-fail-load
+  // 接住显示极简等待，服务在后台并行启动，就绪后 reload 成完整真实界面
+  createWindow();
   try {
     const url = await startDshService();
-    if (app.isQuitting) return;
-    if (win) win.loadURL(url);
+    if (app.isQuitting || !win) return;
+    win.loadURL(url);
   } catch (err) {
     if (win) {
       win.loadURL(
