@@ -157,24 +157,16 @@ function startDshService() {
       fail(new Error(`dsh 服务启动超时（${DSH_START_TIMEOUT_MS / 1000}s）。\n${errBuf.slice(-2000)}`));
     }, DSH_START_TIMEOUT_MS);
 
-    // 轮询端口，服务能响应 HTTP 即视为就绪（不依赖 stdout 解析 URL）
-    const pollTimer = setInterval(() => {
-      if (settled) { clearInterval(pollTimer); return; }
-      const req = http.get({ host: '127.0.0.1', port: DSH_PORT, timeout: 1500 }, () => {
-        if (!settled) {
-          settled = true;
-          clearInterval(timer);
-          clearInterval(pollTimer);
-          req.destroy();
-          resolve(DSH_URL);
-        }
-      });
-      req.on('error', () => {});
-      req.end();
-    }, 800);
-
     child.stdout.on('data', (chunk) => {
       outBuf += chunk.toString();
+      // dsh web 会打印形如 `dsh web: http://127.0.0.1:PORT/?token=xxx`，
+      // 必须用带 token 的完整 URL，否则浏览器访问得到 401 黑屏
+      const url = extractUrl(outBuf);
+      if (url && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(url);
+      }
     });
 
     child.stderr.on('data', (chunk) => {
