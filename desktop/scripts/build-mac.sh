@@ -24,7 +24,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RES="$ROOT/resources"
 CACHE="${NODE_CACHE_DIR:-$ROOT/../.build-cache}"
-DSH_VERSION="${DSH_VERSION:-0.1.2-rc.1}"
+DSH_VERSION="${DSH_VERSION:-0.1.5-rc.2}"
 NODE_VER="${NODE_VER:-v22.23.2}"
 BUILD_ARCH="${BUILD_ARCH:-arm64}"
 

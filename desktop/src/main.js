@@ -17,40 +17,62 @@ const fs = require('node:fs');
 
 const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放宽到 2 分钟
 
-/* ---------- 品牌加载页（服务就绪前立即显示，避免长时间黑屏） ---------- */
+/* ---------- 窗口先行：高仿 dsh 对话界面骨架屏（服务后台并行启动，就绪后无缝替换） ---------- */
 
 const LOADING_HTML = `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; height: 100%; }
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
   body {
-    background: #0b0e14; color: #e8eaf0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    background: #0b0e14; color: #e8eaf0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    display: flex;
   }
-  .logo { width: 76px; height: 76px; }
-  h1 { font-size: 18px; font-weight: 600; margin: 22px 0 6px; }
-  p { font-size: 13px; color: #9aa3b2; margin: 4px 0; line-height: 1.6; }
-  .spinner {
-    width: 26px; height: 26px; margin-top: 26px;
-    border: 3px solid rgba(77, 107, 254, .22); border-top-color: #4D6BFE; border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  /* 左侧边栏 */
+  .sidebar { width: 248px; flex: none; background: #0e1219; border-right: 1px solid #1a1f2a; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 2px 6px 12px; }
+  .brand svg { width: 26px; height: 26px; }
+  .brand span { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+  .newbtn { height: 38px; border-radius: 9px; background: #4D6BFE; opacity: .85; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: #fff; }
+  .row { height: 34px; border-radius: 8px; background: #161b25; }
+  .row.wide { height: 36px; }
+  /* 主区 */
+  .main { flex: 1; display: flex; flex-direction: column; }
+  .topbar { height: 46px; border-bottom: 1px solid #161b25; display: flex; align-items: center; padding: 0 18px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4D6BFE; margin-right: 10px; box-shadow: 0 0 10px rgba(77,107,254,.6); animation: pulse 1.6s ease-in-out infinite; }
+  .topbar span { font-size: 13px; color: #9aa3b2; }
+  .chat { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding: 0 24px 18px; }
+  .input { width: min(760px, 100%); height: 120px; border-radius: 16px; background: #131722; border: 1px solid #232a38; position: relative; }
+  .input::after { content: ''; position: absolute; left: 18px; top: 18px; width: 42%; height: 12px; border-radius: 6px; background: #1d2330; }
+  .hint { width: min(760px, 100%); margin-top: 12px; text-align: center; font-size: 12px; color: #5b6472; }
+  .hint b { color: #8b95a5; font-weight: 500; }
+  @keyframes pulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
 </style>
 </head>
 <body>
-  <svg class="logo" viewBox="0 0 120 120" aria-hidden="true">
-    <g fill="#4D6BFE">
-      <path d="M60 18c-24 0-42 15-42 36 0 10 5 19 13 25-4 5-8 12-9 19 5-1 10-4 15-7 7 4 15 6 23 6 24 0 42-15 42-36S84 18 60 18z"/>
-      <circle cx="34" cy="53" r="6"/><circle cx="86" cy="53" r="6"/>
-    </g>
-  </svg>
-  <h1>DeepSeek Harness</h1>
-  <p>正在启动本地服务…<br>首次启动需加载 200+ 插件，约需 20–40 秒</p>
-  <div class="spinner"></div>
-  <p style="font-size:11px;color:#6b7280;margin-top:30px">若长时间无响应，请检查杀毒软件是否正在扫描程序文件</p>
+  <aside class="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 120 120"><g fill="#4D6BFE"><path d="M60 18c-24 0-42 15-42 36 0 10 5 19 13 25-4 5-8 12-9 19 5-1 10-4 15-7 7 4 15 6 23 6 24 0 42-15 42-36S84 18 60 18z"/><circle cx="34" cy="53" r="6"/><circle cx="86" cy="53" r="6"/></g></svg>
+      <span>DeepSeek Harness</span>
+    </div>
+    <div class="newbtn">＋ 新建会话</div>
+    <div class="row wide"></div>
+    <div class="row"></div>
+    <div class="row"></div>
+    <div class="row wide"></div>
+    <div class="row"></div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div class="dot"></div><span>正在唤醒本地工作区…</span></div>
+    <div class="chat">
+      <div class="input"></div>
+      <div class="hint"><b>DeepSeek Harness</b> · 后台加载插件与工具，就绪后自动进入对话</div>
+    </div>
+  </main>
 </body>
 </html>`;
 

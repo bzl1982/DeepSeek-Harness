@@ -15,7 +15,7 @@ $iconPng   = Join-Path $build 'icon.png'
 $iconIco   = Join-Path $build 'icon.ico'
 
 # Pin the same versions that were verified to work.
-$dshVersion = '0.1.2-rc.1'
+$dshVersion = '0.1.5-rc.2'
 $nodeVer    = 'v22.23.2'
 $nodeZip    = Join-Path $resources "node-$nodeVer-win-x64.zip"
 $nodeDir    = Join-Path $resources 'node-runtime'

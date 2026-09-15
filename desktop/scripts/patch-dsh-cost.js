@@ -122,6 +122,11 @@ function SessionSummaryCard({ order, nodeStore, t }) {
 function patchModels(file) {
   let src = fs.readFileSync(file, 'utf8');
   if (src.includes(MARK)) { console.log(`[patch-dsh-cost] 模型列表已打补丁，跳过: ${file}`); return true; }
+  // 0.1.5-rc.2 起官方已内置 deepseek-flash（DeepSeek-V4.1-Flash）为首个模型，无需再插
+  if (src.includes('id: "deepseek-flash"')) {
+    console.log(`[patch-dsh-cost] 模型列表已含 deepseek-flash（官方内置），跳过: ${file}`);
+    return true;
+  }
   const re = /const DEFAULT_MODELS = \[[\r\n]+[ \t]*\{\s*id: "deepseek-v4-flash",/;
   const m = src.match(re);
   if (!m) throw new Error('模型列表锚点缺失: ' + file);
@@ -161,7 +166,7 @@ function patchChatClient(file) {
   src = src.replace(mB[0], mB[0] + '\n\t\t\t\tconst cost = dsCostFor(usage);');
 
   // c) TurnUsagePanel：dl 内「费用估算」行（output 行之后）
-  const reC = /\(0, react_jsx_runtime\.jsx\)\("dt", \{ children: t\("message\.turnUsage\.output"\) \}\),\s*\(0, react_jsx_runtime\.jsxs\)\("dd", \{ children: \[formatExactCount\(usage\.outputTokens, t\), usage\.reasoningTokens !== void 0 && \(0, react_jsx_runtime\.jsx\)\("span", \{\s*className: TurnUsagePanel_module_css_default\.reasoning,\s*children: t\("message\.turnUsage\.reasoning", \{ tokens: formatExactCount\(usage\.reasoningTokens, t\) \}\)\s*\}\)\] \}\)/;
+  const reC = /\(0, react_jsx_runtime\.jsx\)\("dt", \{ children: t\("message\.turnUsage\.output"\) \}\),\s*\(0, react_jsx_runtime\.jsxs\)\("dd", \{ children: \[formatExactCount\(usage\.outputTokens, t\), usage\.reasoningTokens !== void 0 && \(0, react_jsx_runtime\.jsx\)\("span", \{\s*className: \w+_module_css_default\.reasoning,\s*children: t\("message\.turnUsage\.reasoning", \{ tokens: formatExactCount\(usage\.reasoningTokens, t\) \}\)\s*\}\)\] \}\)/;
   const mC = src.match(reC);
   if (!mC) throw new Error('锚点C（TurnUsagePanel 输出行）缺失');
   const costRow =
