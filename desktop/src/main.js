@@ -17,7 +17,7 @@ const fs = require('node:fs');
 
 const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放宽到 2 分钟
 
-/* ---------- 窗口先行：高仿 dsh 对话界面骨架屏（服务后台并行启动，就绪后无缝替换） ---------- */
+/* ---------- 窗口先行：完整空对话界面（服务后台并行启动，就绪后无缝替换） ---------- */
 
 const LOADING_HTML = `<!doctype html>
 <html>
@@ -32,25 +32,28 @@ const LOADING_HTML = `<!doctype html>
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
     display: flex;
   }
-  /* 左侧边栏 */
-  .sidebar { width: 248px; flex: none; background: #0e1219; border-right: 1px solid #1a1f2a; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; }
-  .brand { display: flex; align-items: center; gap: 9px; padding: 2px 6px 12px; }
-  .brand svg { width: 26px; height: 26px; }
-  .brand span { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
-  .newbtn { height: 38px; border-radius: 9px; background: #4D6BFE; opacity: .85; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: #fff; }
-  .row { height: 34px; border-radius: 8px; background: #161b25; }
-  .row.wide { height: 36px; }
-  /* 主区 */
+  .sidebar { width: 260px; flex: none; background: #0e1219; border-right: 1px solid #1a1f2a; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 6px 8px 14px; }
+  .brand svg { width: 24px; height: 24px; }
+  .brand span { font-size: 14px; font-weight: 600; }
+  .newbtn { height: 38px; border-radius: 9px; background: #4D6BFE; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: #fff; margin-bottom: 8px; }
+  .nav { height: 36px; border-radius: 8px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 13px; color: #8b95a5; }
+  .nav .ic { width: 16px; height: 16px; opacity: .7; }
+  .nav .badge { margin-left: auto; font-size: 11px; color: #5b6472; }
   .main { flex: 1; display: flex; flex-direction: column; }
-  .topbar { height: 46px; border-bottom: 1px solid #161b25; display: flex; align-items: center; padding: 0 18px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4D6BFE; margin-right: 10px; box-shadow: 0 0 10px rgba(77,107,254,.6); animation: pulse 1.6s ease-in-out infinite; }
+  .topbar { height: 46px; border-bottom: 1px solid #161b25; display: flex; align-items: center; padding: 0 18px; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4D6BFE; box-shadow: 0 0 10px rgba(77,107,254,.7); animation: pulse 1.4s ease-in-out infinite; }
   .topbar span { font-size: 13px; color: #9aa3b2; }
-  .chat { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding: 0 24px 18px; }
-  .input { width: min(760px, 100%); height: 120px; border-radius: 16px; background: #131722; border: 1px solid #232a38; position: relative; }
-  .input::after { content: ''; position: absolute; left: 18px; top: 18px; width: 42%; height: 12px; border-radius: 6px; background: #1d2330; }
-  .hint { width: min(760px, 100%); margin-top: 12px; text-align: center; font-size: 12px; color: #5b6472; }
-  .hint b { color: #8b95a5; font-weight: 500; }
-  @keyframes pulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+  .hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 24px 20px; }
+  .hero h1 { font-size: 26px; font-weight: 600; margin-bottom: 8px; }
+  .hero h1 b { color: #4D6BFE; }
+  .hero p { font-size: 14px; color: #7b8494; margin-bottom: 36px; }
+  .composer { width: min(760px, 100%); }
+  .box { background: #131722; border: 1px solid #232a38; border-radius: 16px; padding: 16px 18px; min-height: 96px; }
+  .box .ph { font-size: 14px; color: #5b6472; }
+  .tools { display: flex; gap: 16px; margin-top: 14px; justify-content: center; }
+  .tools span { font-size: 12px; color: #5b6472; }
+  @keyframes pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -60,17 +63,18 @@ const LOADING_HTML = `<!doctype html>
       <span>DeepSeek Harness</span>
     </div>
     <div class="newbtn">＋ 新建会话</div>
-    <div class="row wide"></div>
-    <div class="row"></div>
-    <div class="row"></div>
-    <div class="row wide"></div>
-    <div class="row"></div>
+    <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>历史会话<span class="badge">—</span></div>
+    <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/></svg>设置</div>
   </aside>
   <main class="main">
     <div class="topbar"><div class="dot"></div><span>正在唤醒本地工作区…</span></div>
-    <div class="chat">
-      <div class="input"></div>
-      <div class="hint"><b>DeepSeek Harness</b> · 后台加载插件与工具，就绪后自动进入对话</div>
+    <div class="hero">
+      <h1>你好，我是 <b>DeepSeek</b></h1>
+      <p>有什么可以帮你？</p>
+      <div class="composer">
+        <div class="box"><div class="ph">给 DeepSeek 发送消息…</div></div>
+        <div class="tools"><span>附件</span><span>截图</span><span>@ 引用</span></div>
+      </div>
     </div>
   </main>
 </body>

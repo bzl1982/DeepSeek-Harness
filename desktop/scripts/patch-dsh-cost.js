@@ -124,7 +124,13 @@ function patchModels(file) {
   if (src.includes(MARK)) { console.log(`[patch-dsh-cost] 模型列表已打补丁，跳过: ${file}`); return true; }
   // 0.1.5-rc.2 起官方已内置 deepseek-flash（DeepSeek-V4.1-Flash）为首个模型，无需再插
   if (src.includes('id: "deepseek-flash"')) {
-    console.log(`[patch-dsh-cost] 模型列表已含 deepseek-flash（官方内置），跳过: ${file}`);
+    if (src.includes('name: "DeepSeek-V41-Flash"')) {
+      src = src.replace('name: "DeepSeek-V41-Flash"', 'name: "DeepSeek-V4.1-Flash"');
+      fs.writeFileSync(file, src, 'utf8');
+      console.log(`[patch-dsh-cost] 模型显示名修正为 V4.1: ${file}`);
+    } else {
+      console.log(`[patch-dsh-cost] 模型列表已含 deepseek-flash（官方内置），跳过: ${file}`);
+    }
     return true;
   }
   const re = /const DEFAULT_MODELS = \[[\r\n]+[ \t]*\{\s*id: "deepseek-v4-flash",/;
