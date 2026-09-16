@@ -22,6 +22,8 @@ extraResources:
       - '**/*'
   - from: resources/loading.mp4
     to: loading.mp4
+  - from: resources/loading.html
+    to: loading.html
 
 # ---------------- Windows ----------------
 win:

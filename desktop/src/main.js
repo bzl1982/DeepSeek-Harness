@@ -23,34 +23,13 @@ const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放�
 const DSH_PORT = 38123;
 const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
 
-// 启动动画视频：打包后在 resources/loading.mp4，开发时在 desktop/resources/loading.mp4
-// sandbox 里 data-URL 页面无法访问 file://，直接 base64 内嵌
-function resolveLoadingVideo() {
+// 启动动画页面：loading.html + loading.mp4 同目录，用 file:// 加载（同目录访问媒体不跨协议）
+function resolveLoadingPage() {
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'loading.mp4');
+    return path.join(process.resourcesPath, 'loading.html');
   }
-  return path.join(__dirname, '..', 'resources', 'loading.mp4');
+  return path.join(__dirname, '..', 'resources', 'loading.html');
 }
-function readVideoDataUri() {
-  try {
-    const p = resolveLoadingVideo();
-    if (fs.existsSync(p)) return 'data:video/mp4;base64,' + fs.readFileSync(p).toString('base64');
-  } catch (e) {}
-  return '';
-}
-const LOADING_VIDEO_URI = readVideoDataUri();
-
-const LOADING_HTML = `<!doctype html>
-<html>
-<head><meta charset="utf-8"><style>
-  *{margin:0;padding:0}
-  html,body{height:100%;background:#000;overflow:hidden}
-  .stage{height:100%;display:flex;align-items:center;justify-content:center;background:#000}
-  video{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
-</style></head>
-<body>
-<div class="stage"><video autoplay loop muted playsinline src="${LOADING_VIDEO_URI}"></video></div>
-</body></html>`;
 
 /**
  * DeepSeek 品牌蓝（官方 --ds-color-brand: #4d6bfe，取自 deepseek.com 设计变量，
@@ -263,17 +242,16 @@ function createWindow(url) {
     win.webContents.executeJavaScript(SKIN_JS).catch(() => {});
   });
 
-  // 服务还没起时，Chromium 会报 ERR_CONNECTION_REFUSED：拦截错误页，换成极简深色等待，
-  // 等服务就绪后由 whenReady 流程 reload 成真实界面
+  // 服务还没起时兜底：回到启动动画页
   win.webContents.on('did-fail-load', (event, errorCode, errorDesc, validatedURL) => {
     if (shuttingDown) return;
     if (validatedURL && validatedURL.startsWith(DSH_URL)) {
-      win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOADING_HTML));
+      win.loadFile(resolveLoadingPage()).catch(() => {});
     }
   });
 
-  // 窗口一打开就显示蓝鲸启动动画；服务在后台并行启动，就绪后 loadURL 替换成真实界面
-  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOADING_HTML));
+  // 窗口一打开就显示启动动画视频；服务在后台并行启动，就绪后 loadURL 替换成真实界面
+  win.loadFile(resolveLoadingPage());
   win.on('closed', () => {
     win = null;
   });
