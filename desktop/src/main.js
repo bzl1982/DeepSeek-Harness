@@ -25,9 +25,22 @@ const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
 
 const LOADING_HTML = `<!doctype html>
 <html>
-<head><meta charset="utf-8"><style>*{margin:0;padding:0}html,body{height:100%;background:#0b0e14}</style></head>
-<body></body>
-</html>`;
+<head><meta charset="utf-8"><style>
+  *{margin:0;padding:0}
+  html,body{height:100%;background:#0b0e14;overflow:hidden}
+  .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;animation:fadein .4s ease-out}
+  .whale{width:72px;height:72px;filter:drop-shadow(0 0 18px rgba(77,107,254,.45));animation:float 2.2s ease-in-out infinite}
+  .ring{margin-top:26px;width:26px;height:26px;border-radius:50%;border:2px solid rgba(77,107,254,.25);border-top-color:#4D6BFE;animation:spin .9s linear infinite}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadein{from{opacity:0}to{opacity:1}}
+</style></head>
+<body>
+<div class="wrap">
+  <svg class="whale" viewBox="0 0 120 120"><g fill="#4D6BFE"><path d="M60 18c-24 0-42 15-42 36 0 10 5 19 13 25-4 5-8 12-9 19 5-1 10-4 15-7 7 4 15 6 23 6 24 0 42-15 42-36S84 18 60 18z"/><circle cx="34" cy="53" r="6"/><circle cx="86" cy="53" r="6"/></g></svg>
+  <div class="ring"></div>
+</div>
+</body></html>`;
 
 /**
  * DeepSeek 品牌蓝（官方 --ds-color-brand: #4d6bfe，取自 deepseek.com 设计变量，
@@ -249,8 +262,8 @@ function createWindow(url) {
     }
   });
 
-  // 窗口一打开就尝试加载真实 dsh 界面（服务没起会被上面的 did-fail-load 接住）
-  win.loadURL(DSH_URL);
+  // 窗口一打开就显示蓝鲸启动动画；服务在后台并行启动，就绪后 loadURL 替换成真实界面
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(LOADING_HTML));
   win.on('closed', () => {
     win = null;
   });
