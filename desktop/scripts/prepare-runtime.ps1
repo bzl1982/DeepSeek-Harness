@@ -49,6 +49,15 @@ Write-Host "[2.6/4] Applying session-cost patch (V4.1 model list + usage cost) .
 & node (Join-Path $root 'scripts\patch-dsh-cost.js') (Join-Path $target 'node_modules')
 if ($LASTEXITCODE -ne 0) { throw 'session-cost patch failed' }
 
+Write-Host "[2.7/4] Applying about-page patch ..." -ForegroundColor Cyan
+$aboutClient = Join-Path $target 'node_modules\@deepseek-ai\dsh-client-ui-settings-general\lib\client.js'
+if (Test-Path $aboutClient) {
+  & node (Join-Path $root 'scripts\patch-dsh-about.js') $aboutClient
+  if ($LASTEXITCODE -ne 0) { throw 'about-page patch failed' }
+} else {
+  Write-Host "  (skip about patch: settings-general client not found)" -ForegroundColor Yellow
+}
+
 Write-Host "[3/4] Preparing official Node.js runtime ($nodeVer) ..." -ForegroundColor Cyan
 if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
   if (-not (Test-Path $nodeZip)) {
