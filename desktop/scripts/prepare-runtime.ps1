@@ -5,7 +5,9 @@
 #   resources/node-runtime/   official Node.js win-x64 runtime
 #   build/icon.ico            app icon generated from icon.png
 
-$ErrorActionPreference = 'Stop'
+# NOTE: npm writes warnings to stderr; with Stop those abort the build.
+# Use Continue and rely on $LASTEXITCODE checks after each native command.
+$ErrorActionPreference = 'Continue'
 
 $root      = Split-Path -Parent $PSScriptRoot
 $resources = Join-Path $root 'resources'
