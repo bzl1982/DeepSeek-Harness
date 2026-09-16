@@ -25,18 +25,8 @@ const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
 
 const LOADING_HTML = `<!doctype html>
 <html>
-<head>
-<meta charset="utf-8">
-<style>
-  * { margin: 0; padding: 0; }
-  html, body { height: 100%; background: #0b0e14; }
-  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #4D6BFE; box-shadow: 0 0 12px rgba(77,107,254,.8); animation: pulse 1.3s ease-in-out infinite; }
-  p { margin-top: 18px; font-size: 13px; color: #6b7280; font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
-  @keyframes pulse { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
-</style>
-</head>
-<body><div class="dot"></div><p>正在启动本地工作区…</p></body>
+<head><meta charset="utf-8"><style>*{margin:0;padding:0}html,body{height:100%;background:#0b0e14}</style></head>
+<body></body>
 </html>`;
 
 /**
