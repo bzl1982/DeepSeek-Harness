@@ -7,25 +7,19 @@ directories:
 files:
   - src/**/*
 
-# 运行时资源：dsh 的 node_modules（生产依赖） + 官方 Node.js 运行时
-# 均由构建前脚本生成（scripts/），不入库：
-#   Windows: scripts/prepare-runtime.ps1
-#   macOS:   scripts/build-mac.sh
 extraResources:
   - from: resources/dsh-runtime
     to: dsh-runtime
     filter:
       - '**/*'
+      - '!**/node_modules/.cache/**'
   - from: resources/node-runtime
     to: node-runtime
     filter:
       - '**/*'
-  - from: resources/loading.mp4
-    to: loading.mp4
   - from: resources/loading.html
     to: loading.html
 
-# ---------------- Windows ----------------
 win:
   icon: build/icon.ico
   target:
@@ -46,7 +40,6 @@ nsis:
 portable:
   artifactName: ${productName}-${version}-portable-${arch}.${ext}
 
-# ---------------- macOS ----------------
 mac:
   icon: build/icon.icns
   category: public.app-category.developer-tools
@@ -54,8 +47,6 @@ mac:
     - dmg
     - zip
   artifactName: ${productName}-${version}-${arch}.${ext}
-  hardenedRuntime: false
-  gatekeeperAssess: false
 
 dmg:
   title: ${productName} ${version}
@@ -67,7 +58,6 @@ dmg:
       type: link
       path: /Applications
 
-# ---------------- 通用 ----------------
 npmRebuild: false
 electronLanguages:
   - zh-CN
