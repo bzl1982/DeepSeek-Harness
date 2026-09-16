@@ -214,6 +214,8 @@ function createWindow(url) {
     title: 'DeepSeek Harness',
     autoHideMenuBar: true,
     backgroundColor: '#0b0e14',
+    center: true,
+    show: false, // 启动动画播完后再 show
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -242,39 +244,66 @@ function createWindow(url) {
     win.webContents.executeJavaScript(SKIN_JS).catch(() => {});
   });
 
-  // 服务还没起时兜底：回到启动动画页
+  // 服务还没起时兜底
   win.webContents.on('did-fail-load', (event, errorCode, errorDesc, validatedURL) => {
     if (shuttingDown) return;
     if (validatedURL && validatedURL.startsWith(DSH_URL)) {
-      win.loadFile(resolveLoadingPage()).catch(() => {});
+      win.loadURL(DSH_URL);
     }
   });
 
-  // 窗口一打开就显示启动动画视频；服务在后台并行启动，就绪后 loadURL 替换成真实界面
-  win.loadFile(resolveLoadingPage());
   win.on('closed', () => {
     win = null;
   });
+}
+
+/* 全屏霓虹启动页：无边框透明置顶，覆盖整个显示器 */
+let splash = null;
+function createSplash() {
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width, height } = display.bounds;
+  splash = new BrowserWindow({
+    width, height,
+    x: 0, y: 0,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    webPreferences: { sandbox: true, contextIsolation: true },
+  });
+  splash.loadFile(resolveLoadingPage());
+  splash.setAlwaysOnTop(true, 'screen-saver');
+  splash.on('closed', () => { splash = null; });
 }
 
 /* ---------- 应用生命周期 ---------- */
 
 app.whenReady().then(async () => {
   const t0 = Date.now();
-  const MIN_SPLASH_MS = 2600; // 启动动画至少播放时长，播完再切真界面
-  createWindow();
+  const MIN_SPLASH_MS = 4500; // 全屏霓虹动画至少播放时长
+  createWindow();      // 主窗口先创建但隐藏、居中
+  createSplash();      // 全屏霓虹启动页
   try {
     const url = await startDshService();
     if (app.isQuitting || !win) return;
-    // 服务就绪后，若动画还没播够时长则补齐，避免一闪而过
+    // 等动画播够时长
     const waited = Date.now() - t0;
     if (waited < MIN_SPLASH_MS) {
       await new Promise((r) => setTimeout(r, MIN_SPLASH_MS - waited));
     }
     if (app.isQuitting || !win) return;
+    // 关启动页，显示主窗口并加载真界面
+    if (splash) { splash.close(); splash = null; }
+    win.show();
     win.loadURL(url);
   } catch (err) {
+    if (splash) { splash.close(); splash = null; }
     if (win) {
+      win.show();
       win.loadURL(
         'data:text/html;charset=utf-8,' +
         encodeURIComponent(
