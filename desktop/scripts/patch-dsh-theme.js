@@ -11,33 +11,14 @@
 'use strict';
 
 const fs = require('node:fs');
-const path = require('node:path');
-
-const APP_VERSION = '0.1.5-rc.2';
 
 function patch(clientPath) {
   let src = fs.readFileSync(clientPath, 'utf8');
 
-  if (src.includes('[dsh-about]')) {
-    console.log(`[patch-dsh-theme] 已打过关于补丁，跳过: ${clientPath}`);
+  if (src.includes('[dsh-font-skin]')) {
+    console.log(`[patch-dsh-theme] 已打过字体补丁，跳过: ${clientPath}`);
     return true;
   }
-
-  // 读官方 dsh 内核版本（client.js 位于 .../node_modules/@deepseek-ai/dsh-client-ui-theme/lib/）
-  let officialVersion = '0.1.5-rc.2';
-  try {
-    const dshPkg = path.join(clientPath, '..', '..', '..', '..', '@deepseek-ai', 'dsh', 'package.json');
-    officialVersion = JSON.parse(fs.readFileSync(dshPkg, 'utf8')).version || officialVersion;
-  } catch (e) { /* 读不到就用默认 */ }
-
-  const aboutLines = [
-    '桌面版 v' + APP_VERSION + '（打包自官方 deepseek-ai/dsh v' + officialVersion + '）',
-    '· 将官方 Web UI 封装为 Windows / macOS 原生桌面应用（Electron 壳）',
-    '· 品牌蓝鲸主题 #4D6BFE，与移动端图标鲸鱼同色',
-    '· 设置 → 外观：字体颜色「蓝色 / 黑色」二选一',
-    '· 模型显示名修正为 DeepSeek-V4.1-Flash',
-    '· 会话结束显示模型 / 工具 / Token / 费用结算卡',
-  ];
 
   // 1) 引入 react（useState）
   const a1 = 'let react_jsx_runtime = require("react/jsx-runtime");';
@@ -49,7 +30,7 @@ function patch(clientPath) {
   if (!src.includes(a2)) throw new Error('锚点2缺失');
   src = src.replace(
     a2,
-    a2 + ',\n\t\t\t"fontRow": "_8HJdBW_fontRow",\n\t\t\t"fontTitle": "_8HJdBW_fontTitle",\n\t\t\t"fontBtns": "_8HJdBW_fontBtns",\n\t\t\t"fontBtn": "_8HJdBW_fontBtn",\n\t\t\t"fontSelected": "_8HJdBW_fontSelected",\n\t\t\t"aboutRow": "_8HJdBW_aboutRow",\n\t\t\t"aboutTitle": "_8HJdBW_aboutTitle",\n\t\t\t"aboutText": "_8HJdBW_aboutText"'
+    a2 + ',\n\t\t\t"fontRow": "_8HJdBW_fontRow",\n\t\t\t"fontTitle": "_8HJdBW_fontTitle",\n\t\t\t"fontBtns": "_8HJdBW_fontBtns",\n\t\t\t"fontBtn": "_8HJdBW_fontBtn",\n\t\t\t"fontSelected": "_8HJdBW_fontSelected"'
   );
 
   // 3) CSS 文本追加字体颜色行样式
@@ -61,10 +42,7 @@ function patch(clientPath) {
     '._8HJdBW_fontBtns{flex-wrap:wrap;gap:8px;display:flex}' +
     '._8HJdBW_fontBtn{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border-radius:20px;justify-content:center;align-items:center;gap:4px;padding:8px 24px;font-size:14px;line-height:22px;display:flex}' +
     '._8HJdBW_fontBtn:hover:not(._8HJdBW_fontSelected){background:var(--dsw-alias-interactive-bg-hover)}' +
-    '._8HJdBW_fontSelected{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400)}' +
-    '._8HJdBW_aboutRow{border-top:.5px solid var(--dsw-alias-border-l2);flex-direction:column;gap:8px;padding:16px 0;display:flex}' +
-    '._8HJdBW_aboutTitle{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600;line-height:22px}' +
-    '._8HJdBW_aboutText{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px;white-space:pre-wrap}';
+    '._8HJdBW_fontSelected{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400)}';
   src = src.replace(a3, a3.slice(0, -1) + extra + '"');
 
   // 4) AppearanceRow：helpers + useState
@@ -84,7 +62,6 @@ function patch(clientPath) {
     '\t\t\t{ id: "blue", label: "蓝色字体" },\n' +
     '\t\t\t{ id: "black", label: "黑色字体" }\n' +
     '\t\t];\n' +
-    '\t\tconst ABOUT_LINES = ' + JSON.stringify(aboutLines) + '; // [dsh-about]\n' +
     '\t\tfunction AppearanceRow({ t, setTheme, useStore }) {\n' +
     '\t\t\tconst preference = useStore((s) => s.preference);\n' +
     '\t\t\tconst [fontSkin, setFontSkinState] = react.useState(getFontSkin);';
@@ -118,15 +95,6 @@ function patch(clientPath) {
     '\t\t\t\t\t\t\t},\n' +
     '\t\t\t\t\t\t\tchildren: [label]\n' +
     '\t\t\t\t\t\t}, id))\n' +
-    '\t\t\t\t\t})]\n' +
-    '\t\t\t\t}), (0, react_jsx_runtime.jsxs)("div", {\n' +
-    '\t\t\t\t\tclassName: AppearanceRow_module_css_default.aboutRow,\n' +
-    '\t\t\t\t\tchildren: [(0, react_jsx_runtime.jsx)("div", {\n' +
-    '\t\t\t\t\t\tclassName: AppearanceRow_module_css_default.aboutTitle,\n' +
-    '\t\t\t\t\t\tchildren: "关于本软件"\n' +
-    '\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("div", {\n' +
-    '\t\t\t\t\t\tclassName: AppearanceRow_module_css_default.aboutText,\n' +
-    '\t\t\t\t\t\tchildren: ABOUT_LINES.join(String.fromCharCode(10))\n' +
     '\t\t\t\t\t})]\n' +
     '\t\t\t\t})]\n' +
     '\t\t\t});\n' +
