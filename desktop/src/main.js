@@ -260,11 +260,17 @@ function createWindow(url) {
 /* ---------- 应用生命周期 ---------- */
 
 app.whenReady().then(async () => {
-  // 窗口先行：立刻创建窗口并尝试加载真实 dsh 地址；服务没起时由 did-fail-load
-  // 接住显示极简等待，服务在后台并行启动，就绪后 reload 成完整真实界面
+  const t0 = Date.now();
+  const MIN_SPLASH_MS = 2600; // 启动动画至少播放时长，播完再切真界面
   createWindow();
   try {
     const url = await startDshService();
+    if (app.isQuitting || !win) return;
+    // 服务就绪后，若动画还没播够时长则补齐，避免一闪而过
+    const waited = Date.now() - t0;
+    if (waited < MIN_SPLASH_MS) {
+      await new Promise((r) => setTimeout(r, MIN_SPLASH_MS - waited));
+    }
     if (app.isQuitting || !win) return;
     win.loadURL(url);
   } catch (err) {
