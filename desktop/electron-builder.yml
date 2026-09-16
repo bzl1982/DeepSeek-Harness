@@ -20,6 +20,8 @@ extraResources:
     to: node-runtime
     filter:
       - '**/*'
+  - from: resources/loading.mp4
+    to: loading.mp4
 
 # ---------------- Windows ----------------
 win:

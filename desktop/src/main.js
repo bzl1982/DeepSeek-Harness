@@ -23,23 +23,33 @@ const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放�
 const DSH_PORT = 38123;
 const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
 
+// 启动动画视频：打包后在 resources/loading.mp4，开发时在 desktop/resources/loading.mp4
+// sandbox 里 data-URL 页面无法访问 file://，直接 base64 内嵌
+function resolveLoadingVideo() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'loading.mp4');
+  }
+  return path.join(__dirname, '..', 'resources', 'loading.mp4');
+}
+function readVideoDataUri() {
+  try {
+    const p = resolveLoadingVideo();
+    if (fs.existsSync(p)) return 'data:video/mp4;base64,' + fs.readFileSync(p).toString('base64');
+  } catch (e) {}
+  return '';
+}
+const LOADING_VIDEO_URI = readVideoDataUri();
+
 const LOADING_HTML = `<!doctype html>
 <html>
 <head><meta charset="utf-8"><style>
   *{margin:0;padding:0}
-  html,body{height:100%;background:#0b0e14;overflow:hidden}
-  .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;animation:fadein .4s ease-out}
-  .whale{width:72px;height:72px;filter:drop-shadow(0 0 18px rgba(77,107,254,.45));animation:float 2.2s ease-in-out infinite}
-  .ring{margin-top:26px;width:26px;height:26px;border-radius:50%;border:2px solid rgba(77,107,254,.25);border-top-color:#4D6BFE;animation:spin .9s linear infinite}
-  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  @keyframes fadein{from{opacity:0}to{opacity:1}}
+  html,body{height:100%;background:#000;overflow:hidden}
+  .stage{height:100%;display:flex;align-items:center;justify-content:center;background:#000}
+  video{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
 </style></head>
 <body>
-<div class="wrap">
-  <svg class="whale" viewBox="0 0 120 120"><g fill="#4D6BFE"><path d="M60 18c-24 0-42 15-42 36 0 10 5 19 13 25-4 5-8 12-9 19 5-1 10-4 15-7 7 4 15 6 23 6 24 0 42-15 42-36S84 18 60 18z"/><circle cx="34" cy="53" r="6"/><circle cx="86" cy="53" r="6"/></g></svg>
-  <div class="ring"></div>
-</div>
+<div class="stage"><video autoplay loop muted playsinline src="${LOADING_VIDEO_URI}"></video></div>
 </body></html>`;
 
 /**
