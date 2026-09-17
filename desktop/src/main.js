@@ -10,11 +10,14 @@
  *  4. 应用退出时完整清理服务进程树
  */
 
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
+
+// 启动 Splash 内 Web Audio 音效（砸地/破碎）无需用户手势即可自动播放
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 const DSH_START_TIMEOUT_MS = 120000; // 首次启动需加载 200+ 插件，放宽到 2 分钟
 
@@ -274,9 +277,16 @@ function createSplash() {
     movable: false,
     skipTaskbar: true,
     hasShadow: false,
-    webPreferences: { sandbox: true, contextIsolation: true },
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      // 页面动画完成后通过 preload 桥通知主进程转场
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
-  splash.loadFile(resolveLoadingPage());
+  // 传主窗口宽给页面：字母行宽 ≤ 窗口宽（多分辨率自适应）
+  const mainW = win ? win.getBounds().width : 1280;
+  splash.loadFile(resolveLoadingPage(), { query: { w: String(mainW) } });
   splash.setAlwaysOnTop(true, 'screen-saver');
   splash.on('closed', () => { splash = null; });
 }
@@ -285,22 +295,32 @@ function createSplash() {
 
 app.whenReady().then(async () => {
   const t0 = Date.now();
-  const MIN_SPLASH_MS = 4500; // 全屏霓虹动画至少播放时长
+  const MIN_SPLASH_MS = 4500; // Splash 至少播放时长（页面崩溃/加载失败时兜底）
+  const SPLASH_MAX_WAIT_MS = 30000; // 页面动画完成信号最长等待（兜底，防卡死）
   createWindow();      // 主窗口先创建但隐藏、居中
-  createSplash();      // 全屏霓虹启动页
+  createSplash();      // 全屏透明鲸鱼喷字母启动页
+  // 页面动画走完（渐白完成）后由 preload 桥通知，收到即转场
+  let splashDone = false;
+  ipcMain.on('splash-done', () => { splashDone = true; });
   try {
     const url = await startDshService();
     if (app.isQuitting || !win) return;
-    // 等动画播够时长
-    const waited = Date.now() - t0;
-    if (waited < MIN_SPLASH_MS) {
-      await new Promise((r) => setTimeout(r, MIN_SPLASH_MS - waited));
+    // 提前后台加载主界面：splash 播放期间加载完成，转场时直接显示已加载好的窗口，无空白间隙
+    win.loadURL(url);
+    // 等页面动画完成信号；最少播 MIN_SPLASH_MS，最多等 SPLASH_MAX_WAIT_MS 兜底
+    while (!splashDone && Date.now() - t0 < SPLASH_MAX_WAIT_MS) {
+      const wait = Math.min(200, Math.max(0, MIN_SPLASH_MS - (Date.now() - t0)));
+      await new Promise((r) => setTimeout(r, wait || 200));
     }
     if (app.isQuitting || !win) return;
-    // 关启动页，显示主窗口并加载真界面
+    // 收到信号立即转场（主界面早已在后台加载，最多再让 1.5s 收尾，几乎零等待）
+    const tShow = Date.now();
+    while (win.webContents.isLoading() && Date.now() - tShow < 1500) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    // 关启动页，立即显示主窗口（无缝转场）
     if (splash) { splash.close(); splash = null; }
     win.show();
-    win.loadURL(url);
   } catch (err) {
     if (splash) { splash.close(); splash = null; }
     if (win) {

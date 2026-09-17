@@ -12,13 +12,27 @@ extraResources:
     to: dsh-runtime
     filter:
       - '**/*'
+      - '!node_modules/**'
       - '!**/node_modules/.cache/**'
+  # electron-builder 26.x createFilter 硬编码排除"根级 node_modules 目录"
+  # （filter.js: relative === "node_modules" 直接 return false），
+  # extraResources 复用该 filter，导致 resources/dsh-runtime/node_modules 整体漏拷。
+  # 因此把 node_modules 拆成独立 matcher，以 node_modules 自身作为 from，绕过硬编码排除。
+  - from: resources/dsh-runtime/node_modules
+    to: dsh-runtime/node_modules
+    filter:
+      - '**/*'
+      - '!**/.cache/**'
   - from: resources/node-runtime
     to: node-runtime
     filter:
       - '**/*'
   - from: resources/loading.html
     to: loading.html
+  - from: resources/whale-cute.webp
+    to: whale-cute.webp
+  - from: resources/whale-anim.webp
+    to: whale-anim.webp
 
 win:
   icon: build/icon.ico

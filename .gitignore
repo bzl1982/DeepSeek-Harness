@@ -1,11 +1,14 @@
 # 构建产物与依赖（不入库，均由构建脚本生成）
 node_modules/
 dist/
-resources/
 .build-cache/
 desktop/build/icon.ico
 desktop/build/icon.icns
 desktop/build/icon-orig.jpg
+
+# 运行时目录（体积大，构建时由 prepare-runtime 生成；素材如 whale-anim.webp 需入库供 CI/Mac 构建）
+desktop/resources/dsh-runtime/
+desktop/resources/node-runtime/
 
 # 系统与日志
 .DS_Store
@@ -13,3 +16,20 @@ desktop/build/icon-orig.jpg
 *.tgz
 *.zip
 desktop/_dev_runtime/
+
+# 本地构建日志
+desktop/build-log*.txt
+
+# CI 下载的 Mac 构建产物（不入库，由 Actions 云端构建）
+desktop/ci-macos/
+
+# 个人工作文档（不入库）
+交接报告.md
+GPT的启动特效建议.MD
+谷歌给的启动特效建议.MD
+元宝的的启动特效建议.txt
+启动特效求助案-鲸鱼喷字母.md
+
+# 根目录临时文件
+/main.js
+/rel-out.json
