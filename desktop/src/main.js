@@ -16,6 +16,11 @@ const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
 
+// [dsh-desktop 嵌入] 智能体大脑（网页版 AI × 本地 Harness）
+const { createAgentRuntime } = require('../agent/main.js');
+
+let agentRuntime = null;
+
 // 启动 Splash 内 Web Audio 音效（砸地/破碎）无需用户手势即可自动播放
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -223,7 +228,11 @@ function createWindow(url) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true,
       spellcheck: false,
+      // [dsh-desktop 嵌入] 主窗口 preload：暴露 window.dshAgent（智能体桥），
+      // 供 dsh 前端「模型选择器 / 设置-模型」打开智能体窗口、管理网页模型
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -240,6 +249,22 @@ function createWindow(url) {
       event.preventDefault();
       shell.openExternal(target);
     }
+  });
+
+  // [会议功能] 主窗口右上角加「AI 会议」按钮
+  win.webContents.on('dom-ready', () => {
+    const MEET_BTN_JS = `
+      (function() {
+        if (document.getElementById('dsh-meet-btn')) return;
+        const btn = document.createElement('button');
+        btn.id = 'dsh-meet-btn';
+        btn.textContent = '🎯 AI 会议';
+        btn.style.cssText = 'position:fixed;top:12px;right:12px;z-index:99999;padding:8px 16px;background:#4da3ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;';
+        btn.onclick = () => { if (window.dshAgent && window.dshAgent.openMeeting) window.dshAgent.openMeeting(); };
+        document.body.appendChild(btn);
+      })();
+    `;
+    win.webContents.executeJavaScript(MEET_BTN_JS).catch(() => {});
   });
 
   // 注入皮肤系统（品牌蓝 / 官方黑 切换 + 设置面板「字体颜色」选项）
@@ -293,15 +318,95 @@ function createSplash() {
 
 /* ---------- 应用生命周期 ---------- */
 
+// [方案A] 给所有 webview 伪装成真实 Chrome 环境
+app.on('web-contents-created', (_e, contents) => {
+  if (contents.getType() === 'webview') {
+    contents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+    contents.on('dom-ready', () => {
+      contents.executeJavaScript(`
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+        window.chrome = { runtime: {} };
+      `).catch(() => {});
+    });
+  }
+});
+
 app.whenReady().then(async () => {
   const t0 = Date.now();
   const MIN_SPLASH_MS = 4500; // Splash 至少播放时长（页面崩溃/加载失败时兜底）
   const SPLASH_MAX_WAIT_MS = 30000; // 页面动画完成信号最长等待（兜底，防卡死）
   createWindow();      // 主窗口先创建但隐藏、居中
   createSplash();      // 全屏透明鲸鱼喷字母启动页
+
+  // [dsh-desktop 嵌入] 智能体大脑随客户端一起拉起（Harness 常驻 127.0.0.1:17321）。
+  // 与 dsh 服务并行启动，不阻塞 splash；数据/审计写 userData/agent。
+  const startAgentRuntime = (async () => {
+    try {
+      agentRuntime = await createAgentRuntime({
+        dataDir: path.join(app.getPath('userData'), 'agent'),
+        onLog: (msg) => console.log(msg),
+      });
+    } catch (e) {
+      console.error('[agent] 启动失败:', e);
+      agentRuntime = null;
+    }
+  })();
+
   // 页面动画走完（渐白完成）后由 preload 桥通知，收到即转场
   let splashDone = false;
   ipcMain.on('splash-done', () => { splashDone = true; });
+
+  // [dsh-desktop 嵌入] 主窗口（dsh Web UI）→ 智能体 IPC
+  ipcMain.on('agent:open', (_event, providerId) => {
+    if (!agentRuntime) return;
+    agentRuntime.openAgentWindow(typeof providerId === 'string' ? providerId : 'deepseek-web');
+  });
+  ipcMain.handle('agent:listProviders', () => {
+    if (!agentRuntime) return [];
+    return agentRuntime.listProviderMeta();
+  });
+  ipcMain.handle('agent:addProvider', async (_event, input) => {
+    if (!agentRuntime) return { ok: false, error: '智能体未就绪' };
+    return agentRuntime.addProvider(input || {});
+  });
+  ipcMain.handle('agent:removeProvider', async (_event, id) => {
+    if (!agentRuntime) return { ok: false, error: '智能体未就绪' };
+    return agentRuntime.removeProvider(id);
+  });
+
+  // [会议功能] 打开 AI 会议窗口
+  let meetingWin = null;
+  ipcMain.on('meeting:open', () => {
+    if (meetingWin && !meetingWin.isDestroyed()) { meetingWin.focus(); return; }
+    meetingWin = new BrowserWindow({
+      width: 1600, height: 900, minWidth: 1200, minHeight: 700,
+      title: 'AI 会议', backgroundColor: '#0b0e14',
+      webPreferences: {
+        contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: true,
+        preload: path.join(__dirname, '..', 'agent', 'meeting-preload.js'),
+      },
+    });
+    meetingWin.loadFile(path.join(__dirname, '..', 'agent', 'meeting.html'));
+    meetingWin.on('closed', () => { meetingWin = null; });
+  });
+
+  // [会议功能] 独立浏览器窗口（完整浏览器功能，登录用）
+  const browserWins = new Map();
+  ipcMain.on('meeting:openBrowser', (_e, { providerId, url }) => {
+    if (browserWins.has(providerId)) { browserWins.get(providerId).focus(); return; }
+    const bw = new BrowserWindow({
+      width: 1280, height: 800, minWidth: 800, minHeight: 600,
+      title: providerId, backgroundColor: '#0b0e14',
+      webPreferences: {
+        contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false,
+        partition: 'persist:agent-' + providerId,
+      },
+    });
+    bw.loadURL(url);
+    bw.on('closed', () => { browserWins.delete(providerId); if (meetingWin && !meetingWin.isDestroyed()) { meetingWin.webContents.send('meeting:refreshWebview', providerId); } });
+  });
   try {
     const url = await startDshService();
     if (app.isQuitting || !win) return;
@@ -321,6 +426,7 @@ app.whenReady().then(async () => {
     // 关启动页，立即显示主窗口（无缝转场）
     if (splash) { splash.close(); splash = null; }
     win.show();
+    await startAgentRuntime; // 智能体运行时就绪（不阻塞转场，此处只确保已初始化）
   } catch (err) {
     if (splash) { splash.close(); splash = null; }
     if (win) {
@@ -343,12 +449,14 @@ app.on('window-all-closed', () => {
   // 桌面应用行为：关闭窗口即退出并清理服务
   shuttingDown = true;
   killDshTree();
+  if (agentRuntime) { agentRuntime.stop().catch(() => {}); agentRuntime = null; }
   app.quit();
 });
 
 app.on('before-quit', () => {
   shuttingDown = true;
   killDshTree();
+  if (agentRuntime) { agentRuntime.stop().catch(() => {}); agentRuntime = null; }
 });
 
 // macOS：点击 Dock 图标时窗口通常已重建；此处统一为关闭窗口即退出，无需单独处理。

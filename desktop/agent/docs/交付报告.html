@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Agent Browser × DeepSeek Harness — 第一阶段交付报告</title>
+<style>
+  :root{
+    --bg:#f6f7f4; --card:#ffffff; --ink:#1f2a2e; --muted:#5b6b70;
+    --line:#e3e6e0; --accent:#0f766e; --accent2:#b45309; --ok:#15803d; --warn:#b91c1c;
+    --chip:#eef2f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;line-height:1.6;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 80px}
+  header{border-bottom:3px solid var(--ink);padding-bottom:18px;margin-bottom:28px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px}
+  .sub{color:var(--muted);font-size:14px}
+  .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;font-weight:600;margin-right:8px}
+  .b-ok{background:#dcfce7;color:var(--ok)} .b-warn{background:#fef3c7;color:var(--accent2)}
+  h2{font-size:19px;margin:36px 0 14px;border-left:4px solid var(--accent);padding-left:10px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr} @media(max-width:760px){.g2{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--chip);font-weight:600}
+  .mono{font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
+  code{background:var(--chip);padding:1px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  /* arch diagram */
+  .arch{display:flex;flex-direction:column;gap:10px}
+  .layer{border:1.5px solid var(--ink);border-radius:8px;padding:10px 14px;background:#fff}
+  .layer .t{font-weight:700;font-size:14px}
+  .layer .d{color:var(--muted);font-size:13px}
+  .layer.browser{border-color:var(--accent)} .layer.harness{border-color:var(--accent2)}
+  .arrow{text-align:center;color:var(--muted);font-size:18px;line-height:1}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip{background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-size:12.5px}
+  .step{display:flex;gap:10px;margin:6px 0}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  .step .n.pending{background:var(--accent2)}
+  ul{margin:6px 0 0;padding-left:20px} li{margin:3px 0}
+  .pass{color:var(--ok);font-weight:700} .pend{color:var(--accent2);font-weight:700}
+  .foot{margin-top:40px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>AI Agent Browser × DeepSeek Harness</h1>
+  <div>
+    <span class="badge b-ok">第一阶段 MVP 代码已交付并通过端到端冒烟</span>
+    <span class="badge b-warn">2 个环节需你本人操作</span>
+  </div>
+  <div class="sub" style="margin-top:8px">协议 v1.0 已冻结 · Electron 浏览器壳 + 本地 Harness Agent Runtime · 纯 CommonJS 无编译 · Windows</div>
+</header>
+
+<h2>一、当前阶段位置（白皮书 §25 Phase 1→7）</h2>
+<div class="card">
+  <table>
+    <tr><th style="width:90px">阶段</th><th>目标</th><th style="width:120px">状态</th></tr>
+    <tr><td>Phase 1</td><td>Electron 打开 DeepSeek、登录、Cookie 持久化（persist:agent）</td><td class="pass">代码完成（登录待你本人）</td></tr>
+    <tr><td>Phase 2</td><td>读取页面 AI 输出（DeepSeek adapter 读 assistant 消息）</td><td class="pass">代码完成</td></tr>
+    <tr><td>Phase 3</td><td>识别 <code>&lt;agent&gt;...&lt;/agent&gt;</code> 工具意图并解析去重</td><td class="pass">代码完成</td></tr>
+    <tr><td>Phase 4</td><td>Browser ↔ Harness localhost WebSocket 握手（ping/tools/session）</td><td class="pass">已冒烟验证</td></tr>
+    <tr><td>Phase 5</td><td>Filesystem：list / read / search / write / mkdir（先不开放删除）</td><td class="pass">已冒烟验证</td></tr>
+    <tr><td>Phase 6</td><td>Shell：结构化结果 + 危险命令检测 + 权限确认 + 超时</td><td class="pass">代码完成（单测覆盖）</td></tr>
+    <tr><td>Phase 7</td><td>结果自动回注 DeepSeek，形成闭环</td><td class="pass">代码完成</td></tr>
+  </table>
+</div>
+
+<h2>二、总体架构（分层：网页 AI 永远拿不到 OS 权限）</h2>
+<div class="card">
+  <div class="arch">
+    <div class="layer browser">
+      <div class="t">① Browser UI（Electron 外壳）</div>
+      <div class="d">地址栏 / 前进后退刷新 / 新建标签 / DevTools / DryRun 开关 / 审计侧栏</div>
+    </div>
+    <div class="arrow">↓ webContents + preload（contextIsolation:true, nodeIntegration:false）</div>
+    <div class="layer browser">
+      <div class="t">② Web AI 页面（chat.deepseek.com）→ DeepSeek Web Adapter</div>
+      <div class="d">MutationObserver 监听 <code>&lt;agent&gt;</code> 块 → parser 解析去重；injectResult 把结果发回对话</div>
+      <div class="chips"><span class="chip">detectMessage</span><span class="chip">readAssistantMessage</span><span class="chip">sendUserMessage</span><span class="chip">injectResult</span><span class="chip">detectToolCall</span></div>
+    </div>
+    <div class="arrow">↓ 白名单 IPC：仅 window.agent（不暴露 require / child_process）</div>
+    <div class="layer browser">
+      <div class="t">③ Agent Bridge / IPC → WebSocket</div>
+      <div class="d">信封 <span class="mono">agent-tool-v1</span> · requestId/sessionId · 只连 127.0.0.1 · X-Agent-Token</div>
+    </div>
+    <div class="arrow">↓ ws://127.0.0.1:17321/agent</div>
+    <div class="layer harness">
+      <div class="t">④ DeepSeek Harness Agent Runtime（独立 Node 进程）</div>
+      <div class="d">SessionManager · Tool Registry · Permission Engine · ConfirmationQueue(TTL) · DryRun · Audit(JSONL)</div>
+      <div class="chips"><span class="chip">filesystem.*</span><span class="chip">shell.exec</span><span class="chip">git.*</span></div>
+    </div>
+    <div class="arrow">↓ 平台 Adapter（Windows=PowerShell / mac=zsh / Linux=bash）</div>
+    <div class="layer">
+      <div class="t">⑤ Windows（文件 / Shell / Git）</div>
+    </div>
+  </div>
+</div>
+
+<h2>三、第一阶段闭环（白皮书 §33，①→⑪）</h2>
+<div class="card">
+  <div class="step"><div class="n">1</div><div>启动 AI Browser（自动拉起 Harness，完成 WS 握手）<span class="pass"> ✓ 已自动验证</span></div></div>
+  <div class="step"><div class="n pending">2</div><div>在页面打开 chat.deepseek.com 并<strong>手动登录</strong>（persist:agent 记住，重启保持）<span class="pend"> ⬜ 需你本人</span></div></div>
+  <div class="step"><div class="n">3</div><div>对 AI 说："查看某目录结构"（按教程让它输出 <code>&lt;agent&gt;...</code>）</div></div>
+  <div class="step"><div class="n">4</div><div>Adapter 检测到 <code>&lt;agent&gt;</code> 块，parser 解析去重</div></div>
+  <div class="step"><div class="n">5</div><div>白名单 IPC → WebSocket 发 <code>tool.call</code> 给 Harness<span class="pass"> ✓ 已冒烟验证</span></div></div>
+  <div class="step"><div class="n">6</div><div>Harness 权限判定（READ 自动 / WRITE·EXECUTE 确认）+ 审计<span class="pass"> ✓ 已冒烟验证</span></div></div>
+  <div class="step"><div class="n">7</div><div>真实执行（filesystem.list 读到 15 个条目）<span class="pass"> ✓ 已冒烟验证</span></div></div>
+  <div class="step"><div class="n">8</div><div>Harness 回 <code>tool.result</code>（结构化）<span class="pass"> ✓ 已冒烟验证</span></div></div>
+  <div class="step"><div class="n pending">9</div><div>写/执行类工具弹<strong>原生确认框</strong>，你点允许/拒绝<span class="pend"> ⬜ 需你本人</span></div></div>
+  <div class="step"><div class="n">10</div><div>injectResult 把结果发回 DeepSeek，AI 继续推理</div></div>
+  <div class="step"><div class="n">11</div><div>多轮工具调用后你拿到最终结论</div></div>
+</div>
+
+<div class="grid g2">
+<div class="card">
+  <h2 style="margin-top:0">四、工具 × 权限矩阵</h2>
+  <table>
+    <tr><th>工具</th><th>权限</th><th>DryRun 下</th><th>需确认</th></tr>
+    <tr><td class="mono">filesystem.list / read / search</td><td>READ</td><td>真实读</td><td>否</td></tr>
+    <tr><td class="mono">filesystem.write / mkdir</td><td>WRITE</td><td>不落盘</td><td>是</td></tr>
+    <tr><td class="mono">shell.exec</td><td>EXECUTE</td><td>不执行</td><td>是</td></tr>
+    <tr><td class="mono">git.status / diff / log</td><td>READ</td><td>真实读</td><td>否</td></tr>
+    <tr><td class="mono">git.commit</td><td>WRITE</td><td>不提交</td><td>是</td></tr>
+    <tr><td class="mono">危险命令（rm -rf / Format / shutdown…）</td><td>升 ADMIN</td><td>不执行</td><td>二次确认</td></tr>
+  </table>
+  <div class="sub" style="margin-top:8px">shell.exec 返回结构化：<span class="mono">{exitCode,stdout,stderr,durationMs,timedOut}</span></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">五、自动验证结果（我亲自跑过）</h2>
+  <table>
+    <tr><th>项目</th><th>结果</th></tr>
+    <tr><td>协议单测 protocol.test</td><td class="pass">11 / 11 通过</td></tr>
+    <tr><td>Harness 单测 harness.test</td><td class="pass">28 / 28 通过</td></tr>
+    <tr><td>全项目 .js 语法检查</td><td class="pass">38 个文件 0 失败</td></tr>
+    <tr><td>WS 握手 + token 鉴权</td><td class="pass">通过（错 token=401）</td></tr>
+    <tr><td>filesystem.list 真实读</td><td class="pass">通过（读到 package.json）</td></tr>
+    <tr><td>filesystem.write DryRun</td><td class="pass">通过（未落盘）</td></tr>
+    <tr><td>ping → pong 帧类型</td><td class="pass">通过（不再污染对话）</td></tr>
+    <tr><td>审计 JSONL 落盘</td><td class="pass">字段齐全</td></tr>
+  </table>
+</div>
+</div>
+
+<h2>六、如何运行</h2>
+<div class="card">
+<pre class="mono" style="background:#0f1720;color:#d7e3e3;padding:14px;border-radius:8px;overflow:auto">cd D:\Users\Admin\Doubao\chats\2026-09-20\new-chat-1
+npm install            # 已装好（71 包）
+npm start              # 启动浏览器，自动拉起 Harness 并连 WS
+node test/e2e-smoke.js # 无界面端到端契约冒烟（已通过）</pre>
+  <div class="sub">本机未装 Git：<span class="mono">git.*</span> 工具已优雅返回 <span class="mono">TOOL_NOT_FOUND</span>，装 Git for Windows 后即可直接用，无需改代码。</div>
+</div>
+
+<h2>七、安全红线落实对照</h2>
+<div class="card">
+  <table>
+    <tr><th>白皮书要求</th><th>落实</th></tr>
+    <tr><td>网页 AI 不直接获得 OS 权限</td><td class="pass">已分层：Web→preload→IPC→Main→WS→Harness→Tool</td></tr>
+    <tr><td>不暴露 require / child_process 给网页</td><td class="pass">contextIsolation:true + 白名单 window.agent</td></tr>
+    <tr><td>工具按域划分、平台差异隔离</td><td class="pass">filesystem/shell/git + adapters/platform.js</td></tr>
+    <tr><td>shell 结果结构化</td><td class="pass">exitCode/stdout/stderr/durationMs/timedOut</td></tr>
+    <tr><td>危险操作需用户确认</td><td class="pass">原生 dialog.showMessageBox（非网页 confirm）+ TTL 60s</td></tr>
+    <tr><td>Dry Run 模式</td><td class="pass">默认开启，WRITE/EXECUTE 不落盘</td></tr>
+    <tr><td>操作审计</td><td class="pass">JSONL，每次调用落一条</td></tr>
+    <tr><td>只监听回环</td><td class="pass">127.0.0.1 + 随机 token</td></tr>
+  </table>
+</div>
+
+<div class="foot">
+  交付物：协议契约 <span class="mono">docs/PROTOCOL.md</span> · 共享协议模块 <span class="mono">shared/protocol.js</span> · Electron 浏览器侧（main.js / preload.js / electron/ / browser/ / agent/ / adapters/）· Harness 侧（harness/）· 测试（test/）。<br>
+  下一阶段建议：接 ChatGPT/Gemini Web Adapter（Runtime 不动）、补 delete/move、补 docker/adb 工具、把 L3 自然语言 Intent 做得更稳。
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>DeepSeek Harness 智能体</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --bar: #171b23;
+      --panel: #12161d;
+      --text: #e6e9f0;
+      --muted: #8b95a7;
+      --accent: #4d6bfe;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --line: #232a36;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    /* 顶部工具栏 */
+    #toolbar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 10px; background: var(--bar);
+      border-bottom: 1px solid var(--line); flex: none;
+    }
+    #toolbar button {
+      background: transparent; color: var(--text); border: 1px solid #333c4b;
+      border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+    }
+    #toolbar button:hover { background: #232a36; }
+    #provider-badge {
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(77,107,254,.14); border: 1px solid rgba(77,107,254,.4);
+      color: #a8b8ff; border-radius: 14px; padding: 3px 12px;
+      font-size: 12px; font-weight: 600; white-space: nowrap; flex: none;
+    }
+    #urlbar {
+      flex: 1; display: flex; align-items: center;
+      background: #0c0f14; border: 1px solid #2a3342; border-radius: 8px;
+      padding: 4px 10px; min-width: 0;
+    }
+    #urlbar input {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 12px; min-width: 0;
+    }
+    /* 主体：webview + 审计侧栏 */
+    #main { flex: 1; display: flex; overflow: hidden; }
+    #view-wrap { flex: 1; position: relative; }
+    webview {
+      position: absolute; inset: 0; width: 100%; height: 100%; border: none;
+    }
+    #sidebar {
+      width: 330px; background: var(--panel); border-left: 1px solid var(--line);
+      display: none; flex-direction: column; flex: none;
+    }
+    #sidebar.open { display: flex; }
+    #sidebar h3 {
+      margin: 0; padding: 9px 12px; font-size: 12px; border-bottom: 1px solid var(--line);
+      color: var(--muted); display: flex; justify-content: space-between; align-items: center;
+    }
+    #sidebar h3 button { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 12px; }
+    #audit-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .audit-item {
+      background: #171c26; border-radius: 6px; padding: 6px 9px; margin-bottom: 6px;
+      font-size: 11px; line-height: 1.5; border-left: 3px solid var(--accent);
+    }
+    .audit-item.pending { border-left-color: var(--warn); }
+    .audit-item.error { border-left-color: var(--err); }
+    .audit-item.success { border-left-color: var(--ok); }
+    .audit-item .t { color: var(--muted); }
+    .audit-item .tool { font-family: Consolas, monospace; color: #cbd5e1; }
+    /* 底部权限开关栏（用户要求：权限开关在窗口下面） */
+    #permbar {
+      display: flex; align-items: center; gap: 14px;
+      padding: 6px 12px; background: var(--bar);
+      border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); flex: none;
+    }
+    #permbar .sep { width: 1px; height: 16px; background: var(--line); }
+    .toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+    .toggle input { accent-color: var(--accent); cursor: pointer; }
+    #status { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    #status .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; display: inline-block; }
+    #status.on .dot { background: var(--ok); }
+    #status.off .dot { background: var(--err); }
+    #perm-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #audit-count { cursor: pointer; padding: 2px 8px; border-radius: 10px; background: #1d2432; }
+    #audit-count:hover { background: #262f42; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="back" title="后退">◀</button>
+    <button id="fwd" title="前进">▶</button>
+    <button id="reload" title="刷新">⟳</button>
+    <button id="stop" title="停止">■</button>
+    <div id="provider-badge"><span id="provider-name">网页版 AI</span></div>
+    <div id="urlbar"><input id="url" /></div>
+    <button id="login" title="打开该模型的登录页">登录</button>
+    <button id="devtools" title="DevTools">🛠</button>
+  </div>
+
+  <div id="main">
+    <div id="view-wrap">
+      <webview id="view"
+               partition="persist:agent"
+               preload="./browser/page/agentPreload.js"
+               webpreferences="contextIsolation=yes,sandbox=no">
+      </webview>
+    </div>
+    <div id="sidebar">
+      <h3>Agent 活动 / 审计 <button id="close-audit">✕</button></h3>
+      <div id="audit-list"></div>
+    </div>
+  </div>
+
+  <!-- 底部权限开关栏 -->
+  <div id="permbar">
+    <span id="status" class="off"><span class="dot"></span><span id="status-text">Harness 未连接</span></span>
+    <span class="sep"></span>
+    <label class="toggle">
+      <input type="checkbox" id="dryrun" checked /> Dry Run（写/执行仅模拟）
+    </label>
+    <span class="sep"></span>
+    <span id="perm-hint">读取自动 · 写入/执行需确认 · 危险命令拒绝</span>
+    <span style="flex:1"></span>
+    <span id="audit-count" title="打开/收起审计侧栏">审计 0</span>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

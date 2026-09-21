@@ -60,6 +60,10 @@ if (Test-Path $aboutClient) {
   Write-Host "  (skip about patch: settings-general client not found)" -ForegroundColor Yellow
 }
 
+Write-Host "[2.8/4] Applying agent-bridge patch (model selector + settings models) ..." -ForegroundColor Cyan
+& node (Join-Path $root 'scripts\patch-dsh-agent.js') (Join-Path $target 'node_modules')
+if ($LASTEXITCODE -ne 0) { throw 'agent-bridge patch failed' }
+
 Write-Host "[3/4] Preparing official Node.js runtime ($nodeVer) ..." -ForegroundColor Cyan
 if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
   if (-not (Test-Path $nodeZip)) {

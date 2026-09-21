@@ -9,9 +9,13 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "test:agent": "node --test agent/test/protocol.test.js && node --test agent/test/harness.test.js && node agent/test/e2e-smoke.js",
     "prepare:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
     "dist:win": "npm run prepare:win && electron-builder --win",
     "dist:mac": "bash scripts/build-mac.sh"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "electron": "33.2.0",

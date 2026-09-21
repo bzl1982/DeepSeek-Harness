@@ -6,6 +6,12 @@ directories:
 
 files:
   - src/**/*
+  # [dsh-desktop 嵌入] 智能体大脑（网页版 AI × Harness）
+  - agent/**/*
+  - '!agent/test/**'
+  - '!agent/docs/**'
+  - '!agent/harness/data/**'
+  - '!agent/**/*.out'
 
 extraResources:
   - from: resources/dsh-runtime

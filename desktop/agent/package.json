@@ -1,0 +1,13 @@
+{
+  "name": "dsh-desktop-agent",
+  "version": "0.1.5-rc.2",
+  "private": true,
+  "description": "DeepSeek Harness 桌面版 · 网页版智能体大脑（Agent Bridge + Harness Runtime）",
+  "main": "main.js",
+  "scripts": {
+    "test:protocol": "node --test test/protocol.test.js",
+    "test:harness": "node --test test/harness.test.js",
+    "test:e2e": "node test/e2e-smoke.js",
+    "test": "npm run test:protocol && npm run test:harness && npm run test:e2e"
+  }
+}

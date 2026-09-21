@@ -1,0 +1,3 @@
+AGENT_READY host=127.0.0.1 port=17400 token=browser-side-fixed-token-1234
+AGENT_TOKEN=browser-side-fixed-token-1234
+AGENT_WS=ws://127.0.0.1:17400/agent
