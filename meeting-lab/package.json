@@ -1,0 +1,14 @@
+{
+  "name": "meeting-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "通辽会议 Phase 0 独立测试台 —— 验证完成检测 / 附件握手 / 并发隔离（不接客户端）",
+  "main": "shell/main.js",
+  "scripts": {
+    "test": "node --test",
+    "shell": "electron .",
+    "build:modes": "node tools/build-modes-page.js",
+    "check:api": "node tools/check-api.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,1608 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>通辽会议 · 8 个模式速查 + 12 个模型能力档案</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0b0e14;color:#dbe4ee;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+       font-size:14px;line-height:1.7;padding:26px 30px 70px;max-width:1500px;margin:0 auto}
+  h1{font-size:23px;color:#4da3ff;margin-bottom:6px}
+  .sub{color:#7f93a8;font-size:13px;margin-bottom:4px}
+  .src{color:#5d7285;font-size:12px;font-family:Consolas,monospace;margin-bottom:22px}
+  h2{font-size:17px;color:#4da3ff;margin:38px 0 14px;padding-bottom:8px;border-bottom:1px solid #24303e}
+  h2 small{color:#6b8098;font-weight:400;font-size:12px;margin-left:8px}
+
+  /* 决策向导 */
+  .wizard{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
+  .wiz{background:#121a24;border:1px solid #24303e;border-left:3px solid #4da3ff;border-radius:7px;
+       padding:11px 14px;text-decoration:none;color:#dbe4ee;transition:.15s;display:block}
+  .wiz:hover{background:#16202c;border-left-color:#4ade80;transform:translateX(3px)}
+  .wiz b{display:block;color:#8fc7ff;font-size:13px;margin-bottom:3px}
+  .wiz span{color:#93a7bb;font-size:12.5px}
+
+  /* 模式卡 */
+  .mode{background:#111820;border:1px solid #24303e;border-radius:10px;padding:0;margin-bottom:16px;overflow:hidden}
+  .mode header{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#16202c;
+               border-bottom:1px solid #24303e;flex-wrap:wrap}
+  .mode .idx{font-family:Consolas,monospace;font-size:19px;color:#31445a;font-weight:700}
+  .mode h3{font-size:16.5px;color:#e8f1fb}
+  .mode .setname{font-size:12px;color:#7f93a8;font-family:Consolas,monospace}
+  .flag{font-size:11px;padding:2px 8px;border-radius:20px;background:#1c2a38;color:#8fc7ff;border:1px solid #2a3a4a}
+  .flag.loop{color:#ffd479;border-color:#4a3f2a}
+  .flag.api{color:#4ade80;border-color:#2a4a38}
+
+  .when{padding:11px 16px;background:#0e1a26;border-bottom:1px solid #1e2836;font-size:13.5px;color:#cfe0f0}
+  .when b{color:#4da3ff;margin-right:9px}
+
+  .quad{padding:0;display:grid;grid-template-columns:1fr 1fr}
+  .quad > div{padding:11px 16px;border-bottom:1px solid #1a2432;border-right:1px solid #1a2432;font-size:12.8px;color:#a9bccd}
+  .quad > div:nth-child(2n){border-right:none}
+  .quad em{display:block;color:#6b8098;font-style:normal;font-size:11.5px;margin-bottom:3px}
+  .quad .neg{color:#e3a2a2}
+  .quad .pos{color:#8fd8a8}
+  .quad .flowcell{grid-column:1/-1;border-right:none;background:#0d141d}
+
+  ol.stages{list-style:none;margin-top:5px}
+  ol.stages li{display:flex;align-items:center;gap:9px;padding:4px 0;flex-wrap:wrap;font-size:12.5px}
+  .stn{color:#4da3ff;font-weight:600;min-width:118px}
+  .stsp{display:flex;gap:5px;flex-wrap:wrap}
+  .who{background:#1b2836;border:1px solid #2a3a4a;border-radius:4px;padding:1px 7px;color:#8fd8a8;font-size:12px}
+  .who.api{color:#4ade80;border-color:#2a4a38;background:#12241c}
+  .who.none{color:#667}
+  .who.picker{color:#ffd479;border-color:#4a3f2a;background:#1a1508}
+  .stsl{color:#7f93a8;font-size:11.5px}
+  .stdeg{color:#ffd479;font-size:11px}
+  li.empty{color:#667}
+
+  .fitrow{display:flex;align-items:center;gap:8px;padding:10px 16px;flex-wrap:wrap;border-bottom:1px solid #1a2432}
+  .fitlab{color:#6b8098;font-size:11.5px}
+  .need{background:#1a2432;border:1px solid #2a3a4a;border-radius:4px;padding:2px 9px;font-size:12px;color:#ffd479;
+        font-family:Consolas,monospace}
+  .chan i{font-style:normal;font-size:11.5px;padding:2px 9px;border-radius:4px;margin-right:5px;font-family:Consolas,monospace}
+  .c-api{background:#12241c;color:#4ade80;border:1px solid #2a4a38}
+  .c-web{background:#101d2b;color:#8fc7ff;border:1px solid #2a3a4a}
+
+  .tips{padding:10px 16px;background:#1a1508;color:#ffd479;font-size:12.5px;border-bottom:1px solid #2a2410}
+
+  /* ── 成本区块（第五轮补：让"贵不贵"和"什么时候用"一样显眼）── */
+  .flag.cost{background:#1a2430;color:#cfd8e3;border-color:#33455a}
+  .flag.cost.t-light{background:#0f2417;color:#7fd8a0;border-color:#1e4030}
+  .flag.cost.t-medium{background:#241f0c;color:#ffd479;border-color:#4a3d18}
+  .flag.cost.t-heavy{background:#2a1214;color:#ff8f8f;border-color:#5a2226}
+  .costblock{background:#0b1118;border-bottom:1px solid #1a2430;padding:10px 16px}
+  .costhead{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
+  .costtier{font-size:12px;font-weight:700;padding:2px 10px;border-radius:4px}
+  .costtier.t-light{background:#0f2417;color:#7fd8a0}
+  .costtier.t-medium{background:#241f0c;color:#ffd479}
+  .costtier.t-heavy{background:#2a1214;color:#ff8f8f}
+  .costsum{font-size:12px;color:#9fb0c0}
+  .costsum b{color:#e8eef5}
+  table.costtable{width:100%;border-collapse:collapse;font-size:12px}
+  table.costtable th{text-align:left;color:#7c8b9a;font-weight:400;padding:3px 8px 3px 0;border-bottom:1px solid #1a2430}
+  table.costtable td{padding:3px 8px 3px 0;color:#c6d2de;border-bottom:1px solid #131c26}
+  table.costtable td.num{text-align:right;font-variant-numeric:tabular-nums;color:#8fc7ff}
+  table.costtable td.cnote{color:#7c8b9a}
+  table.costtable td.num em{color:#ffd479;font-style:normal;margin-left:2px}
+  .costadvice{margin:8px 0 0;padding-left:18px;color:#ffd479;font-size:12px}
+  .costadvice li{margin:3px 0}
+
+  /* ── 成本对照表 ── */
+  table.costoverview{width:100%;border-collapse:collapse;font-size:13px;background:#0d141d;
+    border:1px solid #1a2430;border-radius:8px;overflow:hidden}
+  table.costoverview th{text-align:left;padding:9px 12px;background:#111a24;color:#9fb0c0;font-weight:500;font-size:12px}
+  table.costoverview td{padding:9px 12px;border-top:1px solid #1a2430;color:#c6d2de}
+  table.costoverview td.num{text-align:right;font-variant-numeric:tabular-nums}
+  table.costoverview tr.hi td{background:#160f14}
+  table.costoverview .mini{width:60px;height:7px;border-radius:4px;background:#1a2430;overflow:hidden}
+  table.costoverview .mini i{display:block;height:100%}
+
+  details.castbox{background:#0d141d}
+  details.castbox summary{padding:10px 16px;cursor:pointer;color:#8fc7ff;font-size:12.5px;user-select:none}
+  details.castbox summary:hover{background:#111a24}
+  .seats{display:grid;grid-template-columns:repeat(auto-fill,minmax(430px,1fr));gap:5px;padding:2px 16px 12px}
+  .seat{display:flex;align-items:baseline;gap:9px;padding:5px 10px;background:#121a24;border-radius:5px;
+        border-left:2px solid #4da3ff;font-size:12.5px}
+  .sr{color:#ffd479;min-width:74px}
+  .sm{color:#8fd8a8;flex:1}
+  .sm.api{color:#4ade80}
+  .sf{font-family:Consolas,monospace;color:#4da3ff;font-weight:700}
+  .sf em{font-style:normal;font-size:10.5px;color:#5d7285;margin-left:1px}
+  .swhy{color:#6b8098;font-size:11.5px;flex-basis:100%;padding-left:83px;margin-top:-2px}
+  .losers{padding:8px 16px 14px;color:#7f93a8;font-size:12px}
+  .loswhy{color:#5d7285;margin-left:6px}
+
+  /* 模型表 */
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:9px 11px;border-bottom:1px solid #1e2836;vertical-align:top;text-align:left}
+  th{background:#16202c;color:#8fc7ff;font-size:12px;font-weight:600;position:sticky;top:0}
+  tr:hover td{background:#101720}
+  .mname{white-space:nowrap}
+  .mname b{color:#e8f1fb;display:block;margin-bottom:3px}
+  .traits{display:grid;grid-template-columns:1fr 1fr;gap:1px 12px;min-width:250px}
+  .tr{display:flex;align-items:center;gap:6px;font-size:11px}
+  .tr em{color:#6b8098;font-style:normal;width:48px;text-align:right;flex-shrink:0}
+  .bar{position:relative;display:inline-flex;align-items:center;width:62px;height:11px;background:#1a2432;border-radius:3px;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;opacity:.75}
+  .bar b{position:relative;font-size:10px;color:#dbe4ee;margin-left:auto;padding-right:3px;font-family:Consolas,monospace}
+  .pros .p{color:#8fd8a8}
+  .pros .c{color:#e3a2a2}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;margin:0 3px 3px 0}
+  .tag.best{background:#12241c;color:#4ade80;border:1px solid #2a4a38}
+  .tag.avoid{background:#2a1416;color:#ff8080;border:1px solid #4a2a2c}
+  .avoidline{color:#a3737a;font-size:11.5px;margin-top:3px}
+  .note{color:#93a7bb;font-size:12px}
+
+  /* 角色组 */
+  .sets{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
+  .setcard{background:#111820;border:1px solid #24303e;border-radius:9px;padding:13px 15px}
+  .setcard h4{font-size:13.5px;color:#8fc7ff;margin-bottom:9px}
+  .cnt{font-size:11px;color:#6b8098;font-family:Consolas,monospace;font-weight:400}
+  ul.setlist{list-style:none}
+  ul.setlist li{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:12.3px;border-bottom:1px solid #16202c;flex-wrap:wrap}
+  ul.setlist li b{color:#ffd479;min-width:78px}
+  .floor{color:#e3a2a2;font-size:11.5px;font-family:Consolas,monospace}
+  .wgt{color:#6b8098;font-size:11.5px}
+
+  /* 编制变体 */
+  .variants{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .var{background:#111820;border:1px solid #24303e;border-radius:9px;padding:12px 14px}
+  .var h5{font-size:12.5px;color:#4da3ff;font-family:Consolas,monospace;margin-bottom:8px}
+  .var .vr{display:flex;justify-content:space-between;gap:8px;font-size:12.3px;padding:2px 0}
+  .var .vr span:first-child{color:#ffd479}
+  .var .vr span:last-child{color:#8fd8a8;text-align:right}
+  .varnote{color:#7f93a8;font-size:12.5px;margin-top:14px;line-height:1.8}
+  .costnote{color:#9fb0c0;font-size:12.5px;line-height:1.9;background:#0d141d;border:1px solid #1a2430;
+    border-left:3px solid #33455a;border-radius:6px;padding:12px 16px;margin-bottom:14px}
+  .costnote b{color:#e8eef5}
+  .mlink{color:#8fc7ff;text-decoration:none}
+  .mlink:hover{text-decoration:underline}
+  .varnote b{color:#4ade80}
+</style>
+</head>
+<body>
+
+<h1>通辽会议 · 8 个模式速查 &amp; 12 个模型能力档案</h1>
+<div class="sub">先挑「我要干什么」，再挑模型——每个模式需要什么能力的模型、实际会选到谁，这一页全说完。</div>
+<div class="src">数据来源：core/modes.js · core/models.js · core/roles.js · core/casting.js 实时计算生成
+（选角种子 demo-1，页面里每个分数都是引擎真跑出来的）</div>
+
+<h2>第一步：我要干什么？<small>点一条直接跳到对应模式</small></h2>
+<div class="wizard">
+<a class="wiz" href="#mode-broadcast"><b>广播</b><span>同一件事，我想同时听好几个不同角度的看法</span></a><a class="wiz" href="#mode-review"><b>共同审阅</b><span>我有一份材料（文档/代码/方案），想让它被挑毛病</span></a><a class="wiz" href="#mode-assist"><b>协助</b><span>我要一份能直接照着做的方案，不想听讨论</span></a><a class="wiz" href="#mode-iterate"><b>反复修正</b><span>我已经写了一版，想改到挑不出新问题</span></a><a class="wiz" href="#mode-debate"><b>交叉辩论</b><span>两个方案难分高下，想看它们正面对撞</span></a><a class="wiz" href="#mode-panel"><b>专家会诊</b><span>问题很复杂，想要后一个人接着前一个人往深挖</span></a><a class="wiz" href="#mode-chairman"><b>主席点名</b><span>我想要个主持人抓着分歧点追问到底</span></a><a class="wiz" href="#mode-divide"><b>分头攻克</b><span>任务是能拆开的，想分头做再汇总</span></a><a class="wiz" href="#mode-tournament"><b>招标评审</b><span>我还没有满意的答案，想要几份候选再客观挑一份</span></a><a class="wiz" href="#mode-build"><b>工程交付</b><span>我有个想法，想变成真能跑起来的软件</span></a>
+</div>
+
+<h2>第二步：10 个模式，分别在什么时候用<small>含真实编制、阶段流程与成本</small></h2>
+
+<section class="mode" id="mode-broadcast">
+  <header>
+    <span class="idx">01</span>
+    <h3>广播</h3>
+    <span class="setname">推荐角色组：diverge-9（9 席）</span>
+    <span class="flag cost t-light">成本 轻（9 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你只想听同一件事的多个不同角度，不需要 AI 之间对话。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>「这个方案有什么问题？」——想看 9 个 AI 各给一份独立意见。</div>
+    <div class="neg"><em>什么时候别用</em>需要 AI 互相反驳、需要自动收敛出结论时（用「共同审阅」或「协助」）。</div>
+    <div class="pos"><em>产出</em>N 份并行的独立意见（不互相影响，适合当第一轮素材）。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 回答</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span><span class="who">腾讯-元宝</span><span class="who">月之暗面-Kimi</span><span class="who">深度求索-DeepSeek</span><span class="who api">Agne API</span><span class="who">阿里巴巴-通义千问</span><span class="who">OpenAI-ChatGPT</span><span class="who api">Google API (Gemini)</span><span class="who">百度-文心</span></span>
+      <span class="stsl">只看本轮任务</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 3</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">全员都得上。适合作为任何会议的第一阶段。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-light">成本档位：轻</span>
+      <span class="costsum">参会 9 人 ·
+        单轮 <b>9</b> 次调用 / 注入 <b>0</b> 份 ·
+        累计 <b>9</b> 次 / 0 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>回答</td>
+        <td class="num">9</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>成本很低，放心开</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，9 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">反方</span>
+      <span class="sm">腾讯-元宝</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（中文5 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">事实核查</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">79<em>分</em></span>
+      <span class="swhy">适配 79 分（结构化4 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">合规审查</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 稳定性5）</span>
+    </div><div class="seat">
+      <span class="sr">新人视角</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（中文4 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">用户代言</span>
+      <span class="sm">阿里巴巴-通义千问</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（中文5 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（结构化5 + 推理5）</span>
+    </div><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">书记员</span>
+      <span class="sm">百度-文心</span>
+      <span class="sf">74<em>分</em></span>
+      <span class="swhy">适配 74 分（速度4 + 中文4）</span>
+    </div></div>
+    <div class="losers">落选 3 个：字节跳动-豆包、谷歌-搜索、DeepSeek API<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-review">
+  <header>
+    <span class="idx">02</span>
+    <h3>共同审阅</h3>
+    <span class="setname">推荐角色组：trio-review（3 席）</span>
+    <span class="flag">需要材料</span><span class="flag cost t-light">成本 轻（5 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你手上有一份具体材料（文档 / 代码 / 方案 / 合同），要它被多角度把关。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>丢一份需求文档进去：事实核查员查数据漏洞、用户代言者挑看不懂的地方、书记员抓遗漏。</div>
+    <div class="neg"><em>什么时候别用</em>开放性问题（没有具体材料可审）。</div>
+    <div class="pos"><em>产出</em>审阅结论 + 分歧点清单 + 被忽略的遗漏项。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 独立审阅</span>
+      <span class="stsp"><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">百度-文心</span></span>
+      <span class="stsl">只看待审材料</span>
+      
+    </li><li>
+      <span class="stn">2. 交叉质证</span>
+      <span class="stsp"><span class="who api">Agne API</span></span>
+      <span class="stsl">只看别人发言</span>
+      
+    </li><li>
+      <span class="stn">3. 归并结论</span>
+      <span class="stsp"><span class="who">百度-文心</span></span>
+      <span class="stsl">看全部发言</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 4</span><span class="need">结构化 ≥ 4</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 第一阶段的「独立审阅」必须并行——若让 AI 先看到别人的意见，后面会全部向第一个发言者收敛（锚定效应）。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-light">成本档位：轻</span>
+      <span class="costsum">参会 3 人 ·
+        单轮 <b>5</b> 次调用 / 注入 <b>7</b> 份 ·
+        累计 <b>5</b> 次 / 7 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>独立审阅</td>
+        <td class="num">3</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr>
+    <tr><td>交叉质证</td>
+        <td class="num">1</td>
+        <td class="num">3</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>归并结论</td>
+        <td class="num">1</td>
+        <td class="num">4</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>成本很低，放心开</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，3 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">事实核查</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">63<em>分</em></span>
+      <span class="swhy">适配 63 分（结构化4 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">用户代言</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 稳定性5）</span>
+    </div><div class="seat">
+      <span class="sr">书记员</span>
+      <span class="sm">百度-文心</span>
+      <span class="sf">74<em>分</em></span>
+      <span class="swhy">适配 74 分（速度4 + 中文4）</span>
+    </div></div>
+    <div class="losers">落选 9 个：深度求索-DeepSeek、OpenAI-ChatGPT、谷歌-Gemini、月之暗面-Kimi、字节跳动-豆包、阿里巴巴-通义千问、腾讯-元宝、谷歌-搜索、Google API (Gemini)<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-assist">
+  <header>
+    <span class="idx">03</span>
+    <h3>协助</h3>
+    <span class="setname">推荐角色组：tech-7（7 席）</span>
+    <span class="flag cost t-light">成本 轻（6 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你自己是执行者，需要的是「能直接照做的方案」，不是讨论。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>「我要把通辽会议接入微软框架，具体怎么落地？」——要步骤，不要综述。</div>
+    <div class="neg"><em>什么时候别用</em>纯粹想了解一个概念时（那是普通对话，不用开会）。</div>
+    <div class="pos"><em>产出</em>可执行步骤 + 每步前置条件 + 失败了怎么回退。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 各出方案</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who api">Agne API</span></span>
+      <span class="stsl">只看本轮任务</span>
+      
+    </li><li>
+      <span class="stn">2. 会诊挑错</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span></span>
+      <span class="stsl">只看别人发言</span>
+      
+    </li><li>
+      <span class="stn">3. 收敛执行</span>
+      <span class="stsp"><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">看全部发言</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 4</span><span class="need">结构化 ≥ 5</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">执行步骤类角色对「结构化输出」要求最高——不会出清单的模型当它，产出没法用。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-light">成本档位：轻</span>
+      <span class="costsum">参会 7 人 ·
+        单轮 <b>6</b> 次调用 / 注入 <b>9</b> 份 ·
+        累计 <b>6</b> 次 / 9 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>各出方案</td>
+        <td class="num">4</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr>
+    <tr><td>会诊挑错</td>
+        <td class="num">1</td>
+        <td class="num">4</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>收敛执行</td>
+        <td class="num">1</td>
+        <td class="num">5</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>成本很低，放心开</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，7 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">成本分析师</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 长文4）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">93<em>分</em></span>
+      <span class="swhy">适配 93 分（结构化5 + 中文4）</span>
+    </div><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">68<em>分</em></span>
+      <span class="swhy">适配 68 分（结构化4 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">产品经理</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 结构化5）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">89<em>分</em></span>
+      <span class="swhy">适配 89 分（结构化5 + 稳定性5）</span>
+    </div></div>
+    <div class="losers">落选 5 个：字节跳动-豆包、阿里巴巴-通义千问、腾讯-元宝、百度-文心、谷歌-搜索<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-iterate">
+  <header>
+    <span class="idx">04</span>
+    <h3>反复修正</h3>
+    <span class="setname">推荐角色组：risk-audit-5（5 席）</span>
+    <span class="flag loop">循环至收敛</span><span class="flag">需要草稿</span><span class="flag cost t-medium">成本 中（最坏 20 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你已经有了一版产出物（文案 / 方案 / 代码），要反复挑错改到挑不出新问题。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>一份要给客户的方案：红队挑错 → 修订 → 再挑 → 再改，直到某轮挑不出新东西自动停。</div>
+    <div class="neg"><em>什么时候别用</em>还没有第一版的时候（先跑「协助」拿到初稿）。</div>
+    <div class="pos"><em>产出</em>收敛后的终版 + 完整的批评清单（知道改过哪些问题）。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 挑错</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span><span class="who">月之暗面-Kimi</span><span class="who">腾讯-元宝</span></span>
+      <span class="stsl">只看当前草稿</span>
+      
+    </li><li>
+      <span class="stn">2. 修订</span>
+      <span class="stsp"><span class="who api">DeepSeek API</span></span>
+      <span class="stsl">只看批评清单</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 5</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 会自动判停：靠&quot;本轮批评相对上轮无新增&quot;，不是固定跑 5 轮。质证席位推理能力要够，否则挑两轮就挑不动了。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-medium">成本档位：中</span>
+      <span class="costsum">参会 5 人 ·
+        单轮 <b>4</b> 次调用 / 注入 <b>4</b> 份 ·
+        上限 5 轮 → 最坏 <b>20</b> 次 / 20 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>挑错</td>
+        <td class="num">3</td>
+        <td class="num">3</td>
+        <td class="cnote">每人看一份固定产物（草稿/批评清单/契约）</td></tr>
+    <tr><td>修订</td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td class="cnote">每人看一份固定产物（草稿/批评清单/契约）</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>最多循环 5 轮 → 最坏 20 次调用；收敛判据生效会提前停（判据失效时才跑满）</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，5 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">合规审查</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">81<em>分</em></span>
+      <span class="swhy">适配 81 分（中文5 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">事实核查</span>
+      <span class="sm">腾讯-元宝</span>
+      <span class="sf">73<em>分</em></span>
+      <span class="swhy">适配 73 分（稳定性4 + 检索5）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（结构化5 + 中文5）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">阿里巴巴-通义千问</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 稳定性4）</span>
+    </div></div>
+    <div class="losers">落选 7 个：深度求索-DeepSeek、OpenAI-ChatGPT、字节跳动-豆包、百度-文心、谷歌-搜索、Agne API、Google API (Gemini)<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-debate">
+  <header>
+    <span class="idx">05</span>
+    <h3>交叉辩论</h3>
+    <span class="setname">推荐角色组：diverge-9（9 席）</span>
+    <span class="flag cost t-medium">成本 中（18 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>有两个（或几个）方案难分高下，你要看它们正面对撞的结果。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>「用 MAF 还是自研？」「上云还是自建？」</div>
+    <div class="neg"><em>什么时候别用</em>问题只有一个正确答案时（那是浪费，直接用「协助」）。</div>
+    <div class="pos"><em>产出</em>各方的最强论证 + 各自的致命弱点（不是折中意见）。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 立论</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span><span class="who">腾讯-元宝</span><span class="who">月之暗面-Kimi</span><span class="who">深度求索-DeepSeek</span><span class="who api">Agne API</span><span class="who">阿里巴巴-通义千问</span><span class="who">OpenAI-ChatGPT</span><span class="who api">Google API (Gemini)</span><span class="who">百度-文心</span></span>
+      <span class="stsl">只看本轮任务</span>
+      
+    </li><li>
+      <span class="stn">2. 对辩</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span><span class="who">腾讯-元宝</span><span class="who">月之暗面-Kimi</span><span class="who">深度求索-DeepSeek</span><span class="who api">Agne API</span><span class="who">阿里巴巴-通义千问</span><span class="who">OpenAI-ChatGPT</span><span class="who api">Google API (Gemini)</span><span class="who">百度-文心</span></span>
+      <span class="stsl">只看别人发言</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 4</span><span class="need">中文 ≥ 4</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 对辩阶段每人「只看别人的、不看自己的」——防止 AI 复述自己上一轮的话。立场对立的席位建议选能力互补的模型。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-medium">成本档位：中</span>
+      <span class="costsum">参会 9 人 ·
+        单轮 <b>18</b> 次调用 / 注入 <b>117</b> 份 ·
+        累计 <b>18</b> 次 / 117 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>立论</td>
+        <td class="num">9</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr>
+    <tr><td>对辩</td>
+        <td class="num">9</td>
+        <td class="num">117</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>阶段「对辩」注入 117 份，是主要开销（顺序接龙：第 k 人读前 k-1 份 → O(n²)）</li><li>参会 9 人：该模式成本随人数平方增长，减人比换模型更省钱</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，9 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">反方</span>
+      <span class="sm">腾讯-元宝</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（中文5 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">事实核查</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">79<em>分</em></span>
+      <span class="swhy">适配 79 分（结构化4 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">合规审查</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 稳定性5）</span>
+    </div><div class="seat">
+      <span class="sr">新人视角</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（中文4 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">用户代言</span>
+      <span class="sm">阿里巴巴-通义千问</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（中文5 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（结构化5 + 推理5）</span>
+    </div><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">书记员</span>
+      <span class="sm">百度-文心</span>
+      <span class="sf">74<em>分</em></span>
+      <span class="swhy">适配 74 分（速度4 + 中文4）</span>
+    </div></div>
+    <div class="losers">落选 3 个：字节跳动-豆包、谷歌-搜索、DeepSeek API<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-panel">
+  <header>
+    <span class="idx">06</span>
+    <h3>专家会诊</h3>
+    <span class="setname">推荐角色组：tech-7（7 席）</span>
+    <span class="flag cost t-light">成本 轻（8 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>问题复杂，需要每个专家看到前面所有人的发言再往下深挖，像真正的专家会诊。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>疑难故障排查、复杂架构决策——第一个人开了头，后面的人接着往深里挖。</div>
+    <div class="neg"><em>什么时候别用</em>人多的时候（串行会让总时长线性增长，9 人会很慢）。</div>
+    <div class="pos"><em>产出</em>逐层加深的分析链 + 最后汇总结论。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 会诊</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who">谷歌-Gemini</span><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">只看别人发言</span>
+      
+    </li><li>
+      <span class="stn">2. 归并结论</span>
+      <span class="stsp"><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">看全部发言</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 4</span><span class="need">长文 ≥ 4</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">串行接龙，每位都看得见前面全部发言 → 越到后面上下文越长，挑「长文承载」强的模型坐后排。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-light">成本档位：轻</span>
+      <span class="costsum">参会 7 人 ·
+        单轮 <b>8</b> 次调用 / 注入 <b>28</b> 份 ·
+        累计 <b>8</b> 次 / 28 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>会诊</td>
+        <td class="num">7</td>
+        <td class="num">21</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>归并结论</td>
+        <td class="num">1</td>
+        <td class="num">7</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>阶段「会诊」注入 21 份，是主要开销（顺序接龙：第 k 人读前 k-1 份 → O(n²)）</li><li>参会 7 人：该模式成本随人数平方增长，减人比换模型更省钱</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，7 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">成本分析师</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 长文4）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">93<em>分</em></span>
+      <span class="swhy">适配 93 分（结构化5 + 中文4）</span>
+    </div><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">68<em>分</em></span>
+      <span class="swhy">适配 68 分（结构化4 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">产品经理</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 结构化5）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">89<em>分</em></span>
+      <span class="swhy">适配 89 分（结构化5 + 稳定性5）</span>
+    </div></div>
+    <div class="losers">落选 5 个：字节跳动-豆包、阿里巴巴-通义千问、腾讯-元宝、百度-文心、谷歌-搜索<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-chairman">
+  <header>
+    <span class="idx">07</span>
+    <h3>主席点名</h3>
+    <span class="setname">推荐角色组：product-9（9 席）</span>
+    <span class="flag loop">循环至收敛</span><span class="flag api">主席必须走 API</span><span class="flag cost t-light">成本 轻（最坏 12 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你希望有个主持人像真人开会那样，抓住分歧点追问到底，而不是平均分配发言。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>评审会、复盘会：主持人看到 A 和 B 意见相反，就点他们俩各自说清理由。</div>
+    <div class="neg"><em>什么时候别用</em>没有明确分歧点的开放性咨询。</div>
+    <div class="pos"><em>产出</em>被追问到底的分歧结论 + 谁在哪个点上无法自圆其说。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 点名发言</span>
+      <span class="stsp"><span class="who picker">由主席按分歧点点名（会中动态决定）</span></span>
+      <span class="stsl">只看别人发言</span>
+      <span class="stdeg" title="席位不够，已降级">⚠ 降级</span>
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 5</span><span class="need">稳定性 ≥ 5</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 主席必须走 API 通道：它每轮都要即时判断，网页版的渲染延迟会把一轮拖到分钟级，9 人会上没法用。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-light">成本档位：轻</span>
+      <span class="costsum">参会 9 人 ·
+        单轮 <b>3</b> 次调用 / 注入 <b>3</b> 份 ·
+        上限 4 轮 → 最坏 <b>12</b> 次 / 12 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>点名发言</td>
+        <td class="num">3<em title="由主持人动态点名，此处为预估">≈</em></td>
+        <td class="num">3</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)（发言者由主持人动态点名，此处按 3 人预估）</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>最多循环 4 轮 → 最坏 12 次调用；收敛判据生效会提前停（判据失效时才跑满）</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，9 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">成本分析师</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 长文4）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">93<em>分</em></span>
+      <span class="swhy">适配 93 分（结构化5 + 中文4）</span>
+    </div><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">合规审查</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 稳定性5）</span>
+    </div><div class="seat">
+      <span class="sr">事实核查</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">63<em>分</em></span>
+      <span class="swhy">适配 63 分（结构化4 + 稳定性4）</span>
+    </div><div class="seat">
+      <span class="sr">用户代言</span>
+      <span class="sm">百度-文心</span>
+      <span class="sf">66<em>分</em></span>
+      <span class="swhy">适配 66 分（中文4 + 稳定性3）</span>
+    </div><div class="seat">
+      <span class="sr">产品经理</span>
+      <span class="sm">字节跳动-豆包</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（中文5 + 结构化3）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">89<em>分</em></span>
+      <span class="swhy">适配 89 分（结构化5 + 稳定性5）</span>
+    </div></div>
+    <div class="losers">落选 3 个：阿里巴巴-通义千问、腾讯-元宝、谷歌-搜索<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-divide">
+  <header>
+    <span class="idx">08</span>
+    <h3>分头攻克</h3>
+    <span class="setname">推荐角色组：tech-7（7 席）</span>
+    <span class="flag cost t-light">成本 轻（9 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>任务能被拆开，且拆开后各块互不依赖（这是前提）。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>「把这 9 个模块的接口文档各写一份」——每人一个模块，最后汇总。</div>
+    <div class="neg"><em>什么时候别用</em>任务不可拆分时（拆了会各说各话、拼不起来）。</div>
+    <div class="pos"><em>产出</em>N 份子任务成果 + 一份拼装好的完整产出。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 拆分任务</span>
+      <span class="stsp"><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">只看本轮任务</span>
+      
+    </li><li>
+      <span class="stn">2. 分头攻克</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who">谷歌-Gemini</span><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">只看本轮任务</span>
+      
+    </li><li>
+      <span class="stn">3. 汇总拼装</span>
+      <span class="stsp"><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">看全部发言</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">结构化 ≥ 4</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 前提是任务真的可拆。拆不开硬拆 = 9 份互不相干的半成品，拼装时全废。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-light">成本档位：轻</span>
+      <span class="costsum">参会 7 人 ·
+        单轮 <b>9</b> 次调用 / 注入 <b>8</b> 份 ·
+        累计 <b>9</b> 次 / 8 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>拆分任务</td>
+        <td class="num">1</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr>
+    <tr><td>分头攻克</td>
+        <td class="num">7</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr>
+    <tr><td>汇总拼装</td>
+        <td class="num">1</td>
+        <td class="num">8</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>成本很低，放心开</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，7 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">成本分析师</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 长文4）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">93<em>分</em></span>
+      <span class="swhy">适配 93 分（结构化5 + 中文4）</span>
+    </div><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">68<em>分</em></span>
+      <span class="swhy">适配 68 分（结构化4 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">产品经理</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 结构化5）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">89<em>分</em></span>
+      <span class="swhy">适配 89 分（结构化5 + 稳定性5）</span>
+    </div></div>
+    <div class="losers">落选 5 个：字节跳动-豆包、阿里巴巴-通义千问、腾讯-元宝、百度-文心、谷歌-搜索<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-tournament">
+  <header>
+    <span class="idx">09</span>
+    <h3>招标评审</h3>
+    <span class="setname">推荐角色组：tech-7（7 席）</span>
+    <span class="flag loop">循环至收敛</span><span class="flag cost t-heavy">成本 重（最坏 42 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你还没有满意的答案，想要 N 个候选 + 一个客观的&quot;谁最好&quot;判定，而不是 9 份互相抄的意见。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>「这个功能写不出想要的效果」——先让 9 个 AI 各给一份解法，再由质证类独立排序，选出最能打的那份去改进。</div>
+    <div class="neg"><em>什么时候别用</em>已有一份满意初稿时（那是「反复修正」）；问题有唯一正确答案时（那是「协助」）。</div>
+    <div class="pos"><em>产出</em>胜出方案 + 备选 + 各评审者的独立排序（可复现&quot;为什么选它&quot;）。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 出标</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who">谷歌-Gemini</span><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">只看本轮任务</span>
+      
+    </li><li>
+      <span class="stn">2. 评标</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span></span>
+      <span class="stsl">candidates</span>
+      
+    </li><li>
+      <span class="stn">3. 定标</span>
+      <span class="stsp"><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">看全部发言</span>
+      
+    </li><li>
+      <span class="stn">4. 改进</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who api">Agne API</span></span>
+      <span class="stsl">只看批评清单</span>
+      
+    </li><li>
+      <span class="stn">5. 复评</span>
+      <span class="stsp"><span class="who">谷歌-Gemini</span></span>
+      <span class="stsl">只看当前草稿</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">推理 ≥ 4</span><span class="need">结构化 ≥ 4</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-web">网页版</i><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 评标阶段必须并行（评审者看到彼此评分就会跟票=锚定），且候选必须匿名 + 定序（认不出自己那份 → 无自我加分；人人看到同样 N 份 → Borda 均值可比）。用名次（1..N）不用分数，跨模型可比。定标结果由 bordaMeans 算出，不是让 AI 拍板。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-heavy">成本档位：重</span>
+      <span class="costsum">参会 7 人 ·
+        单轮 <b>14</b> 次调用 / 注入 <b>14</b> 份 ·
+        上限 3 轮 → 最坏 <b>42</b> 次 / 42 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>出标</td>
+        <td class="num">7</td>
+        <td class="num">0</td>
+        <td class="cnote">只看原始任务/材料（互相看不见）</td></tr>
+    <tr><td>评标</td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td class="cnote">每人看同一份匿名候选包（防锚定，包大小固定）</td></tr>
+    <tr><td>定标</td>
+        <td class="num">1</td>
+        <td class="num">8</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>改进</td>
+        <td class="num">4</td>
+        <td class="num">4</td>
+        <td class="cnote">每人看一份固定产物（草稿/批评清单/契约）</td></tr>
+    <tr><td>复评</td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td class="cnote">每人看一份固定产物（草稿/批评清单/契约）</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>最多循环 3 轮 → 最坏 42 次调用；收敛判据生效会提前停（判据失效时才跑满）</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，7 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">成本分析师</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 长文4）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">93<em>分</em></span>
+      <span class="swhy">适配 93 分（结构化5 + 中文4）</span>
+    </div><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">68<em>分</em></span>
+      <span class="swhy">适配 68 分（结构化4 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">产品经理</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 结构化5）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">89<em>分</em></span>
+      <span class="swhy">适配 89 分（结构化5 + 稳定性5）</span>
+    </div></div>
+    <div class="losers">落选 5 个：字节跳动-豆包、阿里巴巴-通义千问、腾讯-元宝、百度-文心、谷歌-搜索<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+<section class="mode" id="mode-build">
+  <header>
+    <span class="idx">10</span>
+    <h3>工程交付</h3>
+    <span class="setname">推荐角色组：tech-7（7 席）</span>
+    <span class="flag loop">循环至收敛</span><span class="flag cost t-heavy">成本 重（最坏 96 次调用）</span>
+  </header>
+
+  <div class="when"><b>什么时候用</b>你想把一个想法变成真的能跑的软件，需要&quot;商量架构 + 分头实现 + 集成验证&quot;三件事。</div>
+
+  <div class="quad">
+    <div><em>典型例子</em>「做一个待办清单网页」——先定功能与模块，冻结接口契约，分头写各模块，最后有人拼装 + 编译运行验证。</div>
+    <div class="neg"><em>什么时候别用</em>只是要一份讨论文档/方案（那是「协助」或「招标评审」，产物是文本不是软件）。</div>
+    <div class="pos"><em>产出</em>可运行的代码文件（产物 {path, content}）+ 编译/运行结果 + 修复记录。</div>
+    <div class="flowcell"><em>阶段流程</em><ol class="stages"><li>
+      <span class="stn">1. 需求澄清</span>
+      <span class="stsp"><span class="who api">DeepSeek API</span></span>
+      <span class="stsl">只看别人发言</span>
+      
+    </li><li>
+      <span class="stn">2. 架构设计</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span></span>
+      <span class="stsl">只看别人发言</span>
+      
+    </li><li>
+      <span class="stn">3. 冻结契约</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span></span>
+      <span class="stsl">看全部发言</span>
+      
+    </li><li>
+      <span class="stn">4. 分头实现</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who">谷歌-Gemini</span><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">contract</span>
+      
+    </li><li>
+      <span class="stn">5. 集成验证</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who">谷歌-Gemini</span><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">看全部发言</span>
+      <span class="stdeg" title="席位不够，已降级">⚠ 降级</span>
+    </li><li>
+      <span class="stn">6. 修复</span>
+      <span class="stsp"><span class="who api">Google API (Gemini)</span><span class="who">月之暗面-Kimi</span><span class="who">OpenAI-ChatGPT</span><span class="who">谷歌-Gemini</span><span class="who api">Agne API</span><span class="who api">DeepSeek API</span><span class="who">深度求索-DeepSeek</span></span>
+      <span class="stsl">只看批评清单</span>
+      
+    </li></ol></div>
+  </div>
+
+  <div class="fitrow">
+    <span class="fitlab">模型门槛</span><span class="need">结构化 ≥ 5</span><span class="need">推理 ≥ 4</span>
+    <span class="fitlab">通道</span><span class="chan"><i class="c-api">API</i></span>
+  </div>
+
+  <div class="tips">★ 阶段 3「冻结契约」由架构师写、收敛类只做&quot;确认&quot;（收敛类的互斥约束是&quot;禁止引入新观点&quot;，让它写契约会自相矛盾——这是草案 B 的一个 bug，本模式修正了它）。★ 修复回路归原作者，集成者只报&quot;哪里断了&quot;。</div>
+
+  
+  <div class="costblock">
+    <div class="costhead">
+      <span class="costtier t-heavy">成本档位：重</span>
+      <span class="costsum">参会 7 人 ·
+        单轮 <b>24</b> 次调用 / 注入 <b>108</b> 份 ·
+        上限 4 轮 → 最坏 <b>96</b> 次 / 432 份</span>
+    </div>
+    <table class="costtable">
+      <thead><tr><th>阶段</th><th class="num">发言人数</th><th class="num">注入份数</th><th>说明</th></tr></thead>
+      <tbody>
+    <tr><td>需求澄清</td>
+        <td class="num">1</td>
+        <td class="num">0</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>架构设计</td>
+        <td class="num">1</td>
+        <td class="num">1</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>冻结契约</td>
+        <td class="num">1</td>
+        <td class="num">2</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>分头实现</td>
+        <td class="num">7</td>
+        <td class="num">7</td>
+        <td class="cnote">每人看一份固定产物（草稿/批评清单/契约）</td></tr>
+    <tr><td>集成验证</td>
+        <td class="num">7</td>
+        <td class="num">91</td>
+        <td class="cnote">顺序接龙：第 k 人读前 k-1 份 → O(n²)</td></tr>
+    <tr><td>修复</td>
+        <td class="num">7</td>
+        <td class="num">7</td>
+        <td class="cnote">每人看一份固定产物（草稿/批评清单/契约）</td></tr></tbody>
+    </table>
+    <ul class="costadvice"><li>阶段「集成验证」注入 91 份，是主要开销（顺序接龙：第 k 人读前 k-1 份 → O(n²)）</li><li>最多循环 4 轮 → 最坏 96 次调用；收敛判据生效会提前停（判据失效时才跑满）</li></ul>
+  </div>
+
+  <details class="castbox" open>
+    <summary>这个模式下，7 个实际席位由谁坐（候选池 12 个模型，seed=demo-1，按能力择优）</summary>
+    <div class="seats"><div class="seat">
+      <span class="sr">架构师</span>
+      <span class="sm api">Google API (Gemini)</span>
+      <span class="sf">86<em>分</em></span>
+      <span class="swhy">适配 86 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">成本分析师</span>
+      <span class="sm">月之暗面-Kimi</span>
+      <span class="sf">75<em>分</em></span>
+      <span class="swhy">适配 75 分（结构化4 + 长文4）</span>
+    </div><div class="seat">
+      <span class="sr">执行步骤</span>
+      <span class="sm">OpenAI-ChatGPT</span>
+      <span class="sf">93<em>分</em></span>
+      <span class="swhy">适配 93 分（结构化5 + 中文4）</span>
+    </div><div class="seat">
+      <span class="sr">红队</span>
+      <span class="sm">谷歌-Gemini</span>
+      <span class="sf">80<em>分</em></span>
+      <span class="swhy">适配 80 分（推理4 + 长文5）</span>
+    </div><div class="seat">
+      <span class="sr">数据核算</span>
+      <span class="sm api">Agne API</span>
+      <span class="sf">68<em>分</em></span>
+      <span class="swhy">适配 68 分（结构化4 + 推理3）</span>
+    </div><div class="seat">
+      <span class="sr">产品经理</span>
+      <span class="sm api">DeepSeek API</span>
+      <span class="sf">100<em>分</em></span>
+      <span class="swhy">适配 100 分（中文5 + 结构化5）</span>
+    </div><div class="seat">
+      <span class="sr">主持助理</span>
+      <span class="sm">深度求索-DeepSeek</span>
+      <span class="sf">89<em>分</em></span>
+      <span class="swhy">适配 89 分（结构化5 + 稳定性5）</span>
+    </div></div>
+    <div class="losers">落选 5 个：字节跳动-豆包、阿里巴巴-通义千问、腾讯-元宝、百度-文心、谷歌-搜索<span class="loswhy">（能力不满足这些席位，硬塞进来只会拖后腿）</span></div>
+  </details>
+</section>
+
+<h2>第三步：这场会要烧多少？<small>点"开始会议"之前就该知道</small></h2>
+<div class="costnote">
+  两个指标都要看，缺一个就会误判：<br>
+  · <b>调用次数</b> = 花在"次数"上的钱。<br>
+  · <b>上下文注入份数</b> = 花在"字"上的钱 —— <b>这才是 O(N²) 的体现</b>：<br>
+  　顺序接龙时第 k 个人要读前 k−1 份发言，人数翻倍、代价四倍。<br>
+  <b>例：9 人的「专家会诊」只有 9 次调用（看着便宜），但注入 36 份 —— 它才是贵的那个。</b><br>
+  下表按<b>各模式推荐角色组的实际席位数</b>估算（不是按 12 个模型全上）。
+</div>
+<table class="costoverview">
+      <thead><tr><th>模式</th><th class="num">席位</th><th class="num">单轮调用</th>
+        <th class="num">轮数上限</th><th class="num">最坏调用</th><th class="num">最坏注入份数</th>
+        <th>档位</th><th>主要开销 / 建议</th></tr></thead>
+      <tbody><tr class="">
+        <td><a class="mlink" href="#mode-broadcast">广播</a></td>
+        <td class="num">9</td>
+        <td class="num">9</td>
+        <td class="num">1</td>
+        <td class="num"><b>9</b></td>
+        <td class="num">0<div class="mini"><i style="width:0%;background:#7fd8a0"></i></div></td>
+        <td><span class="costtier t-light">轻</span></td>
+        <td class="cnote">成本很低，放心开</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-review">共同审阅</a></td>
+        <td class="num">3</td>
+        <td class="num">5</td>
+        <td class="num">1</td>
+        <td class="num"><b>5</b></td>
+        <td class="num">7<div class="mini"><i style="width:4%;background:#7fd8a0"></i></div></td>
+        <td><span class="costtier t-light">轻</span></td>
+        <td class="cnote">成本很低，放心开</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-assist">协助</a></td>
+        <td class="num">7</td>
+        <td class="num">6</td>
+        <td class="num">1</td>
+        <td class="num"><b>6</b></td>
+        <td class="num">9<div class="mini"><i style="width:5%;background:#7fd8a0"></i></div></td>
+        <td><span class="costtier t-light">轻</span></td>
+        <td class="cnote">成本很低，放心开</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-iterate">反复修正</a></td>
+        <td class="num">5</td>
+        <td class="num">4</td>
+        <td class="num">5</td>
+        <td class="num"><b>20</b></td>
+        <td class="num">20<div class="mini"><i style="width:10%;background:#ffd479"></i></div></td>
+        <td><span class="costtier t-medium">中</span></td>
+        <td class="cnote">最多循环 5 轮 → 最坏 20 次调用；收敛判据生效会提前停（判据失效时才跑满）</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-debate">交叉辩论</a></td>
+        <td class="num">9</td>
+        <td class="num">18</td>
+        <td class="num">1</td>
+        <td class="num"><b>18</b></td>
+        <td class="num">117<div class="mini"><i style="width:59%;background:#ffd479"></i></div></td>
+        <td><span class="costtier t-medium">中</span></td>
+        <td class="cnote">阶段「对辩」注入 117 份，是主要开销（顺序接龙：第 k 人读前 k-1 份 → O(n²)）</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-panel">专家会诊</a></td>
+        <td class="num">7</td>
+        <td class="num">8</td>
+        <td class="num">1</td>
+        <td class="num"><b>8</b></td>
+        <td class="num">28<div class="mini"><i style="width:14%;background:#7fd8a0"></i></div></td>
+        <td><span class="costtier t-light">轻</span></td>
+        <td class="cnote">阶段「会诊」注入 21 份，是主要开销（顺序接龙：第 k 人读前 k-1 份 → O(n²)）</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-chairman">主席点名</a></td>
+        <td class="num">9</td>
+        <td class="num">3</td>
+        <td class="num">4</td>
+        <td class="num"><b>12</b></td>
+        <td class="num">12<div class="mini"><i style="width:6%;background:#7fd8a0"></i></div></td>
+        <td><span class="costtier t-light">轻</span></td>
+        <td class="cnote">最多循环 4 轮 → 最坏 12 次调用；收敛判据生效会提前停（判据失效时才跑满）</td>
+      </tr><tr class="">
+        <td><a class="mlink" href="#mode-divide">分头攻克</a></td>
+        <td class="num">7</td>
+        <td class="num">9</td>
+        <td class="num">1</td>
+        <td class="num"><b>9</b></td>
+        <td class="num">8<div class="mini"><i style="width:4%;background:#7fd8a0"></i></div></td>
+        <td><span class="costtier t-light">轻</span></td>
+        <td class="cnote">成本很低，放心开</td>
+      </tr><tr class="hi">
+        <td><a class="mlink" href="#mode-tournament">招标评审</a></td>
+        <td class="num">7</td>
+        <td class="num">14</td>
+        <td class="num">3</td>
+        <td class="num"><b>42</b></td>
+        <td class="num">42<div class="mini"><i style="width:21%;background:#ff8080"></i></div></td>
+        <td><span class="costtier t-heavy">重</span></td>
+        <td class="cnote">最多循环 3 轮 → 最坏 42 次调用；收敛判据生效会提前停（判据失效时才跑满）</td>
+      </tr><tr class="hi">
+        <td><a class="mlink" href="#mode-build">工程交付</a></td>
+        <td class="num">7</td>
+        <td class="num">24</td>
+        <td class="num">4</td>
+        <td class="num"><b>96</b></td>
+        <td class="num">432<div class="mini"><i style="width:100%;background:#ff8080"></i></div></td>
+        <td><span class="costtier t-heavy">重</span></td>
+        <td class="cnote">阶段「集成验证」注入 91 份，是主要开销（顺序接龙：第 k 人读前 k-1 份 → O(n²)）</td>
+      </tr></tbody></table>
+<div class="varnote">
+  <b>想省钱，按这个顺序动手</b>（从最有效到最笨）：<br>
+  ① <b>减人</b> —— panel / debate 的成本随人数<b>平方</b>增长，9 人砍到 6 人比换模型有用得多。<br>
+  ② <b>用 panelGroupSize 分组</b> —— 9 人分 3 组，会诊阶段的注入量从 36 份降到 9 份。<br>
+  ③ <b>换轻档模式</b> —— 同样的问题，「协助」（15 次）比「招标评审」（75 次）便宜 5 倍。<br>
+  ④ <b>别硬顶轮数上限</b> —— 循环模式的判据生效时会提前停；判据若"降级"（缺输入）才会跑满，界面上会红字告警。<br>
+  ⚠ <b>「验证过了吗」不能算成 0 成本</b>：文本层判据（judgeBuildPass）只用来"承认失败"，
+  自称"通过"一律不采信 —— 真判据必须来自真实编译/运行结果。
+</div>
+
+<h2>随机是假的吗？<small>同一角色组 product-9，三个不同种子</small></h2>
+<div class="variants">
+<div class="var">
+  <h5>seed = demo-1</h5>
+  <div class="vr"><span>架构师</span><span>Google API (Gemini)</span></div><div class="vr"><span>成本分析师</span><span>月之暗面-Kimi</span></div><div class="vr"><span>执行步骤</span><span>OpenAI-ChatGPT</span></div><div class="vr"><span>红队</span><span>谷歌-Gemini</span></div><div class="vr"><span>合规审查</span><span>DeepSeek API</span></div><div class="vr"><span>事实核查</span><span>Agne API</span></div><div class="vr"><span>用户代言</span><span>百度-文心</span></div><div class="vr"><span>产品经理</span><span>字节跳动-豆包</span></div><div class="vr"><span>主持助理</span><span>深度求索-DeepSeek</span></div>
+</div><div class="var">
+  <h5>seed = demo-2</h5>
+  <div class="vr"><span>架构师</span><span>OpenAI-ChatGPT</span></div><div class="vr"><span>成本分析师</span><span>谷歌-Gemini</span></div><div class="vr"><span>执行步骤</span><span>月之暗面-Kimi</span></div><div class="vr"><span>红队</span><span>DeepSeek API</span></div><div class="vr"><span>合规审查</span><span>Google API (Gemini)</span></div><div class="vr"><span>事实核查</span><span>深度求索-DeepSeek</span></div><div class="vr"><span>用户代言</span><span>Agne API</span></div><div class="vr"><span>产品经理</span><span>字节跳动-豆包</span></div><div class="vr"><span>主持助理</span><span>阿里巴巴-通义千问</span></div>
+</div><div class="var">
+  <h5>seed = demo-3</h5>
+  <div class="vr"><span>架构师</span><span>OpenAI-ChatGPT</span></div><div class="vr"><span>成本分析师</span><span>DeepSeek API</span></div><div class="vr"><span>执行步骤</span><span>月之暗面-Kimi</span></div><div class="vr"><span>红队</span><span>深度求索-DeepSeek</span></div><div class="vr"><span>合规审查</span><span>腾讯-元宝</span></div><div class="vr"><span>事实核查</span><span>谷歌-Gemini</span></div><div class="vr"><span>用户代言</span><span>百度-文心</span></div><div class="vr"><span>产品经理</span><span>Agne API</span></div><div class="vr"><span>主持助理</span><span>Google API (Gemini)</span></div>
+</div>
+</div>
+<div class="varnote">
+  三套编制各不相同 —— 说明「随机」是真的在随机。<br>
+  但<b>没有任何一套违反能力门槛</b>：红队位永远给推理≥4的、书记员位永远给速度≥4的。<br>
+  机制是「<b>先按能力门槛一票否决，再在够格的人里按适配分加权随机</b>」——所以随机只发生在"够格的人之间"，不会出现错配。
+</div>
+
+<h2>第四步：12 个模型各自强在哪、弱在哪<small>八维能力是选角的唯一依据</small></h2>
+<table>
+  <thead><tr>
+    <th style="width:170px">模型</th>
+    <th style="width:290px">八维能力（1–5）</th>
+    <th style="width:290px">优势 / 缺点</th>
+    <th style="width:230px">最合适 / 要回避的角色</th>
+    <th>会上注意事项</th>
+  </tr></thead>
+  <tbody>
+  <tr>
+    <td class="mname">
+      <b>深度求索-DeepSeek</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 推理链完整，能自己发现隐含矛盾</div><div class="p">+ 中文术语准，几乎不需要解释背景</div><div class="p">+ 输出结构稳定，编号/表格不易跑形</div>
+        <div class="c">− 含思考链，响应最慢的一档（实测 34s+）</div><div class="c">− 长回复时容易在&quot;思考中&quot;阶段被判提前完成</div></td>
+    <td class="roles"><span class="tag best">红队</span><span class="tag best">架构师</span><span class="tag best">事实核查</span></td>
+    <td class="note">当质证/架构这类&quot;要深想&quot;的角色最值；别当书记员，它慢而且写得太长。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>OpenAI-ChatGPT</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 综合最均衡，长文结构化输出最稳</div><div class="p">+ 能主动画架构图/表格（HTML 渲染）</div><div class="p">+ 多模态理解强，能读截图里的表格</div>
+        <div class="c">− 中文偶尔带英文句式</div><div class="c">− 长会话后期会忘掉早期的角色设定</div></td>
+    <td class="roles"><span class="tag best">架构师</span><span class="tag best">红队</span><span class="tag best">执行者</span><span class="tag best">产品经理</span></td>
+    <td class="note">通用主力。要&quot;一眼能看懂的结构化产出&quot;就交给它。多轮会议里注意重述角色设定。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>谷歌-Gemini</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 超长上下文，塞进整份长材料不丢细节</div><div class="p">+ 多模态最强：读图、读版式、读手写</div><div class="p">+ 整合搜索结果给事实性回答</div>
+        <div class="c">− 安全策略敏感，偶发中途拒答（实测会弹人机验证）</div><div class="c">− 输入框是 Quill，自动发送需专门适配</div></td>
+    <td class="roles"><span class="tag best">检索员</span><span class="tag best">事实核查</span><span class="tag best">数据分析</span></td>
+    <td class="note">给它&quot;长材料 + 找事实&quot;的活；别让它当唯一收敛者，它有拒答风险，会开完没结论。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>月之暗面-Kimi</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 长文本摘要与信息抽取扎实</div><div class="p">+ 中文口语自然，读起来不像翻译腔</div><div class="p">+ 联网检索整合能力强，会给来源</div>
+        <div class="c">− 深度推理一般，遇到多步反证论证会绕</div><div class="c">− 偏好总结，容易被要求&quot;挑错&quot;时给出温和意见</div></td>
+    <td class="roles"><span class="tag best">检索员</span><span class="tag best">书记员</span><span class="tag best">用户代言</span></td>
+    <td class="note">检索员/书记员的最优解。让它挑错要额外强调&quot;必须列编号反例&quot;，否则它会给你温和评价。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>字节跳动-豆包</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 响应最快的一档，适合当主持/节奏控制者</div><div class="p">+ 中文口语化最好，说人话能力强</div><div class="p">+ 移动端产品打磨好，链路稳定</div>
+        <div class="c">− 明显谄媚倾向：容易附和上一条发言</div><div class="c">− 深度推理弱，做多步反驳会停在表面</div><div class="c">− 长文输出信息密度低（灌水）</div></td>
+    <td class="roles"><span class="tag best">用户代言</span><span class="tag best">产品经理</span><span class="tag best">通才</span></td>
+    <td class="note">当&quot;最挑剔的用户&quot;很合适（口语化）。绝不能让它单独承担质证——它会顺着别人说。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>阿里巴巴-通义千问</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 中文公文/报告体最规范</div><div class="p">+ 文档处理与表格整理扎实</div><div class="p">+ 办事风格稳，不轻易跑偏</div>
+        <div class="c">− 输出保守，倾向给&quot;两面都说说&quot;的结论</div><div class="c">− 创新性观点少</div></td>
+    <td class="roles"><span class="tag best">书记员</span><span class="tag best">执行者</span><span class="tag best">合规官</span></td>
+    <td class="note">收敛与落地类角色的稳选择。要它给立场必须明确点名&quot;必须选一个并说明理由&quot;。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>腾讯-元宝</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 微信公众号/腾讯生态内容检索独有优势</div><div class="p">+ 中文社交语境理解好</div><div class="p">+ 联网检索响应快</div>
+        <div class="c">− 深度论证弱，倾向罗列信息</div><div class="c">− 结构化输出不稳定</div></td>
+    <td class="roles"><span class="tag best">检索员</span><span class="tag best">用户代言</span></td>
+    <td class="note">需要&quot;中文互联网上大家怎么看&quot;时交给它。不要让它做架构或成本核算。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>百度-文心</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 中文知识库覆盖面广</div><div class="p">+ 百度系检索联动</div>
+        <div class="c">− 套话多，实质性内容密度低</div><div class="c">− 质证时会给&quot;还需具体分析&quot;这类回避结论</div><div class="c">− 实测会出现验证码阻断（会议中直接掉线）</div></td>
+    <td class="roles"><span class="tag best">通才</span><span class="tag best">检索员</span></td>
+    <td class="note">当作第九个补充视角即可。它掉线概率最高，不要放进关键路径（如收敛者）。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>谷歌-搜索</b>
+      <i class="c-web">网页版</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:20%;background:#ff8080"></i><b>1</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:20%;background:#ff8080"></i><b>1</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:20%;background:#ff8080"></i><b>1</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 纯检索：给它关键词，返回结果页</div><div class="p">+ 极快，无对话开销</div>
+        <div class="c">− ★ 不是对话模型：无角色扮演能力、无长文输出</div><div class="c">− 把角色前缀拼进 q= 会污染查询语义</div></td>
+    <td class="roles"><span class="tag best">检索员</span></td>
+    <td class="note">只当检索员，且不要注入角色前缀（会把查询串搞乱）。它是 9 宫格里的&quot;工具&quot;不是&quot;人&quot;。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>DeepSeek API</b>
+      <i class="c-api">API</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:20%;background:#ff8080"></i><b>1</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:20%;background:#ff8080"></i><b>1</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 同款推理能力，但速度快一个量级（不必等网页渲染）</div><div class="p">+ 稳定可编程，无验证码/无登录失效</div><div class="p">+ 可精确控制长度与格式</div>
+        <div class="c">− 无联网能力（不能自己查证）</div><div class="c">− 计费（长会成本随轮数线性上涨）</div></td>
+    <td class="roles"><span class="tag best">主持助理</span><span class="tag best">架构师</span><span class="tag best">红队</span></td>
+    <td class="note">★ 主席/主持角色的唯一正确选择：每一轮都要它即时判断，网页版会把会拖到分钟级。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>Agne API</b>
+      <i class="c-api">API</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:60%;background:#ffd479"></i><b>3</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:20%;background:#ff8080"></i><b>1</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 极快，适合高频短任务（点名、判停、记账）</div><div class="p">+ 多模型族可选（含图像/视频，会议中用不到）</div>
+        <div class="c">− 深度推理中等</div><div class="c">− 上下文偏短，不能塞长材料</div></td>
+    <td class="roles"><span class="tag best">主持助理</span><span class="tag best">书记员</span></td>
+    <td class="note">当会议调度助手（判停、点名、生成轮纪要）性价比最高。</td>
+  </tr><tr>
+    <td class="mname">
+      <b>Google API (Gemini)</b>
+      <i class="c-api">API</i>
+    </td>
+    <td><div class="traits"><span class="tr"><em>推理</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>中文</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>结构化</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>速度</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>长文</em><span class="bar"><i style="width:100%;background:#4ade80"></i><b>5</b></span></span><span class="tr"><em>多模态</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span><span class="tr"><em>检索</em><span class="bar"><i style="width:40%;background:#ff9f6b"></i><b>2</b></span></span><span class="tr"><em>稳定性</em><span class="bar"><i style="width:80%;background:#7fd8a0"></i><b>4</b></span></span></div></td>
+    <td class="pros"><div class="p">+ 超长上下文 + 高速，长材料压缩的最佳执行者</div><div class="p">+ 多模态可读图</div>
+        <div class="c">− 需注意模型名格式（走 generateContent 时不能用带前缀的 id）</div><div class="c">− 计费</div></td>
+    <td class="roles"><span class="tag best">主持助理</span><span class="tag best">数据分析</span><span class="tag best">事实核查</span></td>
+    <td class="note">当&quot;全局压缩器&quot;：每 5 轮把全部发言压成摘要，比网页版快得多。</td>
+  </tr>
+  </tbody>
+</table>
+
+<h2>第五步：角色组里每把椅子要什么能力<small>这是"门槛"的来源</small></h2>
+<div class="sets"><div class="setcard">
+    <h4>三人组（建设 / 质证 / 收敛） <span class="cnt">3 席</span></h4>
+    <ul class="setlist"><li><b>架构师</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 结构化×4</span></li><li><b>红队</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 稳定性×3</span></li><li><b>主持助理</b>
+      <span class="floor">门槛 结构化≥4 稳定性≥4</span>
+      <span class="wgt">看重 结构化×5 稳定性×5</span></li></ul>
+  </div><div class="setcard">
+    <h4>三人审阅（事实 / 体验 / 归并） <span class="cnt">3 席</span></h4>
+    <ul class="setlist"><li><b>事实核查</b>
+      <span class="floor">门槛 推理≥3 稳定性≥3</span>
+      <span class="wgt">看重 推理×4 结构化×4</span></li><li><b>用户代言</b>
+      <span class="floor">门槛 中文≥4</span>
+      <span class="wgt">看重 中文×5 稳定性×3</span></li><li><b>书记员</b>
+      <span class="floor">门槛 速度≥4</span>
+      <span class="wgt">看重 速度×5 结构化×4</span></li></ul>
+  </div><div class="setcard">
+    <h4>风险审查五人组 <span class="cnt">5 席</span></h4>
+    <ul class="setlist"><li><b>红队</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 稳定性×3</span></li><li><b>合规官</b>
+      <span class="floor">门槛 稳定性≥3</span>
+      <span class="wgt">看重 中文×4 稳定性×4</span></li><li><b>事实核查</b>
+      <span class="floor">门槛 推理≥3 稳定性≥3</span>
+      <span class="wgt">看重 推理×4 结构化×4</span></li><li><b>执行者</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 中文×4</span></li><li><b>主持助理</b>
+      <span class="floor">门槛 结构化≥4 稳定性≥4</span>
+      <span class="wgt">看重 结构化×5 稳定性×5</span></li></ul>
+  </div><div class="setcard">
+    <h4>技术选型七人组 <span class="cnt">7 席</span></h4>
+    <ul class="setlist"><li><b>架构师</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 结构化×4</span></li><li><b>成本分析师</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 推理×3</span></li><li><b>执行者</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 中文×4</span></li><li><b>红队</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 稳定性×3</span></li><li><b>数据分析</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 推理×4</span></li><li><b>产品经理</b>
+      <span class="floor">门槛 中文≥3</span>
+      <span class="wgt">看重 结构化×4 中文×4</span></li><li><b>主持助理</b>
+      <span class="floor">门槛 结构化≥4 稳定性≥4</span>
+      <span class="wgt">看重 结构化×5 稳定性×5</span></li></ul>
+  </div><div class="setcard">
+    <h4>产品评审九人组 <span class="cnt">9 席</span></h4>
+    <ul class="setlist"><li><b>架构师</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 结构化×4</span></li><li><b>成本分析师</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 推理×3</span></li><li><b>执行者</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 中文×4</span></li><li><b>红队</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 稳定性×3</span></li><li><b>合规官</b>
+      <span class="floor">门槛 稳定性≥3</span>
+      <span class="wgt">看重 中文×4 稳定性×4</span></li><li><b>事实核查</b>
+      <span class="floor">门槛 推理≥3 稳定性≥3</span>
+      <span class="wgt">看重 推理×4 结构化×4</span></li><li><b>用户代言</b>
+      <span class="floor">门槛 中文≥4</span>
+      <span class="wgt">看重 中文×5 稳定性×3</span></li><li><b>产品经理</b>
+      <span class="floor">门槛 中文≥3</span>
+      <span class="wgt">看重 结构化×4 中文×4</span></li><li><b>主持助理</b>
+      <span class="floor">门槛 结构化≥4 稳定性≥4</span>
+      <span class="wgt">看重 结构化×5 稳定性×5</span></li></ul>
+  </div><div class="setcard">
+    <h4>发散九人组（多视角挑问题） <span class="cnt">9 席</span></h4>
+    <ul class="setlist"><li><b>红队</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 稳定性×3</span></li><li><b>反方</b>
+      <span class="floor">门槛 推理≥3</span>
+      <span class="wgt">看重 推理×4 中文×4</span></li><li><b>事实核查</b>
+      <span class="floor">门槛 推理≥3 稳定性≥3</span>
+      <span class="wgt">看重 推理×4 结构化×4</span></li><li><b>合规官</b>
+      <span class="floor">门槛 稳定性≥3</span>
+      <span class="wgt">看重 中文×4 稳定性×4</span></li><li><b>新人视角</b>
+      <span class="floor">门槛 无</span>
+      <span class="wgt">看重 中文×3 稳定性×3</span></li><li><b>用户代言</b>
+      <span class="floor">门槛 中文≥4</span>
+      <span class="wgt">看重 中文×5 稳定性×3</span></li><li><b>数据分析</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 推理×4</span></li><li><b>架构师</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 结构化×4</span></li><li><b>书记员</b>
+      <span class="floor">门槛 速度≥4</span>
+      <span class="wgt">看重 速度×5 结构化×4</span></li></ul>
+  </div><div class="setcard">
+    <h4>工程交付七人组（架构 + 实现 + 集成） <span class="cnt">7 席</span></h4>
+    <ul class="setlist"><li><b>产品经理</b>
+      <span class="floor">门槛 中文≥3</span>
+      <span class="wgt">看重 结构化×4 中文×4</span></li><li><b>用户代言</b>
+      <span class="floor">门槛 中文≥4</span>
+      <span class="wgt">看重 中文×5 稳定性×3</span></li><li><b>架构师</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 结构化×4</span></li><li><b>执行者</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 中文×4</span></li><li><b>成本分析师</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 推理×3</span></li><li><b>integrator</b>
+      <span class="floor">门槛 结构化≥4</span>
+      <span class="wgt">看重 结构化×5 推理×4</span></li><li><b>红队</b>
+      <span class="floor">门槛 推理≥4</span>
+      <span class="wgt">看重 推理×5 稳定性×3</span></li></ul>
+  </div></div>
+
+</body>
+</html>

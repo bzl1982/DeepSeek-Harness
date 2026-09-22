@@ -1,0 +1,953 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>通辽会议 · Phase 0 测试台</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0b0e14; color: #e6e6e6; font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    .header { padding: 10px 16px; background: #16202e; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #2a3a4a; }
+    .header h1 { font-size: 14px; color: #4da3ff; font-weight: 600; }
+    .header .tag { font-size: 11px; color: #8aa; background: #1d2836; border: 1px solid #2a3a4a; border-radius: 4px; padding: 2px 8px; }
+    .header input { flex: 1; padding: 7px 12px; background: #0b0e14; color: #e6e6e6; border: 1px solid #2a3a4a; border-radius: 6px; font-size: 13px; outline: none; }
+    .header input:focus { border-color: #4da3ff; }
+    .header button { padding: 7px 16px; background: #4da3ff; color: #fff; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .header button:disabled { background: #2a3a4a; color: #667; cursor: not-allowed; }
+    .header button.ghost { background: #2a3a4a; color: #cde; }
+
+    .main { flex: 1; display: flex; overflow: hidden; }
+    .grid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 6px; }
+    .cell { position: relative; background: #121820; border: 1px solid #2a3a4a; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+    .cell webview { flex: 1; width: 100%; border: none; min-height: 0; }
+    .cell .bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px; background: #0d1118; border-top: 1px solid #2a3a4a; font-size: 11px; }
+    .cell .name { color: #8fc7ff; }
+    .cell .state { font-family: Consolas, monospace; }
+    .s-COMPLETED { color: #4ade80; }
+    .s-READY, .s-OFFLINE { color: #667; }
+    .s-SENDING, .s-THINKING, .s-STREAMING, .s-UPLOADING { color: #ffd479; }
+    .s-TIMEOUT, .s-CAPTCHA_REQUIRED, .s-UPLOAD_FAILED, .s-RATE_LIMIT, .s-UNKNOWN_ERROR, .s-DOM_CHANGED, .s-LOGIN_EXPIRED, .s-NETWORK_ERROR { color: #ff8080; }
+
+    .side { width: 380px; background: #0f141c; border-left: 1px solid #2a3a4a; display: flex; flex-direction: column; }
+    .side h2 { padding: 9px 12px; font-size: 12px; color: #4da3ff; border-bottom: 1px solid #2a3a4a; }
+    .log { flex: 1; overflow-y: auto; padding: 8px 12px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.6; color: #9ab; }
+    .log .ok { color: #4ade80; }
+    .log .bad { color: #ff8080; }
+    .log .warn { color: #ffd479; }
+    .log .hd { color: #4da3ff; margin-top: 6px; }
+    .summary { padding: 8px 12px; border-top: 1px solid #2a3a4a; font-size: 11px; color: #9ab; }
+    .header label.pick { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #8aa; white-space: nowrap; }
+    .header select { padding: 6px 8px; background: #0b0e14; color: #e6e6e6; border: 1px solid #2a3a4a; border-radius: 6px; font-size: 12px; outline: none; max-width: 160px; }
+    .header select:focus { border-color: #4da3ff; }
+    .flow { padding: 6px 12px; background: #0d1118; border-bottom: 1px solid #2a3a4a; font-size: 11px; color: #9ab; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .flow .ph { display: flex; align-items: center; gap: 4px; }
+    .flow .ph .n { color: #4da3ff; font-weight: 600; }
+    .flow .ph .sp { color: #4ade80; }
+    .flow .ph .sl { color: #8aa; }
+    .flow .warn { color: #ffd479; }
+    .cell .role { color: #ffd479; font-size: 10px; }
+
+    /* 模式场景卡：选模式时把「什么时候用」讲清楚（用户需求：模式要看得懂） */
+    .scene { padding: 7px 14px; background: #101822; border-bottom: 1px solid #2a3a4a; font-size: 11px; line-height: 1.7; color: #9ab; display: none; }
+    .scene.on { display: block; }
+    .scene b { color: #4da3ff; font-weight: 600; }
+    .scene .k { color: #8aa; }
+    .scene .no { color: #ffa0a0; }
+    .scene .ok { color: #4ade80; }
+
+    /* 左列：webview 格子 + API 席位行 */
+    .left { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+    .apirow { display: none; gap: 4px; padding: 6px; border-top: 1px solid #2a3a4a; background: #0d1118; }
+    .apirow.on { display: flex; }
+    .apicell { flex: 1; min-width: 0; background: #121820; border: 1px solid #2a3a4a; border-radius: 6px; display: flex; flex-direction: column; max-height: 168px; }
+    .apicell .bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px; background: #0d1118; border-bottom: 1px solid #2a3a4a; font-size: 11px; }
+    .apicell .txt { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 11px; line-height: 1.6; color: #9ab; white-space: pre-wrap; word-break: break-word; }
+    .apicell .role { color: #ffd479; font-size: 10px; }
+    .apirow .picker { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #8aa; white-space: nowrap; padding: 0 6px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>通辽会议 · Phase 0 测试台</h1>
+    <span class="tag">独立运行 · 不接入客户端</span>
+    <label class="pick">会议模式<select id="sel-mode"></select></label>
+    <label class="pick">角色组<select id="sel-set"></select></label>
+    <button id="btn-recast" class="ghost" title="用新的随机种子按模型能力重新选角">重排角色</button>
+    <input id="topic" value="请评审「通辽会议接入微软多智能体框架」的可行路径。" />
+    <button id="btn-run">开始会议</button>
+    <button id="btn-clear" class="ghost">清空日志</button>
+  </div>
+
+  <div class="flow" id="flow"></div>
+  <div class="scene" id="scene"></div>
+
+  <div class="main">
+    <div class="left">
+      <div class="grid" id="grid"></div>
+      <div class="apirow" id="apirow"></div>
+    </div>
+    <div class="side">
+      <h2>会议日志</h2>
+      <div class="log" id="log"></div>
+      <div class="summary" id="summary">等待开始…</div>
+    </div>
+  </div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   测试台 renderer：把 Electron webview 包装成 driver，
+   接到 Phase 0 的 Meeting Core 上跑真实网页 AI。
+   （core/ 与 adapters/ 均复用测试台自己的实现）
+   ══════════════════════════════════════════════════════════════ */
+const { Meeting } = require('../core/meeting-model');
+const { MeetingOrchestrator } = require('../core/orchestrator');
+const { STRATEGY } = require('../core/speaker');
+// ★ 本轮新增：角色库 + 会议模式 + 上下文组装（core 层零改动，只在这里接线）
+const { assignRoles, toPromptRoleMap, validateAssignment, listRoleSets } = require('../core/roles');
+const { listModes, planPhases, selectSlice, getMode, shouldStop, SLICE } = require('../core/modes');
+/* ★ 第五轮接线：让"可计算判据"真正生效（此前 bordaMeans/tournamentStop 是孤儿代码）。
+ *   这条链路 = 消息打 kind → CANDIDATES 匿名候选 → 评标输出名次表 → parseBallots 解析
+ *   → bordaMeans 算胜出 → 喂给定标席 → winnerId 回传 shouldStop 判收敛。 */
+const {
+  parseBallots, bordaMeans, estimateCost, anonymizeCandidates,
+  judgeBuildPass, buildVerdictPrompt,
+} = require('../core/modes');
+const { composePrompt } = require('../core/context-strategy');
+// ★ 本轮新增：能力感知选角 + 模型能力档案 + API 通道
+const { castRoles } = require('../core/casting');
+const { getModel } = require('../core/models');
+const { createApiAdapter } = require('../adapters/api-adapter');
+const { getRedacted } = require('../adapters/dsh-config');
+const { createWebAdapter } = require('../adapters/web-adapter');
+const dsWeb = require('../adapters/deepseek-web');
+const genericWeb = require('../adapters/generic-web');
+
+// 先用 3 个 AI 验证链路（减少登录负担）；跑通后加满 9 个
+const PROVIDERS = [
+  { id: 'deepseek-web', name: '深度求索-DeepSeek', url: 'https://chat.deepseek.com/', part: 'persist:agent-deepseek-web', profile: dsWeb.profile },
+  { id: 'chatgpt-web', name: 'OpenAI-ChatGPT', url: 'https://chatgpt.com/', part: 'persist:agent-chatgpt-web', profile: genericWeb.profile },
+  { id: 'gemini-web', name: '谷歌-Gemini', url: 'https://gemini.google.com/app', part: 'persist:agent-gemini-web', profile: genericWeb.profile },
+];
+
+/* ★ 双管齐下：API 通道席位。
+ *   网页版占格子看着爽但慢；API 快但无联网。两条路同场开会。
+ *   状态来自 2026-09-22 的实测（node tools/check-api.js --live）：
+ *     deepseek ✔ 1.2s   google ✔ 11.9s   agne ✘ 余额为 0
+ *   所以默认只勾前两家；agne 留开关但默认关，避免会议里平白掉一个席位。 */
+const API_CANDIDATES = [
+  { key: 'deepseek', label: 'DeepSeek API', on: true, note: '实测 1.2s 可用 · 适合主席/判停' },
+  { key: 'google', label: 'Google API', on: true, note: '实测 11.9s 可用 · 长文压缩' },
+  { key: 'agne', label: 'Agne API', on: false, note: '实测 403：账户余额为 0' },
+];
+
+/* ---------- 模式 & 角色 状态 ---------- */
+let currentMode = 'broadcast';
+let currentSet = 'trio';
+let roleMap = {};          // providerId -> 角色前缀文本（由 applyRoles 填充）
+let assignment = [];       // 角色分配结果（供 planPhases 按职能挑发言人）
+let castSeed = 'demo-1';   // ★ 选角种子：同一个种子 = 同一套编制；点「重排角色」换种子
+let castLedger = [];       // ★ 每个席位的候选排名（点徽章可看"为什么是它"）
+
+/* ★ 所有 DOM 引用必须集中在这里声明。
+ *   教训（2026-09-22）：renderApiSeats() 会在文件中段被调用，它内部会走
+ *   applyRoles() → renderFlow() → 用到 flowEl / SLICE_CN。若这几个 const 拖到
+ *   文件后段才声明，就会踩 TDZ（Cannot access 'flowEl' before initialization），
+ *   而这个异常发生在脚本顶层 → 整个 renderer 一行都不执行，
+ *   表现是「下拉为空、场景卡空白、日志无输出」——看着像没接线，其实是崩了。 */
+const grid = document.getElementById('grid');
+const apirow = document.getElementById('apirow');
+const logEl = document.getElementById('log');
+const summaryEl = document.getElementById('summary');
+const topicEl = document.getElementById('topic');
+const sceneEl = document.getElementById('scene');
+const flowEl = document.getElementById('flow');
+const selMode = document.getElementById('sel-mode');
+const selSet = document.getElementById('sel-set');
+const btnRun = document.getElementById('btn-run');
+
+/** 上下文切片 → 中文人话（流程条与场景卡共用） */
+const SLICE_CN = {
+  task: '只看本轮任务', material: '只看待审材料', others: '只看别人发言',
+  all: '看全部发言', critiques: '只看批评清单', draft: '只看当前草稿', none: '不带上下文',
+};
+
+const cells = new Map();      // providerId -> { wv, stateEl, roleEl }
+const apiCells = new Map();   // apiId -> { adapter, txtEl, stateEl, roleEl }
+const apiAdapters = {};       // 交给编排器的 API 适配器
+
+/* ---------- 日志 ---------- */
+function log(msg, cls = '') {
+  const div = document.createElement('div');
+  if (cls) div.className = cls;
+  div.textContent = msg;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ---------- 状态灯绑定 ----------
+ * 问题：API 席位在 meeting 建好之前就创建了（renderApiSeats 紧跟 3 宫格循环），
+ * 那时还没有 meeting 对象可以 addAgent。所以这里做成"懒绑定"：
+ * meeting 一旦就绪，就把排队的绑定一次性执行；之后新增的立刻绑定。 */
+let meetingRef = null;
+const pendingLamps = [];
+function bindStateLamp(id, cell) {
+  if (!meetingRef) { pendingLamps.push([id, cell]); return; }
+  const sm = meetingRef.addAgent(id);
+  sm._onChange = (entry) => {
+    cell.stateEl.textContent = entry.state;
+    cell.stateEl.className = `state s-${entry.state}`;
+  };
+}
+
+/* ---------- 建 3 宫格 ---------- */
+for (const p of PROVIDERS) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.innerHTML = `
+    <div class="bar">
+      <span class="name">${p.name}</span>
+      <span class="role" data-role></span>
+      <span class="state s-OFFLINE" data-state>OFFLINE</span>
+    </div>`;
+  const wv = document.createElement('webview');
+  wv.setAttribute('partition', p.part);
+  wv.setAttribute('src', p.url);
+  wv.setAttribute('allowpopups', 'true');
+  cell.prepend(wv);
+  grid.appendChild(cell);
+  cells.set(p.id, { wv, stateEl: cell.querySelector('[data-state]'), roleEl: cell.querySelector('[data-role]'), provider: p });
+
+  wv.addEventListener('dom-ready', () => {
+    log(`[页面就绪] ${p.name}`, 'hd');
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════
+   API 席位（双管齐下）
+   —— 网页版走 webview，API 走 HTTP，两者同一契约，同场开会。
+   —— API 席位没有网页可看，所以卡片里显示「最后一条回复」。
+   ══════════════════════════════════════════════════════════════ */
+function renderApiSeats() {
+  // 清掉旧格子（保留最左边的勾选器）
+  apirow.querySelectorAll('.apicell').forEach((e) => e.remove());
+  apiCells.clear();
+  for (const k of Object.keys(apiAdapters)) delete apiAdapters[k];
+
+  const cfg = getRedacted({});
+  let built = 0;
+
+  for (const cand of API_CANDIDATES) {
+    if (!cand.on) continue;
+    const prov = cfg.providers.find((x) => x.key === cand.key);
+    if (!prov || !prov.hasKey) {
+      log(`[API 席位] ${cand.label} 不可用（${prov ? '无密钥' : '配置里没有'}），跳过`, 'warn');
+      continue;
+    }
+
+    const adapter = createApiAdapter({
+      providerKey: cand.key,
+      logger: ({ level, msg, data }) => {
+        if (level === 'warn') log(`[${cand.label}] ${msg} ${data ? JSON.stringify(data) : ''}`, 'warn');
+      },
+    });
+    const id = adapter.id;
+
+    const cell = document.createElement('div');
+    cell.className = 'apicell';
+    cell.innerHTML = `
+      <div class="bar">
+        <span class="name">${cand.label}</span>
+        <span class="role" data-role></span>
+        <span class="state s-READY" data-state>READY</span>
+      </div>
+      <div class="txt" data-txt>${adapter.describe().host} · ${adapter.describe().model}\n（API 通道：流结束 = 答完，无假完成风险）</div>`;
+    apirow.appendChild(cell);
+
+    const txtEl = cell.querySelector('[data-txt]');
+    const holder = { txtEl, stateEl: cell.querySelector('[data-state]'), roleEl: cell.querySelector('[data-role]'), label: cand.label };
+
+    // ★ 与网页版同一套装饰：角色前缀注入 + 回复文本回显
+    apiAdapters[id] = {
+      ...adapter,
+      async sendText(text) {
+        holder.stateEl.textContent = 'SENDING';
+        holder.stateEl.className = 'state s-SENDING';
+        holder.txtEl.textContent = `▸ ${cand.label} 正在生成…`;
+        const role = roleMap[id];
+        const composed = role ? composePrompt({ task: text, role, providerId: id }) : text;
+        return adapter.sendText(composed);
+      },
+      async waitForResponse(opts) {
+        const r = await adapter.waitForResponse(opts);
+        holder.stateEl.textContent = r.completion.done ? 'COMPLETED' : 'FAILED';
+        holder.stateEl.className = `state s-${r.completion.done ? 'COMPLETED' : 'UNKNOWN_ERROR'}`;
+        holder.txtEl.textContent = r.completion.done
+          ? `${String(r.text || '').trim() || '(空回复)'}\n\n— ${r.completion.elapsedMs}ms · ${r.completion.reason}`
+          : `✘ ${r.completion.reason}`;
+        return r;
+      },
+    };
+
+    apiCells.set(id, holder);
+    bindStateLamp(id, holder);
+    built += 1;
+  }
+
+  log(built
+    ? `[API 席位] 已挂 ${built} 个：${[...apiCells.keys()].join(', ')}`
+    : '[API 席位] 本轮没有启用任何 API 通道席位', built ? 'ok' : 'warn');
+
+  /* ★ 显隐（2026-09-22 修的第二个 bug）：
+   *   本行 CSS 是 .apirow{display:none} / .apirow.on{display:flex}，
+   *   但之前没有任何代码加过 'on' → API 席位明明挂上了却永远看不见。
+   *   判据用「有可勾选的提供方」而不是「已挂几个」：
+   *   否则用户把两个勾都取消后整行消失，就再也勾不回来了（死锁）。 */
+  const anyUsable = API_CANDIDATES.some((c) => {
+    const p = cfg.providers.find((x) => x.key === c.key);
+    return !!(p && p.hasKey);
+  });
+  apirow.classList.toggle('on', anyUsable);
+  if (!anyUsable) log('[API 席位] 配置里没有任何可用提供方，已隐藏该行', 'warn');
+
+  applyRoles();
+  renderFlow();
+}
+
+/* 勾选器（只建一次；改变勾选就重建席位） */
+(() => {
+  const box = document.createElement('div');
+  box.className = 'picker';
+  box.innerHTML = '<span>API 席位</span>';
+  const cfg = getRedacted({});
+  for (const cand of API_CANDIDATES) {
+    const prov = cfg.providers.find((x) => x.key === cand.key);
+    const ok = !!(prov && prov.hasKey);
+    const lab = document.createElement('label');
+    lab.style.display = 'flex';
+    lab.style.alignItems = 'center';
+    lab.style.gap = '3px';
+    lab.title = ok ? cand.note : '未取到密钥，无法启用';
+    lab.innerHTML = `<input type="checkbox" data-api="${cand.key}"${cand.on && ok ? ' checked' : ''}${ok ? '' : ' disabled'}>`
+      + `<span style="color:${ok ? '#8aa' : '#667'}">${cand.label.replace(' API', '')}</span>`;
+    lab.querySelector('input').addEventListener('change', (e) => {
+      cand.on = e.target.checked;
+      renderApiSeats();
+    });
+    box.appendChild(lab);
+  }
+  apirow.appendChild(box);
+})();
+
+renderApiSeats();
+
+/* ---------- 发送可靠性辅助（2026-09-22 第四轮：修 Quill 类编辑器卡输入框）----------
+   ★ 背景（实测铁证）：Gemini 的输入框是 Quill（div.ql-editor textarea new-input-ui）。
+     wv.insertText() 能把文本写进去，但 wv.sendInputEvent 的 Enter 对 Quill 无效，
+     而且【不抛异常】→ 原文就走不到 catch 兜底 → 文本永久卡在输入框里发不出去。
+     修法：回车之后校验「输入框是否真的清空了」，没清空就点页面自己的发送按钮。
+*/
+const COMPOSER_SEL = 'textarea:not([type="hidden"]), [contenteditable="true"], [role="textbox"]';
+const SEND_BTN_SEL = 'button[aria-label*="发送"], button[aria-label*="Send"], button[aria-label*="send"],'
+  + ' [data-testid*="send"], button[class*="send-button"]';
+
+/** 输入框里是否还有没发出去的内容 */
+async function composerFilled(wv) {
+  const raw = await wv.executeJavaScript(`
+    (function(){
+      function find(root){
+        var els = (root || document).querySelectorAll('${COMPOSER_SEL}');
+        for (var i = 0; i < els.length; i++) { if (els[i].offsetParent !== null) return els[i]; }
+        return null;
+      }
+      var el = find();
+      if (!el) return 'no-composer';
+      var txt = String(el.tagName === 'TEXTAREA' ? el.value : el.innerText);
+      return txt.trim().length > 0 ? 'filled' : 'empty';
+    })();
+  `).catch(() => 'err');
+  return raw === 'filled';
+}
+
+/** 点页面自己的发送按钮（返回是否点到） */
+async function clickComposerSend(wv) {
+  const raw = await wv.executeJavaScript(`
+    (function(){
+      var btn = document.querySelector('${SEND_BTN_SEL}');
+      if (!btn) return 'none';
+      if (btn.disabled) return 'disabled';
+      btn.click();
+      return 'clicked';
+    })();
+  `).catch(() => 'err');
+  return raw;
+}
+
+/* ---------- webview -> driver ---------- */
+function makeWebviewDriver(wv, providerId) {
+  return {
+    // 在页面里执行脚本并取回 JSON
+    evaluate: (script) => wv.executeJavaScript(script),
+
+    // 原生输入 + 回车（借 Electron 原生 API，比纯 JS 注入可靠）
+    sendText: async (text) => {
+      // 1) 先让页面把输入框聚焦
+      await wv.executeJavaScript(`
+        (async function(){
+          await new Promise(r => setTimeout(r, 200));
+          function findDeep(root){
+            if(!root) root = document;
+            var sel = 'textarea:not([type="hidden"]), [contenteditable="true"], [role="textbox"], input[type="text"]';
+            var els = root.querySelectorAll(sel);
+            for (var i=0;i<els.length;i++){ if (els[i].offsetParent !== null) return els[i]; }
+            var all = root.querySelectorAll('*');
+            for (var j=0;j<all.length;j++){ if (all[j].shadowRoot){ var f = findDeep(all[j].shadowRoot); if (f) return f; } }
+            return null;
+          }
+          var el = findDeep();
+          if (el) { el.focus(); el.click(); }
+        })();
+      `).catch(() => {});
+      await new Promise((r) => setTimeout(r, 350));
+
+      // 2) 原生输入（清空 -> 输入 -> 回车）
+      try {
+        wv.focus();
+        wv.sendInputEvent({ type: 'keyDown', keyCode: 'a', modifiers: ['ctrl'] });
+        wv.sendInputEvent({ type: 'keyUp', keyCode: 'a', modifiers: ['ctrl'] });
+        wv.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+        wv.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+        wv.insertText(text);
+        await new Promise((r) => setTimeout(r, 150));
+        wv.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        wv.sendInputEvent({ type: 'char', keyCode: 'Enter' });
+        wv.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+
+        // ★ 回车只对普通 textarea 站点可靠（DeepSeek / ChatGPT 实测能发）。
+        //   Quill 类编辑器（Gemini）不响应上面的 Enter 而且【不抛异常】→ 走不到下面 catch 兜底
+        //   → 文本永久卡在输入框。这里补一步校验：还有内容就点页面自己的「发送」按钮。
+        await new Promise((r) => setTimeout(r, 400));
+        if (await composerFilled(wv)) {
+          const how = await clickComposerSend(wv);
+          log(`[补发] ${providerId}: 回车未生效 → 点发送按钮(${how})`, how === 'clicked' ? '' : 'warn');
+          await new Promise((r) => setTimeout(r, 300));
+          if (await composerFilled(wv)) {
+            log(`[补发失败] ${providerId}: 输入框仍有内容，本条可能发不出去`, 'bad');
+          }
+        }
+      } catch (e) {
+        // 兜底：JS 注入 + 点发送按钮
+        await wv.executeJavaScript(`
+          (async function(){
+            var t = ${JSON.stringify(text)};
+            function findDeep(root){
+              if(!root) root = document;
+              var sel = 'textarea:not([type="hidden"]), [contenteditable="true"], [role="textbox"]';
+              var els = root.querySelectorAll(sel);
+              for (var i=0;i<els.length;i++){ if (els[i].offsetParent !== null) return els[i]; }
+              return null;
+            }
+            var el = findDeep();
+            if (!el) return;
+            el.focus();
+            if (el.tagName === 'TEXTAREA') {
+              var setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set;
+              if (setter) setter.call(el, t); else el.value = t;
+            } else { el.innerText = t; }
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: t, composed: true }));
+            await new Promise(r => setTimeout(r, 300));
+            var btn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], [data-testid*="send"]');
+            if (btn && !btn.disabled) btn.click();
+            else {
+              var ev = { key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true, composed:true };
+              el.dispatchEvent(new KeyboardEvent('keydown', ev));
+              el.dispatchEvent(new KeyboardEvent('keyup', ev));
+            }
+          })();
+        `).catch(() => {});
+      }
+    },
+
+    // 用 CDP 直接给 <input type=file> 塞文件（不模拟文件选择器，可靠得多）
+    setFiles: async (paths) => {
+      try {
+        if (!wv.debugger.isAttached()) {
+          wv.debugger.attach('1.3');
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        // 没有 file input 就造一个（部分站点是懒加载/自定义上传）
+        await wv.executeJavaScript(`
+          (function(){
+            var inp = document.querySelector('input[type="file"]');
+            if (!inp) {
+              inp = document.createElement('input');
+              inp.type = 'file'; inp.style.display = 'none';
+              document.body.appendChild(inp);
+            }
+            return true;
+          })();
+        `);
+        const root = await wv.debugger.sendCommand('DOM.getDocument', { depth: -1 });
+        const found = await wv.debugger.sendCommand('DOM.querySelector', {
+          nodeId: root.root.nodeId, selector: 'input[type="file"]',
+        });
+        if (!found.nodeId) return false;
+        await wv.debugger.sendCommand('DOM.setFileInputFiles', { files: paths, nodeId: found.nodeId });
+        await wv.executeJavaScript(`
+          (function(){
+            var inp = document.querySelector('input[type="file"]');
+            if (inp) { inp.dispatchEvent(new Event('change', { bubbles: true })); inp.dispatchEvent(new Event('input', { bubbles: true })); }
+          })();
+        `);
+        return true;
+      } catch (e) {
+        log(`[CDP 上传失败] ${providerId}: ${e.message}`, 'bad');
+        return false;
+      }
+    },
+
+    isReady: async () => true,
+    cancel: async () => { try { await wv.executeJavaScript('window.stop && window.stop();'); } catch (e) {} },
+    onStreamEnd: null, // 暂未接 CDP Network 域（DOM 信号已足够）
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   角色分配：能力感知选角（用户需求：随机设定角色要考虑模型能力）
+   ★ 角色绑席位不绑 provider —— 换一套角色组就是另一场会。
+   ★ 分配不再"按顺序硬发"，而是：能力门槛筛掉不合格的 → 在够格的人里
+     按适配分加权随机 → 每次换 seed 就是另一套编制，但永远不会错配。
+   ══════════════════════════════════════════════════════════════ */
+function applyRoles() {
+  /* ★ 先清空全部席位徽章（2026-09-22 修的第四个 bug）。
+   *   徽章是「本轮编制」的投影，不是历史记录。之前只写不清，
+   *   于是「上一轮被分配到、这一轮落选」的席位会留着旧角色名，
+   *   屏幕上看着就是「两个架构师」——像选角重复，其实 assignment 完全正确。 */
+  for (const c of [...cells.values(), ...apiCells.values()]) {
+    if (c.roleEl) { c.roleEl.textContent = ''; c.roleEl.title = ''; }
+  }
+
+  const ids = [...cells.keys(), ...apiCells.keys()];
+  const r = castRoles(ids, { set: currentSet, seed: castSeed });
+  assignment = r.assignment;
+  castLedger = r.ledger;
+  roleMap = toPromptRoleMap(r.assignment);
+
+  // 徽章：显示角色名，鼠标悬停看「为什么是它」
+  for (const x of r.assignment) {
+    const m = getModel(x.providerId);
+    const text = `${x.label}`;
+    const tip = `${m ? m.label : x.providerId} → ${x.label}\n适配 ${x.fitScore} 分 · ${x.reason}`;
+    const wc = cells.get(x.providerId);
+    if (wc && wc.roleEl) { wc.roleEl.textContent = text; wc.roleEl.title = tip; }
+    const ac = apiCells.get(x.providerId);
+    if (ac && ac.roleEl) { ac.roleEl.textContent = text; ac.roleEl.title = tip; }
+  }
+
+  // 落选提示（谁没上台、为什么）
+  for (const w of r.warnings) {
+    if (/落选|无合格人选|降级/.test(w)) log(`[选角] ${w}`, 'warn');
+  }
+  const v = validateAssignment(r.assignment);
+  if (!v.ok) log(`[角色组] ✘ ${v.errors.join('；')}`, 'bad');
+  return r.assignment;
+}
+
+/* 打印一份可读的选角表（点「重排角色」时看） */
+function logCasting() {
+  log(`[选角] 角色组「${currentSet}」· seed=${castSeed}`, 'hd');
+  for (const a of assignment) {
+    const m = getModel(a.providerId);
+    log(`   ${a.label.padEnd(6, '　')} ← ${(m ? m.label : a.providerId).padEnd(18, '　')} `
+      + `${String(a.fitScore).padStart(3)} 分 · ${a.reason}`, 'ok');
+  }
+  const un = [...cells.keys(), ...apiCells.keys()].filter((id) => !assignment.some((a) => a.providerId === id));
+  if (un.length) log(`   落选：${un.join(', ')}（能力不匹配当前席位）`, 'warn');
+}
+
+/* ---------- 装配编排器 ---------- */
+const adapters = {};
+for (const [id, c] of cells) {
+  const base = createWebAdapter({
+    id,
+    name: c.provider.name,
+    profile: c.provider.profile,
+    driver: makeWebviewDriver(c.wv, id),
+    pollMs: 500,
+  });
+  adapters[id] = {
+    ...base,
+    // ★ 角色注入点：每个 AI 拿到的 prompt = 自己的角色前缀 + 本轮任务。
+    //   core/orchestrator.js 一行都不用改 —— 它只管编排，角色是"出口装饰"。
+    async sendText(text) {
+      const role = roleMap[id];
+      const composed = role ? composePrompt({ task: text, role, providerId: id }) : text;
+      return base.sendText(composed);
+    },
+  };
+}
+// ★ API 通道席位（apiAdapters 由 renderApiSeats 动态填充，同一个对象引用 → orch 能看见）
+Object.assign(adapters, apiAdapters);
+
+const meeting = new Meeting({ topic: 'Phase 0 测试台会议' });
+const orch = new MeetingOrchestrator({
+  meeting,
+  adapters,
+  strategy: STRATEGY.BROADCAST,
+  completionOpts: { minSignals: 2, timeoutMs: 180000 },
+  attachmentBusOpts: { defaultTimeoutMs: 30000 },
+  logger: ({ level, msg, data }) => {
+    log(`[${level}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}`, level === 'error' ? 'bad' : 'warn');
+  },
+});
+
+/* ---------- 状态灯（网页版 + API 两路都要亮） ---------- */
+meeting.__onStateChange = null;
+for (const [id, c] of cells) {
+  const sm = meeting.addAgent(id);
+  sm._onChange = (entry) => {
+    c.stateEl.textContent = entry.state;
+    c.stateEl.className = `state s-${entry.state}`;
+  };
+}
+// meeting 就绪了 → 把之前在排队的 API 席位状态灯补上
+meetingRef = meeting;
+pendingLamps.splice(0).forEach(([id, c]) => bindStateLamp(id, c));
+
+/* ══════════════════════════════════════════════════════════════
+   按「会议模式」跑一场：模式 = 阶段序列 + 上下文切片 + 终止判据
+   ══════════════════════════════════════════════════════════════ */
+/* 成本档位的中文名（给用户看的，不是内部枚举） */
+const TIER_CN = { light: '轻', medium: '中', heavy: '重 ★' };
+
+btnRun.addEventListener('click', async () => {
+  const task = topicEl.value.trim();
+  if (!task) return;
+  btnRun.disabled = true;
+  btnRun.textContent = '会议进行中…';
+  logEl.innerHTML = '';
+
+  const mode = getMode(currentMode);
+  log(`══ 开始会议「${mode.label}」（角色组：${currentSet}）══`, 'hd');
+  log(`[用户] ${task}`);
+  log(`[模式说明] ${mode.desc}`);
+
+  const ids = allSeatIds();   // 网页版 + API 一起参会
+  const maxIter = mode.loop ? (mode.maxIterations || 5) : 1;
+
+  /* ★ 成本预估：点"开始"之前就告诉你这场会最坏要烧多少。
+   *   用户的原始诉求是"别瞎聊浪费 token"—— 等开完才发现烧了 60 次调用就晚了。
+   *   注意两个指标：调用次数（花在次数上的钱）+ 上下文注入份数（花在字上的钱，O(N²) 在这）。 */
+  const cost = estimateCost(currentMode, { participants: ids, assignment });
+  log(`[成本预估] 档位 ${TIER_CN[cost.tier] || cost.tier}`
+    + `　单轮 ${cost.callsPerRound} 次调用 / 注入 ${cost.contextPerRound} 份`
+    + `　最坏 ${cost.maxCalls} 次 / ${cost.maxContext} 份`
+    + (cost.rounds > 1 ? `（上限 ${cost.rounds} 轮，判据生效会提前停）` : ''),
+  cost.tier === 'heavy' ? 'warn' : 'ok');
+  for (const a of cost.advices) log(`   · ${a}`, 'warn');
+
+  let iteration = 0;
+  let prevCritiques = [];
+  let totalOk = 0;
+  let totalAll = 0;
+
+  /* ★ 评审链路状态（跨轮保持）—— 这条链路是"判据真生效"的全部前提 */
+  let candidateLabels = [];   // 本轮匿名标签（方案A/B/C…）
+  let candidateMap = {};      // 标签 → 真实 providerId（**只作审计，不进 prompt**）
+  let candidateText = '';     // 匿名候选包原文（喂给评标/定标）
+  let borda = null;           // Borda 结果（名次均值 + coverage + 可比性）
+  let winnerId = null;        // 本轮定标（已映射回真实 providerId，可跨轮比较）
+  let prevWinnerId = null;    // 上一轮定标（same-winner 判据的基线）
+  let buildPass = null;       // 集成验证结果（null = 未知/不采信）
+  let currentDraft = '';      // ★ 当前草稿 = 最近一次"改进/修订"阶段的产出（DRAFT 切片的正确输入）
+
+  try {
+    while (true) {
+      iteration += 1;
+      meeting.round = iteration;  // 让本轮消息带上轮次（CANDIDATES 必须按轮筛候选）
+      const plan = planPhases(currentMode, { participants: ids, assignment });
+      if (maxIter > 1) {
+        log('');
+        log(`──── 第 ${iteration} 轮迭代（上限 ${maxIter}）────`, 'hd');
+      }
+
+      let critiques = [];
+      winnerId = null;            // 每轮重置：本轮的定标结果
+      for (const stage of plan) {
+        if (!stage.speakers.length) {
+          log(`▶ 阶段「${stage.name}」无人发言，跳过（${stage.reason}）`, 'warn');
+          continue;
+        }
+        log('');
+        log(`▶ 阶段 ${stage.index + 1}/${plan.length}「${stage.name}」`
+          + ` ${stage.speak === 'parallel' ? '并行' : '串行'}`
+          + ` · 发言：${stage.speakers.join(', ')}`
+          + (stage.produces ? ` · 产出 ${stage.produces}` : '')
+          + (stage.degraded ? '  [无对应角色，退化为全体]' : ''), 'hd');
+
+        let stageText;
+        if (stage.produces === 'verdict') {
+          /* ★ 定标阶段不吃普通切片：它吃「候选 + 代码算出的 Borda 均值表」。
+           *   混元明确推翻了"让收敛席 AI 拍板"——那脆弱、不可复现。
+           *   定标席的职责是"确认结论并说明理由"，不是重新投票。 */
+          stageText = buildVerdictPrompt({ candidates: candidateText, borda });
+          log(`   [定标输入] 候选 ${candidateLabels.length} 份 + Borda 均值表`
+            + `${borda ? `（胜出 ${borda.winnerId}）` : '（无）'}`, borda ? 'ok' : 'warn');
+        } else {
+          // 这个阶段这些发言者"能看到什么"——由模式的上下文切片决定
+          const sl = selectSlice(stage.slice, {
+            task,
+            material: task,
+            draft: currentDraft || task,   // ★ 有真草稿就给真草稿（此前一直错填成任务原文）
+            critiques: prevCritiques,
+            messages: meeting.messages
+              .filter((m) => m.senderType !== 'user')
+              .map((m) => ({ senderId: m.senderId, content: m.content, kind: m.kind })), // ★ 保留 kind
+          });
+          log(`   [切片 ${stage.slice}] 注入 ${sl.included.join(',') || '（空）'} · ${sl.text.length} 字`
+            + (sl.warning ? `　⚠ ${sl.warning}` : ''), sl.warning ? 'warn' : 'warn');
+          stageText = sl.text || task;
+        }
+
+        const r = await orch.runTurn({
+          text: stageText,
+          participants: stage.speakers,
+          timeoutMs: 180000,
+          kind: stage.produces || null,   // ★ 透传产出类型 → message.kind → CANDIDATES 的筛选依据
+        });
+        for (const res of r.results) {
+          log(`${res.ok ? '✔' : '✗'} ${res.providerId}  ${res.state}  ${res.durationMs}ms`
+            + `${res.error ? '  ' + res.error : ''}`, res.ok ? 'ok' : 'bad');
+        }
+        totalOk += r.ok.length;
+        totalAll += r.results.length;
+
+        const okTexts = r.results
+          .filter((x) => x.ok && (x.text || x.content))
+          .map((x) => ({ providerId: x.providerId, text: String(x.text || x.content) }));
+
+        /* ── 出标产出 → 立刻匿名化（定序 + 打标） ────────────────────────
+         * 必须在评标之前做，且**一次算好、全场复用**：
+         * 所有评审者看到同一套标签与同一顺序，Borda 才能聚合。 */
+        if (stage.produces === 'candidate') {
+          const cands = meeting.messages.filter((m) => m.round === iteration && m.kind === 'candidate');
+          if (cands.length) {
+            const anon = anonymizeCandidates(cands);
+            candidateLabels = anon.order;
+            candidateMap = anon.map;
+            candidateText = anon.items.map((i) => `【${i.label}】\n${i.content}`).join('\n\n');
+            log(`   [匿名化] ${cands.length} 份候选 → ${candidateLabels.join(' / ')}`
+              + '（顺序按内容哈希固定，所有评审者看到的一致）', 'ok');
+          } else {
+            candidateLabels = []; candidateMap = {}; candidateText = '';
+            log('   [匿名化] 未取到候选消息 —— 消息缺 kind 标记（编排层没透传 produces？）', 'bad');
+          }
+        }
+
+        /* ── 评标产出 → 解析名次表 → Borda → 本轮定标 ─────────────────── */
+        if (stage.produces === 'ballot') {
+          const parsed = parseBallots(
+            okTexts.map((x) => ({ reviewer: x.providerId, text: x.text })),
+            { labels: candidateLabels },
+          );
+          log(`   [名次解析] ${parsed.ballots.length}/${okTexts.length} 份可解析`
+            + `${parsed.failed.length ? `　作废 ${parsed.failed.length} 份` : ''}`,
+          parsed.failed.length ? 'warn' : 'ok');
+          for (const w of parsed.warnings) log(`      ⚠ ${w}`, 'warn');
+          for (const f of parsed.failed) log(`      ✗ ${f.reviewer}：${f.reason}`, 'bad');
+
+          if (parsed.ballots.length) {
+            borda = bordaMeans(parsed.ballots);
+            winnerId = candidateMap[borda.winnerId] || borda.winnerId;  // 映射回真实作者，跨轮可比
+            const winMean = borda.means[borda.winnerId];
+            log(`   [Borda] 胜出 ${borda.winnerId}（均值 ${Number(winMean).toFixed(2)}，`
+              + `${borda.coverage[borda.winnerId]} 人排名）→ 真实作者 ${winnerId}`, 'ok');
+            if (borda.warning) log(`      ⚠ ${borda.warning}`, 'warn');
+            if (borda.tie) log('      ⚠ 出现并列——建议增加评审者或改用逐项对比', 'warn');
+          } else {
+            borda = null;
+            log('   [Borda] 无可解析名次表 → 本轮无法定标（不猜，宁可少一轮结论）', 'bad');
+          }
+        }
+
+        /* ── 集成验证产出 → 判 build-pass ────────────────────────────── */
+        if (stage.produces === 'integration') {
+          const ivText = okTexts.map((x) => x.text).join('\n');
+          const j = judgeBuildPass(ivText);
+          buildPass = j.pass;
+          log(`   [集成判定] ${j.pass === true ? '通过' : j.pass === false ? '未通过' : '未知'}`
+            + `（依据 ${j.confidence}${j.evidence ? `：${j.evidence}` : ''}）`,
+          j.pass === false ? 'bad' : 'warn');
+          if (j.pass === null) {
+            log('      ★ 模型自述"通过"不算通过 —— 真正的判据必须来自真实编译/运行结果（见报告 P1）', 'warn');
+          }
+        }
+
+        /* 质证/评审类阶段的产出 → 沉淀为下一阶段的"批评清单" */
+        critiques = critiques.concat(
+          okTexts.map((x) => `[${x.providerId}] ${x.text.slice(0, 200)}`),
+        );
+        /* 改进/修订类产出 → 成为下一阶段的"当前草稿"（DRAFT 切片的正确输入） */
+        if (stage.produces === 'revision' || stage.produces === 'patch') {
+          const best = okTexts.length ? okTexts[okTexts.length - 1].text : '';
+          if (best) currentDraft = best;
+        }
+      }
+
+      const verdict = shouldStop(currentMode, {
+        iteration, critiques, prevCritiques, winnerId, prevWinnerId, buildPass,
+      });
+      log('');
+      log(`[终止判据] ${verdict.stop ? '■ 停止' : '▶ 继续'} —— ${verdict.reason}`,
+        verdict.stop ? 'ok' : (verdict.degraded ? 'bad' : 'warn'));
+      if (verdict.degraded) {
+        log(`   ★ 判据降级：${(verdict.missingInput || []).join('、')} 未接线 → 本判据本次不生效（会跑满上限）`, 'bad');
+      }
+      if (verdict.stop || iteration >= maxIter) break;
+      prevCritiques = critiques;
+      prevWinnerId = winnerId;
+    }
+
+    summaryEl.textContent =
+      `模式 ${mode.label}　迭代 ${iteration} 轮　成功 ${totalOk}/${totalAll}　会议记录 ${meeting.messages.length} 条`;
+    if (mode.stopWhen === 'same-winner') {
+      log('');
+      log(`▣ 最终定标：${winnerId || '（本轮未定标）'}　上一轮：${prevWinnerId || '（无）'}`, 'hd');
+      if (candidateMap && Object.keys(candidateMap).length) {
+        log(`   审计映射（仅供你核对，不进 prompt）：`
+          + Object.entries(candidateMap).map(([k, v]) => `${k}=${v}`).join('　'), 'warn');
+      }
+    }
+  } catch (e) {
+    log(`[异常] ${e.message}`, 'bad');
+  } finally {
+    btnRun.disabled = false;
+    btnRun.textContent = '开始会议';
+  }
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => { logEl.innerHTML = ''; });
+
+/* ══════════════════════════════════════════════════════════════
+   UI 初始化：模式 / 角色组下拉 + 会议流程预览
+   （selMode / selSet / flowEl / SLICE_CN 已在文件头的 DOM 引用区声明，
+     不能在文件后段再声明 —— 否则中段调用会踩 TDZ，见文件头注释）
+   ══════════════════════════════════════════════════════════════ */
+for (const m of listModes()) {
+  const o = document.createElement('option');
+  o.value = m.id;
+  o.textContent = m.label + (m.loop ? ' ↻' : '');
+  selMode.appendChild(o);
+}
+for (const s of listRoleSets()) {
+  const o = document.createElement('option');
+  o.value = s.id;
+  o.textContent = `${s.label}（${s.seats} 席）`;
+  selSet.appendChild(o);
+}
+selMode.value = currentMode;
+selSet.value = currentSet;
+
+/** 全部参会席位（网页版 + API） */
+function allSeatIds() { return [...cells.keys(), ...apiCells.keys()]; }
+
+function renderFlow() {
+  const ids = allSeatIds();
+  const plan = planPhases(currentMode, { participants: ids, assignment });
+  const mode = getMode(currentMode);
+  flowEl.innerHTML = '';
+  const t = document.createElement('span');
+  t.textContent = '流程：';
+  t.style.color = '#8aa';
+  flowEl.appendChild(t);
+
+  for (const p of plan) {
+    const d = document.createElement('span');
+    d.className = 'ph';
+    const names = p.speakers.map((id) => (getModel(id) ? getModel(id).label.replace(/-(DeepSeek|ChatGPT|Gemini|Kimi|豆包|通义千问|元宝|文心|搜索)/, '') : id));
+    d.innerHTML = `<span class="n">${p.index + 1}.${p.name}</span>`
+      + `<span class="sp">${names.length ? names.join(' + ') : '（等人）'}</span>`
+      + `<span class="sl">${SLICE_CN[p.slice] || p.slice}</span>`
+      + (p.degraded ? '<span class="warn">⚠</span>' : '');
+    flowEl.appendChild(d);
+  }
+  if (mode.loop) {
+    const d = document.createElement('span');
+    d.className = 'warn';
+    d.textContent = `↻ 循环至收敛（上限 ${mode.maxIterations} 轮）`;
+    flowEl.appendChild(d);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   模式场景卡（用户需求：「你这个模式我没看懂」的直接解法）
+   —— 选一个模式，立刻把「什么时候用 / 例子 / 什么时候别用 / 产出」摊开
+   ══════════════════════════════════════════════════════════════ */
+function renderScene() {
+  const m = getMode(currentMode);
+  if (!m || !m.scene) { sceneEl.classList.remove('on'); return; }
+  const need = Object.entries(m.modelFit.need)
+    .map(([k, v]) => `${({ reasoning: '推理', chinese: '中文', structure: '结构化', speed: '速度', longOutput: '长文', multimodal: '多模态', search: '检索', stability: '稳定性' })[k] || k} ≥ ${v}`)
+    .join('、');
+  sceneEl.className = 'scene on';
+  sceneEl.innerHTML =
+    `<b>「${m.label}」</b>`
+    + `<span class="k"> · 什么时候用：</span>${m.scene.when.replace(/\*\*/g, '')}`
+    + `<br><span class="k">· 典型例子：</span>${m.scene.example.replace(/\*\*/g, '')}`
+    + `<br><span class="k">· </span><span class="no">什么时候别用：${m.scene.notFor.replace(/\*\*/g, '')}</span>`
+    + `<br><span class="k">· </span><span class="ok">产出：${m.scene.output.replace(/\*\*/g, '')}</span>`
+    + `<br><span class="k">· 模型要求：</span>${need}`
+    + `<span class="k"> ｜ 推荐角色组：</span>${m.modelFit.recommendSet}`
+    + `<span class="k"> ｜ 通道：</span>${m.modelFit.channels.join('/')}`
+    + `<br><span class="k">· 提示：</span>${m.modelFit.tips.replace(/\*\*/g, '')}`;
+}
+
+selMode.addEventListener('change', () => {
+  currentMode = selMode.value;
+  renderScene();
+  renderFlow();
+  const m = getMode(currentMode);
+  log(`[模式] 切换为「${m.label}」—— ${m.desc}`, 'hd');
+  // 模式的推荐角色组 → 主动提示（不强行改，尊重用户选择）
+  if (m.modelFit.recommendSet && m.modelFit.recommendSet !== currentSet) {
+    log(`[模式] 它的推荐角色组是「${m.modelFit.recommendSet}」，当前是「${currentSet}」`, 'warn');
+  }
+  if (m.modelFit.requiresApi) {
+    const hasApi = [...apiCells.keys()].length > 0;
+    log(`[模式] ★ 主席必须走真实 API 通道 —— 当前${hasApi ? '已有' : '【没有】'}API 席位`, hasApi ? 'ok' : 'bad');
+  }
+  if (m.needs.includes('material')) log('[模式] 本模式以「材料」为主体：输入框内容会被当作待审材料', 'warn');
+  if (m.needs.includes('draft')) log('[模式] 本模式以「草稿」为主体：输入框内容会被当作待改的产出物', 'warn');
+});
+
+selSet.addEventListener('change', () => {
+  currentSet = selSet.value;
+  applyRoles();
+  renderFlow();
+  log(`[角色组] 切换为「${currentSet}」—— 按能力重新分配，每个 AI 换了一个视角`, 'hd');
+  logCasting();
+});
+
+/* 重排角色：换一个随机种子，在「够格的人」里重抽一套编制 */
+document.getElementById('btn-recast').addEventListener('click', () => {
+  castSeed = `s${Date.now()}`;
+  applyRoles();
+  renderFlow();
+  log('', '');
+  logCasting();
+});
+
+/* 启动区。
+ * ★ applyRoles() / renderFlow() 已在 renderApiSeats() 内部跑过（它必须先于下拉
+ *   填充执行，才能把 API 席位算进编制），这里重复调用只会把同一份日志打两遍，
+ *   所以只补那一个没跑过的 renderScene()。 */
+renderScene();
+
+log('测试台就绪。网页版 + API 两路席位已就绪（独立 userData）。', 'hd');
+log('若显示为登录页：请在本窗口内登录一次，或关闭 DSH 客户端后用 --reuse-login 启动复用已登录账号。', 'warn');
+log('模式决定「这场会怎么开」，角色组决定「每个席位用什么视角说话」——两者可随时切换。', 'warn');
+log('选角是「能力感知」的：先按能力门槛淘汰不合格的，再在够格的人里随机；点「重排角色」换一套。', 'warn');
+log('鼠标悬停格子右下角的角色名，可以看到「为什么是它」（适配分 + 优势维度）。', 'warn');
+log('模式下拉旁会显示「什么时候用 / 典型例子 / 什么时候别用 / 产出」，选一个模式即可看到。', 'warn');
+logCasting();   // renderApiSeats() 里只做了分配，选角表要在这里打
+</script>
+</body>
+</html>
