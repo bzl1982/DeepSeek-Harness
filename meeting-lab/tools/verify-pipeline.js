@@ -7,8 +7,15 @@
  *   ③ 成本预估在真实席位列表下能算出数
  */
 const http = require('http');
+const path = require('path');
 
 const PORT = process.argv[2] || '9223';
+
+// ★ 页面上下文里的 require 需要绝对路径，但这个路径必须由脚本自己算出来：
+//   原先写死 'D:/DeepSeek Harness/meeting-lab/core/modes' —— 换台机器、换个盘符、
+//   或者拿到 macOS 上跑，检查会直接报模块找不到（而它检查的代码其实好好的）。
+//   __dirname 是"这个脚本在哪"，三平台都对。
+const MODES_ABS = path.join(__dirname, '..', 'core', 'modes.js');
 
 function getJson(p) {
   return new Promise((res, rej) => {
@@ -51,7 +58,7 @@ function getJson(p) {
   console.log('── ① 渲染进程里新函数可用性 ──');
   const api = await ev(`(() => {
     try {
-      const m = require('D:/DeepSeek Harness/meeting-lab/core/modes');
+      const m = require(${JSON.stringify(MODES_ABS)});
       const need = ['parseBallots','bordaMeans','estimateCost','anonymizeCandidates','judgeBuildPass','buildVerdictPrompt','costOverview','anonLabel','fnv1a','SLICE'];
       const miss = need.filter(k => m[k] === undefined);
       return { ok: miss.length === 0, miss, sliceCandidates: m.SLICE && m.SLICE.CANDIDATES };
@@ -63,7 +70,7 @@ function getJson(p) {
   /* ② 在页面里跑完整评审链路（纯函数，不发请求） */
   console.log('\n── ② 页面内跑完整评审链路（候选→匿名→解析→Borda）──');
   const pipeline = await ev(`(() => {
-    const m = require('D:/DeepSeek Harness/meeting-lab/core/modes');
+    const m = require(${JSON.stringify(MODES_ABS)});
     // 模拟三名出标者产出的候选（已带 kind）
     const msgs = [
       { senderId: 'deepseek-web', content: '方案甲：用进程内反向代理，复用现有 http 服务', kind: 'candidate' },
@@ -108,7 +115,7 @@ function getJson(p) {
   /* ③ 定标 prompt 与成本预估 */
   console.log('\n── ③ 定标 prompt + 成本预估 ──');
   const extras = await ev(`(() => {
-    const m = require('D:/DeepSeek Harness/meeting-lab/core/modes');
+    const m = require(${JSON.stringify(MODES_ABS)});
     const borda = m.bordaMeans([
       { reviewer: 'r1', ranks: [{ proposal: '方案甲', rank: 1 }, { proposal: '方案乙', rank: 2 }] },
       { reviewer: 'r2', ranks: [{ proposal: '方案甲', rank: 1 }, { proposal: '方案乙', rank: 2 }] },

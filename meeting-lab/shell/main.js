@@ -15,7 +15,14 @@ const path = require('path');
 const { app, BrowserWindow } = require('electron');
 
 const REUSE_LOGIN = process.argv.includes('--reuse-login');
-const CLIENT_USER_DATA = 'D:\\Users\\Admin\\AppData\\Roaming\\DeepSeek Harness';
+
+// 客户端 userData 目录 = appData + 应用名（客户端 productName 是 "DeepSeek Harness"）。
+// ★ 不写死盘符与用户名：
+//   Electron 的 appData —— Windows 是 %APPDATA%（本机已迁到 D:\Users\Admin\AppData\Roaming，
+//   与原先硬编码的路径恰好一致，所以本机行为零变化），macOS 是 ~/Library/Application Support。
+//   写死 'D:\Users\Admin\...' 的话，测试台拿到 Mac 上跑 --reuse-login 会指向一个不存在的目录，
+//   表现为"所有网页模型都是未登录"——而且不会报错，只能靠人猜。
+const CLIENT_USER_DATA = path.join(app.getPath('appData'), 'DeepSeek Harness');
 
 if (REUSE_LOGIN) {
   app.setPath('userData', CLIENT_USER_DATA);

@@ -223,6 +223,39 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 ---
 
+## 跨平台现状（2026-09-22 审计）
+
+结论：**核心逻辑本来就是平台中立的**，但有 4 处把路径写死在 Windows 上，已修。
+
+中立的部分（本来就对）：临时目录一律 `os.tmpdir()`；拼路径一律 `path.join`；
+跨平台比较路径前先 `split(path.sep).join('/')` 归一化；跑子进程用 `process.execPath`
+（本机 PATH 里根本没有 `node`）；`npm` 在 Windows 认 `npm.cmd`、其它平台认 `npm`；
+第三方脚本的 `NODE_PATH` 也是 `path.join` 出来的。
+
+修掉的 4 处：
+
+| 位置 | 原写法 | 改成 | 不修的后果 |
+|---|---|---|---|
+| `shell/main.js` `--reuse-login` | `D:\Users\Admin\AppData\Roaming\DeepSeek Harness` | `path.join(app.getPath('appData'), 'DeepSeek Harness')` | Mac 上指向不存在的目录 → 表现成「9 个模型全都没登录」，**而且不报错** |
+| `adapters/dsh-config.js` | 候选里带 `D:\Users\Admin\.dsh` | 三个候选全由 `os.homedir()` 推导（含 macOS 惯例位置） | 换机器/换平台找不到 `.dsh` |
+| `tools/verify-pipeline.js` | 页面上下文里 `require('D:/DeepSeek Harness/…/modes')` | 由 `__dirname` 算出绝对路径再注入 | 检查脚本自己失效，看着像「页面里没这些函数」 |
+| `tools/build-build-report.js` | `execFileSync('D:/Toolbox/git/bin/git.exe')` | `GIT_BIN` 环境变量 → Windows 约定路径 → PATH 里的 `git` | 报告里提交号永远「(未取得)」，异常还被 `catch` 吞掉 |
+
+改完在**本机实测**（不是推演）：`app.getPath('appData')` 在 `ready` **之前**就能取，
+且拼出来的路径与原硬编码**逐字相同**（`D:\Users\Admin\AppData\Roaming\DeepSeek Harness`）
+→ **Windows 行为零变化**，macOS 上自动变成 `~/Library/Application Support/DeepSeek Harness`。
+
+仍在 Windows 上的（属环境约定，不是缺陷）：单测里的假数据（`D:/spec.pdf` 之类只是字符串，不碰磁盘）、
+报告里「本机环境限制」那几条说明文字。
+
+不属于本目录、但 Mac 版会撞上的（在 `desktop/`，本目录不碰，留给客户端那侧）：
+`desktop/agent/harness/registry/index.js` 的 `FS_SCOPE` 白名单写死 `D:\DeepSeek Harness`、
+`C:\Users\Admin` —— Mac 上文件类工具会被**全部拒绝**（属"失败关闭"，不会误放行，但功能不可用）；
+`desktop/src/main.js` 的 `window-all-closed` 直接 `app.quit()`，与 macOS「关窗不退出、
+点 Dock 重建窗口」的惯例相反。
+
+---
+
 ## 已知限制
 
 - ~~`streamEnd` 信号暂未接入~~ → **已接入**：见 `core/stream-tracker.js` + `shell/cdp-driver.js`
@@ -247,7 +280,25 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 ## 修订记录
 
-### 本轮：build 模式的产物**真落盘 + 真编译** —— 文本第一次变成文件
+### 跨平台清账 + Windows 打包实测（2026-09-22 晚）
+
+- 审计结论与 4 处修复见上文「跨平台现状（Windows / macOS）」。
+- **Windows 打包实测撞到本机环境坑**：宿主往 `NODE_OPTIONS` 注入了
+  `node-language-shim.cjs`，electron-builder 在 `removeUnusedLanguagesIfNeeded`
+  里要删掉 40+ 个用不到的语言包时被「批量删除守卫」拦死
+  （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50）→ 打包直接 `⨯` 失败，产物是半成品。
+  解法即本项目既定配方：打包前 `unset NODE_OPTIONS ELECTRON_RUN_AS_NODE`
+  并 `export CODEBUDDY_SAFE_DELETE_ENABLED=0`。
+  ★ **附带发现**：本机 `~/.local/bin/env` 是个空壳（`env --version` 无任何输出），
+  所以**不能用 `env -u NODE_OPTIONS …`** —— 整条命令会被它吞掉，而且退出码还是 `0`，
+  看起来像"跑完了但没输出"。必须用 bash 内建 `unset`。
+- Windows 产物：`dist/DeepSeek Harness-0.1.5-rc.2-setup-x64.exe`（NSIS 安装包）、
+  `-portable-x64.exe`（便携版）、`dist/win-unpacked/`（免安装目录）。
+- Mac 版走 `desktop/scripts/build-mac.sh`（**需 macOS**：它用 `sips`/`iconutil` 生成 icns、
+  按架构装原生依赖、按架构捆绑 Node）或 `.github/workflows/build-desktop.yml`（macos runner）。
+  Windows 本机**不具备**产出 dmg 的条件，别在这里试。
+
+### 上一轮：build 模式的产物**真落盘 + 真编译** —— 文本第一次变成文件
 
 `produces:'artifact'` 一直是消息上的一个字符串标记：产物从未变成磁盘上的文件。
 后果是一条完整的失效链：

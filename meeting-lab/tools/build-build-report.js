@@ -39,6 +39,19 @@ const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
 
+/**
+ * git 可执行文件：优先环境变量 GIT_BIN，其次本机约定的 Toolbox（仅 Windows 上存在），
+ * 最后回落到 PATH 里的 `git`。
+ * ★ 原先无条件写死 'D:/Toolbox/git/bin/git.exe' —— 在 macOS 上会直接抛异常，
+ *   报告里"提交号"那一格永远显示'(未取得)'，而且失败被 catch 吞掉、看不出原因。
+ */
+function gitBin() {
+  if (process.env.GIT_BIN) return process.env.GIT_BIN;
+  const toolbox = 'D:/Toolbox/git/bin/git.exe';
+  if (process.platform === 'win32' && fs.existsSync(toolbox)) return toolbox;
+  return 'git';
+}
+
 /* ══════════════════════════════════════════════════════════════════
    ① 演示：解析一段故意很乱的 AI 回复（真的调解析器）
    ══════════════════════════════════════════════════════════════════ */
@@ -338,7 +351,7 @@ async function main() {
 
   let commit = '(未取得)';
   try {
-    commit = execFileSync('D:/Toolbox/git/bin/git.exe', ['log', '--oneline', '-1'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    commit = execFileSync(gitBin(), ['log', '--oneline', '-1'], { cwd: ROOT, encoding: 'utf8' }).trim();
   } catch (e) { /* 无 git 也不影响报告 */ }
 
   const H = [];

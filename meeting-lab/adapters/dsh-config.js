@@ -34,10 +34,11 @@ const os = require('os');
 function defaultDshDir() {
   if (process.env.DSH_CONFIG_DIR) return process.env.DSH_CONFIG_DIR;
   const home = os.homedir();
+  // 三个候选全部由 homedir() 推导，不写死盘符/用户名（写死的话换机器或换平台立刻失效）。
   const candidates = [
-    path.join(home, '.dsh'),
-    'D:\\Users\\Admin\\.dsh',
-    path.join(home, 'AppData', 'Roaming', '.dsh'),
+    path.join(home, '.dsh'),                                    // 约定目录（三平台一致，优先）
+    path.join(home, 'AppData', 'Roaming', '.dsh'),              // Windows 漫游目录（历史位置）
+    path.join(home, 'Library', 'Application Support', '.dsh'),  // macOS 惯例位置
   ];
   for (const c of candidates) {
     try { if (fs.statSync(c).isDirectory()) return c; } catch (_) { /* 继续找 */ }
