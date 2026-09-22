@@ -149,6 +149,17 @@ function nextId(prefix) {
   return `${prefix}_${Date.now().toString(36)}${_seq.toString(36).padStart(2, '0')}`;
 }
 
+/**
+ * 允许的消息来源类型。
+ *
+ * ★ 'external' 是第五轮的补洞（详见 core/external.js 的长注释）：
+ *   用户在浏览器里问完外部 AI（元宝/谷歌/千问…）再**手工粘贴回来**。
+ *   这些回答必须与 agent 消息**平级**，否则：
+ *     - 归为 'user' → 被切片当用户输入排除（后面的 AI 看不到外面怎么说）
+ *     - 伪装成 'agent' → 看不出"这条是哪家给的"，审计说不清，也无法匿名
+ */
+const SENDER_TYPES = ['user', 'agent', 'system', 'external'];
+
 function createMessage({
   meetingId,
   senderType = 'user',
@@ -162,11 +173,21 @@ function createMessage({
   kind = null,       // ★ 产出类型（'candidate'/'ballot'/'verdict'/'artifact'/…）
                      //   来源：mode.phases[].produces，由编排层透传。
                      //   用途：CANDIDATES 切片靠它区分"候选方案"与"评标意见"。
+  external = null,   // ★ 外部来源详情 { provider, model, url, question, note }
+                     //   仅 senderType==='external' 时使用。
   id = null,
 } = {}) {
   if (!meetingId) throw new Error('createMessage: meetingId required');
-  if (!['user', 'agent', 'system'].includes(senderType)) {
+  if (!SENDER_TYPES.includes(senderType)) {
     throw new Error(`createMessage: bad senderType ${senderType}`);
+  }
+  /* ★ 双向校验：external 字段与 senderType 必须同时出现。
+   *   只写一个都是 bug —— 有类型没来源（审计说不清），有来源没类型（切片看不见）。 */
+  if (external && senderType !== 'external') {
+    throw new Error("createMessage: external 字段只能配 senderType='external'");
+  }
+  if (senderType === 'external' && !external) {
+    throw new Error("createMessage: senderType='external' 必须带 external 来源信息");
   }
   return {
     id: id || nextId('msg'),
@@ -175,6 +196,15 @@ function createMessage({
     senderId,
     content,
     kind: kind || undefined,
+    external: external
+      ? {
+        provider: external.provider || null,
+        model: external.model || null,
+        url: external.url || null,
+        question: external.question || null,
+        note: external.note || null,
+      }
+      : undefined,
     attachments: Array.isArray(attachments) ? attachments : [],
     round: Number(round) || 1,
     turn: Number(turn) || 0,
@@ -301,6 +331,7 @@ module.exports = {
   FLOW,
   ERROR_STATES,
   TERMINAL_STATES,
+  SENDER_TYPES,
   AgentStateMachine,
   createAttachmentRef,
   createMessage,

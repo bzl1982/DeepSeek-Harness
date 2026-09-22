@@ -63,6 +63,33 @@
     .apicell .txt { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 11px; line-height: 1.6; color: #9ab; white-space: pre-wrap; word-break: break-word; }
     .apicell .role { color: #ffd479; font-size: 10px; }
     .apirow .picker { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #8aa; white-space: nowrap; padding: 0 6px; }
+
+    /* ── 外部 AI 回答面板 ──
+       把「在浏览器里问完 → 复制 → 粘贴回来」这个动作变成一等公民。
+       默认折叠（不占用日志空间），点标题栏展开。 */
+    .extbox { background: #101822; border-bottom: 1px solid #2a3a4a; flex-shrink: 0; }
+    .extbox .head { display: flex; align-items: center; gap: 7px; padding: 8px 12px; cursor: pointer; user-select: none; }
+    .extbox .head .t { color: #4da3ff; font-weight: 600; font-size: 12px; }
+    .extbox .head .c { color: #8aa; font-size: 11px; }
+    .extbox .head .c.has { color: #4ade80; }
+    .extbox .head .tg { margin-left: auto; color: #667; font-size: 11px; }
+    .extbox.open .head .tg { color: #4da3ff; }
+    .extbox .body { display: none; padding: 0 12px 10px; }
+    .extbox.open .body { display: block; }
+    .extbox .row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+    .extbox select, .extbox input, .extbox textarea {
+      background: #0b0e14; color: #e6e6e6; border: 1px solid #2a3a4a; border-radius: 5px;
+      font-size: 11px; padding: 5px 8px; outline: none; font-family: inherit;
+    }
+    .extbox select:focus, .extbox input:focus, .extbox textarea:focus { border-color: #4da3ff; }
+    .extbox textarea { width: 100%; height: 74px; resize: vertical; line-height: 1.6; }
+    .extbox button { padding: 5px 12px; background: #4da3ff; color: #fff; border: none; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .extbox button:disabled { background: #2a3a4a; color: #667; cursor: not-allowed; }
+    .extbox .list { max-height: 92px; overflow-y: auto; margin-top: 2px; }
+    .extbox .item { padding: 4px 0; border-top: 1px dashed #1d2836; color: #8aa; display: flex; gap: 6px; font-size: 11px; }
+    .extbox .item .p { color: #4ade80; white-space: nowrap; }
+    .extbox .item .x { color: #9ab; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .extbox .note { color: #667; font-size: 10.5px; line-height: 1.6; margin-top: 5px; }
   </style>
 </head>
 <body>
@@ -86,6 +113,27 @@
       <div class="apirow" id="apirow"></div>
     </div>
     <div class="side">
+      <!-- 外部 AI 回答：用户"复制回来"的那一步。折叠面板，不抢日志空间。 -->
+      <div class="extbox" id="extbox">
+        <div class="head" id="ext-head">
+          <span class="t">外部 AI 回答</span>
+          <span class="c" id="ext-count">0 条</span>
+          <span class="tg" id="ext-toggle">展开 ▾</span>
+        </div>
+        <div class="body" id="ext-body">
+          <div class="row">
+            <select id="ext-source"></select>
+            <input id="ext-model" placeholder="模型名（可选）" style="flex:1;min-width:0" />
+          </div>
+          <textarea id="ext-text" placeholder="粘贴外部 AI 的回答…（开头带【元宝】这类标注会自动识别并剥掉，不会混进正文）"></textarea>
+          <div class="row">
+            <input id="ext-question" placeholder="这条回答针对的问题（可选）" style="flex:1;min-width:0" />
+            <button id="ext-add" disabled>加入会议</button>
+          </div>
+          <div class="list" id="ext-list"></div>
+          <div class="note">贴进来后会成为一条会议消息，<b>参与后续所有阶段的上下文切片</b>——系统内的 AI 就能看到"外面的人怎么说"。评标时按内容匿名，不暴露是哪家给的。</div>
+        </div>
+      </div>
       <h2>会议日志</h2>
       <div class="log" id="log"></div>
       <div class="summary" id="summary">等待开始…</div>
@@ -98,7 +146,12 @@
    接到 Phase 0 的 Meeting Core 上跑真实网页 AI。
    （core/ 与 adapters/ 均复用测试台自己的实现）
    ══════════════════════════════════════════════════════════════ */
-const { Meeting } = require('../core/meeting-model');
+const { Meeting, createMessage } = require('../core/meeting-model');
+/* ★ 外部 AI 回答：把用户"在浏览器里问完 → 复制 → 粘贴回来"这一步变成一等公民。
+ *   此前只能靠手插一条消息 —— 插进去的进不了上下文切片、丢掉来源、无法匿名。 */
+const {
+  EXTERNAL_SOURCES, parsePastedLabel, createExternalMessage, summarizeExternal,
+} = require('../core/external');
 const { MeetingOrchestrator } = require('../core/orchestrator');
 const { STRATEGY } = require('../core/speaker');
 // ★ 本轮新增：角色库 + 会议模式 + 上下文组装（core 层零改动，只在这里接线）
@@ -163,6 +216,16 @@ const flowEl = document.getElementById('flow');
 const selMode = document.getElementById('sel-mode');
 const selSet = document.getElementById('sel-set');
 const btnRun = document.getElementById('btn-run');
+const extbox = document.getElementById('extbox');
+const extHead = document.getElementById('ext-head');
+const extToggle = document.getElementById('ext-toggle');
+const extCount = document.getElementById('ext-count');
+const extSource = document.getElementById('ext-source');
+const extModel = document.getElementById('ext-model');
+const extText = document.getElementById('ext-text');
+const extQuestion = document.getElementById('ext-question');
+const extAdd = document.getElementById('ext-add');
+const extList = document.getElementById('ext-list');
 
 /** 上下文切片 → 中文人话（流程条与场景卡共用） */
 const SLICE_CN = {
@@ -699,7 +762,12 @@ btnRun.addEventListener('click', async () => {
             draft: currentDraft || task,   // ★ 有真草稿就给真草稿（此前一直错填成任务原文）
             critiques: prevCritiques,
             messages: meeting.messages
-              .filter((m) => m.senderType !== 'user')
+              // ★ 参与切片的是「参会者的发言」+「外部 AI 的回答」。
+              //   - 排除 user：用户输入走 task 字段；若混进 messages 会被当成"某人说过的话"
+              //   - 排除 system：系统提示不是发言
+              //   - 保留 external：这正是"复制回来"的外部咨询结论，
+              //     必须让系统内的 AI 看得到，否则那一圈外部咨询等于白问
+              .filter((m) => m.senderType === 'agent' || m.senderType === 'external')
               .map((m) => ({ senderId: m.senderId, content: m.content, kind: m.kind })), // ★ 保留 kind
           });
           log(`   [切片 ${stage.slice}] 注入 ${sl.included.join(',') || '（空）'} · ${sl.text.length} 字`
@@ -948,6 +1016,90 @@ log('选角是「能力感知」的：先按能力门槛淘汰不合格的，再
 log('鼠标悬停格子右下角的角色名，可以看到「为什么是它」（适配分 + 优势维度）。', 'warn');
 log('模式下拉旁会显示「什么时候用 / 典型例子 / 什么时候别用 / 产出」，选一个模式即可看到。', 'warn');
 logCasting();   // renderApiSeats() 里只做了分配，选角表要在这里打
+
+/* ══════════════════════════════════════════════════════════════
+   外部 AI 回答面板 —— 用户"复制回来"那一步的落点
+   ★ 必须放在这里（meeting 已于上方创建）。
+     若把它挪到文件头的 DOM 引用区，renderExternalCount() 会在
+     `const meeting` 初始化之前访问它 → TDZ 崩溃，整个 renderer 一行都不跑。
+   ══════════════════════════════════════════════════════════════ */
+const escHtml = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function renderExternalCount() {
+  const list = meeting.messages.filter((m) => m.senderType === 'external');
+  const s = summarizeExternal(meeting.messages);
+  extCount.textContent = `${s.total} 条`;
+  extCount.classList.toggle('has', s.total > 0);
+  extToggle.textContent = extbox.classList.contains('open') ? '收起 ▴' : '展开 ▾';
+  extList.innerHTML = list.map((m) => {
+    const src = (m.external && m.external.provider) || '未知来源';
+    const mdl = m.external && m.external.model ? ` · ${m.external.model}` : '';
+    const brief = String(m.content || '').replace(/\s+/g, ' ').slice(0, 56);
+    return `<div class="item"><span class="p">${escHtml(src)}${escHtml(mdl)}</span>`
+      + `<span class="x">${escHtml(brief)}…</span></div>`;
+  }).join('');
+}
+
+/* 来源下拉：常见外部 AI 都列出来，用户也可以选「其他来源」手填 */
+for (const s of EXTERNAL_SOURCES) {
+  const o = document.createElement('option');
+  o.value = s.id;
+  o.textContent = s.hint ? `${s.label} · ${s.hint}` : s.label;
+  extSource.appendChild(o);
+}
+
+extHead.addEventListener('click', () => {
+  extbox.classList.toggle('open');
+  extToggle.textContent = extbox.classList.contains('open') ? '收起 ▴' : '展开 ▾';
+});
+
+/* 输入时：① 有内容才允许提交 ② 开头若带【元宝】这类标注，自动把来源切过去 */
+extText.addEventListener('input', () => {
+  const v = extText.value.trim();
+  extAdd.disabled = !v;
+  if (!v) return;
+  const p = parsePastedLabel(v);
+  if (p.provider) {
+    const hit = EXTERNAL_SOURCES.find((s) => s.id === p.provider);
+    if (hit) extSource.value = hit.id;
+  }
+});
+
+extAdd.addEventListener('click', () => {
+  const raw = extText.value.trim();
+  if (!raw) return;
+  const parsed = parsePastedLabel(raw);
+  const provider = parsed.provider || extSource.value;
+  try {
+    const msg = createExternalMessage({
+      meetingId: meeting.meetingId,
+      provider,
+      content: parsed.text,
+      model: extModel.value.trim() || null,
+      question: extQuestion.value.trim() || null,
+      round: meeting.round,
+      createMessage,
+    });
+    meeting.pushMessage(msg);
+    const s = summarizeExternal(meeting.messages);
+    log(`[外部回答] 已加入「${provider}」${parsed.provider ? '（自动识别来源，标注已剥掉）' : ''}`
+      + ` · ${parsed.text.length} 字 · 第 ${msg.round} 轮`, 'ok');
+    log(`  → 累计 ${s.total} 条，来源：${s.providers.join('、')}`
+      + `　后续阶段的上下文切片会包含它（OTHERS / ALL / CANDIDATES 都看得到）`, 'warn');
+    extText.value = '';
+    extQuestion.value = '';
+    extAdd.disabled = true;
+    extbox.classList.add('open');
+    renderExternalCount();
+  } catch (e) {
+    log(`[外部回答] 加入失败：${e.message}`, 'bad');
+  }
+});
+
+renderExternalCount();
+log('侧栏「外部 AI 回答」：在浏览器里问完元宝/谷歌/千问，把回答贴进来 —— 它会成为一条会议消息并参与后续切片。', 'warn');
 </script>
 </body>
 </html>
