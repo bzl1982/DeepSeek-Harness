@@ -33,3 +33,17 @@ GPT的启动特效建议.MD
 # 根目录临时文件
 /main.js
 /rel-out.json
+
+# ★ Agent 工作记忆与本地备份 —— 含凭据（token/密码/API key），绝不入库
+.workbuddy/
+_backup*/
+_archive/
+
+# 任何形式的本地备份文件（改代码前的手工副本，不入库）
+*.bak
+*.bak-*
+*.before-*
+*-bak-*
+
+# 官方源码参考与本地调试产物（含第三方源码副本、CDP 调试脚本与截图，不入库）
+desktop/official-ref/
