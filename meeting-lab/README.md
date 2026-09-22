@@ -30,11 +30,20 @@ cd "D:\DeepSeek Harness\meeting-lab"
 node --test test/*.test.js
 ```
 
-当前：**292 个用例全部通过**。覆盖——
+当前：**389 个用例全部通过**。覆盖——
 
-- `phase-runner.test.js` —— ★ **阶段编排层**（28 用例）：接龙真生效 / 并行快照冻结 /
+- `artifact-bus.test.js` —— ★ **产物总线**（38 用例）：五种标注写法解析 / 路径安全闸
+  （绝对路径·盘符·UNC·`..`·可执行扩展名·保留名）/ 契约归属校验 / **跨作者冲突先到者保留** /
+  真磁盘落盘与 sha256 / **认不出的块必须进 rejected（不许静默丢）**
+- `build-verify.test.js` —— ★ **真编译验证**（29 用例）：`node --check` 真解析（含准确行号）/
+  引用完整性（**注释与字符串里的示例路径不算引用** —— 误报会让会议白跑一轮）/
+  **空工作区必须返回 null 而非 true** / 模型自述"通过"无法翻案 / 默认不执行任何 AI 写的代码
+- `build-loop.test.js` —— ★ **build 流水线**（30 用例）：契约文本 → `{owner, module}` /
+  **负责人不是参会者就丢弃**（一个错的归属比没有归属更糟：会放行越界写入）/
+  **失败清单逐字稳定**（否则收敛判据会失效）
+- `phase-runner.test.js` —— ★ **阶段编排层**（33 用例）：接龙真生效 / 并行快照冻结 /
   组边界 / 组长只读本组 / 归并只读组长 / ballot 不进归并 / 超量压缩 / 归并幂等 / 失败隔离 /
-  **试算与静态预估逐一对账**
+  **试算与静态预估逐一对账** / 阶段提示词注入（逐人不同 + 异常不影响会议）
 - `panel-group.test.js` —— ★ **Q7 分组降本**：9 人分 3 组，注入量 45 → 24份
 - `external.test.js` —— ★ **外部 AI 回答成为一等公民**（17 用例）：粘贴标注解析 / 进切片 / 匿名 / 审计
 - `completion.test.js` —— 完成检测：信号不足不误判、流式短暂稳定不误判、超时收敛
@@ -82,6 +91,9 @@ meeting-lab/
 │   ├── orchestrator.js         # ★ 会议编排：两阶段（先握手后发言）+ 失败隔离 + speakTo（逐人发送）
 │   ├── modes.js                # ★ 模式 = 阶段序列 + 上下文切片 + 终止判据 + 成本估算
 │   ├── phase-runner.js         # ★ 阶段编排器：把 modes 的契约真正执行（接龙/组边界/归并约束）
+│   ├── artifact-bus.js         # ★ 产物总线：AI 回复 → {path,content} → 安全落盘（三道安全闸）
+│   ├── build-verify.js         # ★ 真编译验证：node --check + 引用完整性 + 可选 npm run build
+│   ├── build-loop.js           # ★ build 流水线：契约解析 → 交付说明 → 收集落盘 → 出证
 │   ├── roles.js                # 角色库 + 分配（按能力选角，防"9 个复读机"）
 │   ├── casting.js              # 能力感知选角 + 席位候选排名账本
 │   ├── context-strategy.js     # 角色分化提示 + Hy4 注入公式 + KIMI 触发条件
@@ -97,7 +109,7 @@ meeting-lab/
 │   ├── api-adapter.js          # 真实 API 通道（主席/压缩/判停走这条）
 │   ├── human-relay.js          # 人工中转（座位层）
 │   └── dsh-config.js           # 复用客户端已配置的模型/密钥（带脱敏）
-├── test/                       # node --test（292 用例）
+├── test/                       # node --test（389 用例）
 ├── demo/                       # 终端演示（run-demo / run-modes-demo / run-casting-demo）
 ├── tools/                      # 验证与生成脚本（见下）
 └── shell/                      # 最小 Electron 壳（webview + CDP 可视化验证）
@@ -202,9 +214,8 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 1. 把 `core/` 抽成客户端可复用的模块（仍不碰 `meeting.html` 的现有逻辑）
 2. 把 `shell/` 的 driver 换成客户端 `meeting.html` 里那套（`wv.insertText` + `wv.debugger`）——**已在 shell 里预演过，可直接搬**
-3. 客户端 `meeting.html` 接入：状态灯 + 附件握手 + 会议记录模型 + **阶段编排器**（`core/phase-runner.js` 可直接复用）
-4. `build` 模式的产物落到 `{path, content}` 落盘（现在只当文本收）+ 真编译验证
-5. 保留升级路径：Meeting Core 与编排层之间协议已隔离，将来可换成 Microsoft Agent Framework sidecar
+3. 客户端 `meeting.html` 接入：状态灯 + 附件握手 + 会议记录模型 + **阶段编排器**（`core/phase-runner.js` 可直接复用）+ **产物链路**（`core/build-loop.js` 可直接复用）
+4. 保留升级路径：Meeting Core 与编排层之间协议已隔离，将来可换成 Microsoft Agent Framework sidecar
 
 ---
 
@@ -212,6 +223,14 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 - ~~`streamEnd` 信号暂未接入~~ → **已接入**：见 `core/stream-tracker.js` + `shell/cdp-driver.js`
   （纯逻辑部分已 15 个用例覆盖；CDP 挂载需真实网页验证，见 `shell/cdp-driver.js` 注释）
+- ~~`build` 模式的产物只当文本收~~ → **已落地**：见 `core/artifact-bus.js` + `core/build-verify.js`
+- ★ **`build` 档会执行 AI 写的代码**：默认的两档（`syntax` / `static`）是纯静态检查，
+  不执行任何东西；第三档 `npm run build` 等于把 AI 的代码在本机跑起来。
+  要开必须显式选，UI 上也会再提示一次 —— **这个区别的性质不同，不能默认开**。
+- **TS / JSX 不验证**：本层没有内置 tsc，遇到 `.ts/.tsx/.jsx` 会如实记为「未经验证」
+  并写进给集成席的报告，而不是当成通过（诚实优先于"看起来全能"）。
+- **`.js` 里混用 `import` 与 `require` 不会被 `--check` 抓**：`--check` 是纯语法检查，
+  不检查运行时可用性。要抓这类问题得真跑（第三档）。
 - 访问真实网页 AI 需自行登录；各站点 ToS 禁止自动化，属内部研究，请限速使用
 - `shell/` 用了 `nodeIntegration: true`（仅为本地测试台方便），**不可照搬到生产**
 
@@ -219,7 +238,43 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 ## 修订记录
 
-### 本轮：阶段编排层 —— 让模式契约**真正执行**
+### 本轮：build 模式的产物**真落盘 + 真编译** —— 文本第一次变成文件
+
+`produces:'artifact'` 一直是消息上的一个字符串标记：产物从未变成磁盘上的文件。
+后果是一条完整的失效链：
+
+| 断点 | 后果 |
+|---|---|
+| 契约是文本，但 `selectSlice(CONTRACT)` 要 `{text, modules}`，**中间没有解析器** | `contract.modules` 永远 undefined →「你负责的模块」从未注入 → 执行者不知道自己该交哪个文件 |
+| 产物只是回复文本 | 「集成验证」没有文件可编译，集成席只能"读一遍说没问题" |
+| 没有真实编译结果 | `judgeBuildPass` 诚实地**拒绝采信模型自述**（返回 null），但没有真结果接替它 → `shouldStop('build')` 永远 `degraded`、`missingInput:['buildPass']` → **判据静默失效，只能跑满 maxIterations(4)** —— 与上一轮 `winnerId` 那个坑**同族** |
+
+本轮补上这条链路（`artifact-bus` + `build-verify` + `build-loop` + 测试台接线）：
+
+- **解析**：五种代码块标注写法都认（`path=` / info 里跟路径 / 整段即路径 / 首行注释 / 前一行标题，
+  外加结构化 JSON 产物包）；**认不出来的块进 `rejected` 而不是被静默丢掉** ——
+  丢文件比报错危险得多（会议照常往下走，"失败"被伪装成"通过"）。
+- **落盘**：三道安全闸 —— 路径归一（拒绝对路径/盘符/UNC/`..`/控制字符/可执行扩展名/保留名）、
+  resolve 后再验一次在 root 内、**root 必须显式传且没有默认值**（防 AI 产物覆盖项目自己的源码）。
+  跨作者写同一路径 → **先到者保留 + 记冲突**（让后者覆盖就把"哪儿断了"的证据抹掉了）。
+- **真编译（三档，默认最安全）**：`node --check` 真解析（带准确行号）/ 引用完整性
+  （`require('./x')` 指向不存在的文件 —— `--check` 抓不到，因为语法完全正确）/
+  可选 `npm run build`。**引用检查用状态机而非正则**：注释与字符串里的示例路径不算引用，
+  误报的代价是让会议白跑一轮修复回路。
+- **判定**：`buildPass` 只来自执行结果。空工作区返回 `null` 而非 `true`
+  （"没有文件通过一切检查"不等于通过 —— 那正是 `judgeBuildPass` 拒绝犯的错）。
+  模型自述只在**一个方向**可信：说"未通过"采信，说"通过"一律不采信。
+- **修复闭环**：真实失败清单转成 critiques 派给原作者；该文本**逐字稳定**
+  （含时间戳会让"已修好"被判成"又出现新批评"，收敛永不发生）。
+- **注入点**：新增 `ctx.phasePrompt(stage, providerId)` —— 契约模板 / 逐人交付说明 /
+  编译报告都从这里进 prompt。**不让调用方在外面另拼一份**：那样会有两条组装路径，迟早漂移。
+
+验证：单测 **389/389**（+97）｜build 端到端 **47/47**（走真 orchestrator，连跑两次幂等；
+其中让集成席故意说"我已全部检查通过、可以交付"，verdict 必须仍是 `false`）｜
+build UI **17/17**（真实页面；含 `--live` 真启动一次会议，确认工作区建在系统临时目录而非项目目录）
+｜既有的阶段编排 34/34、链路 11/11、外部回答 19/19、测试台自检 9/9 全部无回归。
+
+### 上一轮：阶段编排层 —— 让模式契约**真正执行**
 
 问题：`planPhases()` 早就产出了 `speak/slice/groupSize/groupLeaders/produces` 一整套契约，
 但每个阶段都是 `orch.runTurn()`（**广播**：同一段 text 发给人人），于是三条契约在运行期全部失效：

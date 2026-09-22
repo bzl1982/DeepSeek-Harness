@@ -392,3 +392,81 @@ test('分组后发言者数 > groupSize 才分组（边界与 plan 一致）', a
   const r2 = await makeRig().runner.runPlan(panelPlan(8), { task: '议题', round: 1 });
   assert.strictEqual(r2.stages.length, 4, '9 > 8 → 分组（8 人组 + 1 人组）= 2 组内 + 组长 + 归并');
 });
+
+/* ═══════════════ ⑧ 阶段提示词注入点（ctx.phasePrompt） ═══════════════ */
+
+test('phasePrompt：每个阶段每个人都被调用一次，且**可以逐人给不同内容**', async () => {
+  const { runner, textFor } = makeRig();
+  const calls = [];
+  const plan = planPhases('build', { participants: NINE, assignment: ASSIGN9 });
+  const impl = plan.find((p) => p.name === '分头实现');
+
+  await runner.runStage(impl, {
+    task: '议题', round: 1,
+    phasePrompt: (stage, pid) => { calls.push(`${stage.name}:${pid}`); return `GUIDE-${pid}`; },
+  });
+
+  /* 这是 build 模式能"各写各的文件"的前提：注入回调必须知道当前是谁，
+   * 否则"你交 src/util.js"就只能广播给所有人。 */
+  assert.ok(calls.includes('分头实现:a') && calls.includes('分头实现:i'), '每个人都要被问到');
+  assert.strictEqual(calls.length, impl.speakers.length, '正好每人一次，不多不少');
+  assert.ok(textFor('a')[0].includes('GUIDE-a'), 'a 收到自己的说明');
+  assert.ok(textFor('i')[0].includes('GUIDE-i'), 'i 收到自己的说明');
+  assert.ok(!textFor('a')[0].includes('GUIDE-i'), '★ 逐人不同，不是广播');
+});
+
+test('phasePrompt 返回 null/空串 → 不附加任何东西（原文一字不改）', async () => {
+  const r1 = await makeRig().runner.runStage(
+    { name: '广播', index: 0, speakers: ['a', 'b'], speak: SPEAK.PARALLEL, slice: SLICE.TASK },
+    { task: '议题', round: 1 },
+  );
+  const r2 = await makeRig().runner.runStage(
+    { name: '广播', index: 0, speakers: ['a', 'b'], speak: SPEAK.PARALLEL, slice: SLICE.TASK },
+    { task: '议题', round: 1, phasePrompt: () => null },
+  );
+  assert.strictEqual(r2.calls, r1.calls);
+  const base = await makeRig();
+  await base.runner.runStage(
+    { name: '广播', index: 0, speakers: ['a'], speak: SPEAK.PARALLEL, slice: SLICE.TASK },
+    { task: '议题', round: 1, phasePrompt: () => '' },
+  );
+  assert.strictEqual(base.textFor('a')[0].trim(), '议题', '空串附加不该改变文本');
+});
+
+test('★ phasePrompt 抛异常不影响会议 —— 收敛为"没有附加内容"', async () => {
+  const { runner, textFor } = makeRig();
+  const r = await runner.runStage(
+    { name: '广播', index: 0, speakers: ['a', 'b'], speak: SPEAK.PARALLEL, slice: SLICE.TASK },
+    {
+      task: '议题', round: 1,
+      phasePrompt: () => { throw new Error('注入器炸了'); },
+    },
+  );
+  assert.strictEqual(r.calls, 2, '一个人都不该因为注入器出错而漏发');
+  assert.deepStrictEqual(r.failed, []);
+  assert.strictEqual(textFor('a')[0].trim(), '议题', '退化成"没有附加内容"');
+});
+
+test('phasePrompt 接收 (stage, providerId)，能按 stage.produces 分流', async () => {
+  const { runner } = makeRig();
+  const seen = [];
+  await runner.runPlan(
+    [{ name: '出方案', index: 0, speakers: ['a'], speak: SPEAK.PARALLEL, slice: SLICE.TASK, produces: 'candidate' }],
+    {
+      task: 't', round: 1,
+      phasePrompt: (stage, pid) => { seen.push([stage.produces, pid]); return null; },
+    },
+  );
+  assert.deepStrictEqual(seen, [['candidate', 'a']]);
+});
+
+test('dryRun 不调用 phasePrompt（试算不发消息，也就不该产生附加内容）', () => {
+  const runner = new PhaseRunner({ speakTo: async () => ({ ok: true }) });
+  let called = 0;
+  const dry = runner.dryRun(panelPlan(3), {
+    task: '议题', messages: [],
+    phasePrompt: () => { called += 1; return 'X'; },
+  });
+  assert.strictEqual(called, 0, '试算阶段不该触达注入器');
+  assert.ok(dry.injectedTotal > 0, '试算本身仍然正常');
+});

@@ -99,6 +99,11 @@
     <label class="pick">会议模式<select id="sel-mode"></select></label>
     <label class="pick">角色组<select id="sel-set"></select></label>
     <label class="pick" title="专家会诊分组降本：把「9 人顺序接龙(O(N²))」变成「组内接龙 + 组长接龙」，只对「专家会诊」生效">会诊分组<select id="sel-group"></select></label>
+    <label class="pick" id="lbl-buildlevel" title="工程交付模式的产物验证强度。前两档**不执行任何 AI 写的代码**；第三档会真的跑 npm run build（等于执行它写的代码），只在信任产物时开">产物验证<select id="sel-buildlevel">
+      <option value="syntax">仅语法（node --check）</option>
+      <option value="static" selected>语法 + 引用完整性</option>
+      <option value="build">★ 再跑 npm run build（会执行代码）</option>
+    </select></label>
     <button id="btn-recast" class="ghost" title="用新的随机种子按模型能力重新选角">重排角色</button>
     <input id="topic" value="请评审「通辽会议接入微软多智能体框架」的可行路径。" />
     <button id="btn-run">开始会议</button>
@@ -175,7 +180,18 @@ const { createWebAdapter } = require('../adapters/web-adapter');
 /* ★ 本轮新增：阶段编排器 —— 把 planPhases 的契约（接龙 / 组边界 / 归并约束）真正执行。
  *   此前每个阶段都是 orch.runTurn()（**广播**：同一段 text 发给人人），
  *   于是"顺序接龙"名不副实、组边界没人管、归并照样读全部明细（分组白做）。 */
-const { PhaseRunner } = require('../core/phase-runner');
+const { PhaseRunner, FILE_PRODUCING } = require('../core/phase-runner');
+/* ★ 本轮新增：build 模式的产物落地链路（文本 → 磁盘文件 → 真编译 → 可信判定）。
+ *   此前 produces:'artifact' 只是消息上的一个字符串标记，产物从未变成文件，
+ *   于是「集成验证」无从验证，judgeBuildPass 也永远拿不到真实结果。 */
+const { ArtifactStore } = require('../core/artifact-bus');
+const {
+  CONTRACT_TEMPLATE, contractFor, artifactPromptFor, collectStageArtifacts,
+  verifyWorkspace, buildReportText, critiquesFrom,
+} = require('../core/build-loop');
+const osPath = require('path');
+const osMod = require('os');
+const fsMod = require('fs');
 const dsWeb = require('../adapters/deepseek-web');
 const genericWeb = require('../adapters/generic-web');
 
@@ -222,6 +238,8 @@ const flowEl = document.getElementById('flow');
 const selMode = document.getElementById('sel-mode');
 const selSet = document.getElementById('sel-set');
 const selGroup = document.getElementById('sel-group');
+const selBuildLevel = document.getElementById('sel-buildlevel');
+const lblBuildLevel = document.getElementById('lbl-buildlevel');
 const btnRun = document.getElementById('btn-run');
 const extbox = document.getElementById('extbox');
 const extHead = document.getElementById('ext-head');
@@ -736,8 +754,48 @@ btnRun.addEventListener('click', async () => {
   let borda = null;           // Borda 结果（名次均值 + coverage + 可比性）
   let winnerId = null;        // 本轮定标（已映射回真实 providerId，可跨轮比较）
   let prevWinnerId = null;    // 上一轮定标（same-winner 判据的基线）
-  let buildPass = null;       // 集成验证结果（null = 未知/不采信）
+  let buildPass = null;       // ★ 集成验证结果 —— 由**本机真编译**给出（不再是模型自述）
   let currentDraft = '';      // ★ 当前草稿 = 最近一次"改进/修订"阶段的产出（DRAFT 切片的正确输入）
+
+  /* ══ ★★ build 模式的产物工作区 ══════════════════════════════════════
+   * 为什么每次开跑都新建一个、且放在系统临时目录：
+   *   「分头实现」阶段会被要求吐出 `index.html`、`package.json` 这种**与真实项目重名**的文件。
+   *   一旦工作区根目录配错，AI 产出的文件就会**覆盖 meeting-lab 自己的源码**。
+   *   所以 ArtifactStore 强制要求显式 root（没有默认值），这里也从不使用项目目录。
+   * ═══════════════════════════════════════════════════════════════════ */
+  const buildLevel = selBuildLevel ? selBuildLevel.value : 'static';
+  let artifactStore = null;
+  let buildReport = '';       // 给集成席的真实结果报告
+  let buildFailText = '';     // 给修复者的真实失败清单
+  let buildContract = null;   // 契约结构 { text, modules }（由「冻结契约」阶段解析而来）
+  if (currentMode === 'build') {
+    const root = osPath.join(osMod.tmpdir(), `dsh-build-${Date.now().toString(36)}`);
+    artifactStore = new ArtifactStore({ root });
+    artifactStore.clean();
+    log(`[产物工作区] ${root}`, 'hd');
+    log(`   验证档位：${buildLevel}`
+      + (buildLevel === 'build'
+        ? '　★ 会真的执行 npm run build（等于在本机跑 AI 写的代码）'
+        : '　不执行任何 AI 写的代码'), buildLevel === 'build' ? 'warn' : 'ok');
+  }
+
+  /**
+   * ★ 阶段提示词注入（统一走 PhaseRunner 的 ctx.phasePrompt）。
+   *   三处用途，全部是"工具产出的真实信息"，而不是让调用方在外面另拼一份 prompt
+   *   （那会有两条组装路径，迟早漂移 —— plan/execute 分离踩过这个坑）。
+   */
+  const buildPhasePrompt = (st, pid) => {
+    if (st.produces === 'contract') return CONTRACT_TEMPLATE;
+    if (FILE_PRODUCING.includes(st.produces)) {
+      const parts = [];
+      // 修复者要拿到**真实失败清单**（编译器输出），而不是"某个 AI 的意见"
+      if (st.produces === 'patch' && buildFailText) parts.push(buildFailText);
+      parts.push(artifactPromptFor(buildContract, pid));
+      return parts.join('\n\n');
+    }
+    if (st.produces === 'integration') return buildReport || null;
+    return null;
+  };
 
   try {
     while (true) {
@@ -754,6 +812,11 @@ btnRun.addEventListener('click', async () => {
 
       let critiques = [];
       winnerId = null;            // 每轮重置：本轮的定标结果
+      /* ★ build 状态也要每轮重置 —— 否则上一轮的编译结果会漏进这一轮的判据。
+       *   （buildContract 不在此列：它在「冻结契约」阶段被重新解析，每轮自然刷新。） */
+      buildPass = null;
+      buildReport = '';
+      buildFailText = '';
       for (const stage of plan) {
         if (!stage.speakers.length) {
           log(`▶ 阶段「${stage.name}」无人发言，跳过（${stage.reason}）`, 'warn');
@@ -796,14 +859,17 @@ btnRun.addEventListener('click', async () => {
         }
 
         /* ★ 分工：
-         *   「上下文因人而异」的阶段（OTHERS / ALL）→ 走阶段编排器**逐人发送**：
+         *   「上下文因人而异」的阶段 → 走阶段编排器**逐人发送**：
          *      · sequential 时每人看到前几人**本阶段刚产出**的内容（真接龙）
          *      · 分组时按组边界裁剪（组间不可见）→ 降本真的落地
          *      · 归并阶段只读组长产出 + 剔除名次表（防跟票）
+         *      · ★ 产出文件的阶段（artifact/patch）：每人该交的文件不同，
+         *        「你交 src/util.js」这种话广播出去就废了 —— 必须逐人。
          *   其余阶段（固定产物：TASK/MATERIAL/DRAFT/CRITIQUES/CONTRACT/CANDIDATES，
          *   以及 verdict 的 Borda 输入）人人看到同一份 → 仍用 runTurn 广播，行为不变。 */
-        const rosterStage = stage.produces !== 'verdict'
-          && (stage.slice === SLICE.OTHERS || stage.slice === SLICE.ALL);
+        const perPersonStage = FILE_PRODUCING.includes(stage.produces)
+          || stage.slice === SLICE.OTHERS || stage.slice === SLICE.ALL;
+        const rosterStage = stage.produces !== 'verdict' && perPersonStage;
 
         let r;
         if (rosterStage) {
@@ -815,6 +881,9 @@ btnRun.addEventListener('click', async () => {
             candidates: null,
             round: iteration,
             timeoutMs: 180000,
+            // ★ build 模式的两处注入：契约（CONTRACT 切片要用）+ 阶段提示词
+            contract: buildContract || stageCtx.contract || null,
+            phasePrompt: currentMode === 'build' ? buildPhasePrompt : null,
           });
           const sr = await phaseRunner.runStage(stage, stageCtx);
           r = { results: sr.results, ok: sr.ok, failed: sr.failed, skipped: sr.skipped };
@@ -845,6 +914,76 @@ btnRun.addEventListener('click', async () => {
         const okTexts = r.results
           .filter((x) => x.ok && (x.text || x.content))
           .map((x) => ({ providerId: x.providerId, text: String(x.text || x.content) }));
+
+        /* ══ ★★ 产物阶段：文本 → 磁盘文件 → 真编译 ═══════════════════════════
+         * 这是 build 模式的临界点，也是此前完全缺失的一段：
+         *   produces:'artifact' 只是消息上的一个标记，产物从未变成文件，
+         *   于是「集成验证」只能读文本猜，judgeBuildPass 也永远拿不到真实结果
+         *   → shouldStop('build') 永远 degraded，会议只能跑满 4 轮。
+         * ═══════════════════════════════════════════════════════════════════ */
+        if (artifactStore && FILE_PRODUCING.includes(stage.produces)) {
+          const col = collectStageArtifacts(
+            { name: stage.name, results: r.results },
+            { store: artifactStore, contract: buildContract, round: iteration },
+          );
+          log(`   [产物落盘] ${col.written} 个文件`
+            + `　${Object.entries(col.byOwner).filter(([, v]) => v.paths)
+              .map(([k, v]) => `${k}:${v.paths.join('+')}`).join('　')}`, col.written ? 'ok' : 'bad');
+          for (const [pid, v] of Object.entries(col.byOwner)) {
+            if (!v.ok && v.reason === 'no-artifact-parsed') {
+              log(`      ⚠ ${pid} 已回复但没解析出任何文件（未标注路径？漏了代码块？）→ 不假装成功`, 'warn');
+            }
+            if (!v.ok && v.reason === 'stage-failed') log(`      ✗ ${pid} 本阶段失败，无产物`, 'bad');
+          }
+          // 契约被违背：写别人的模块 / 两个人抢同一个文件
+          for (const c of col.conflicts) {
+            log(`      ✗ 契约冲突：${c.path} 被 ${c.rejected} 重写（已保留 ${c.kept} 的版本）`, 'bad');
+          }
+          for (const c of col.outOfContract) {
+            log(`      ⚠ ${c.ownerId} 写了不属于自己的模块 ${c.path}（契约里没分给它）`, 'warn');
+          }
+          for (const rj of col.rejected) log(`      ⚠ 丢弃：${rj.snippet || rj.path} (${rj.reason})`, 'warn');
+
+          /* ── 立刻真编译：判定只能来自执行结果 ── */
+          const v = await verifyWorkspace({ store: artifactStore, level: buildLevel });
+          log(`   [真编译] ${verdictLine(v.verdict)}`, v.verdict.buildPass === true ? 'ok' : 'bad');
+          log(`      执行 ${v.res.ran} 项 · 磁盘 ${v.files.map((f) => f.path).join(', ')}`, 'warn');
+          for (const e of v.verdict.errors) {
+            log(`      ✗ ${e.file}${e.line ? ` 第 ${e.line} 行` : ''} [${e.code || e.kind}] ${String(e.message).slice(0, 90)}`, 'bad');
+          }
+          if (v.verdict.unverified.length) {
+            log(`      ⚠ 未验证（缺编译器）：${v.verdict.unverified.join(', ')}`, 'warn');
+          }
+          buildPass = v.verdict.buildPass;
+          buildReport = buildReportText({
+            verdict: v.verdict, res: v.res, files: v.files,
+            root: artifactStore.root, level: buildLevel,
+          });
+          buildFailText = v.verdict.errors.length ? critiquesFrom(v.verdict)[0] || '' : '';
+          if (buildFailText) {
+            // 真实失败清单也进 critiques：让"本轮有新增批评"的收敛判据看得见它
+            critiques = critiques.concat(`[本机编译] ${v.verdict.errors.length} 处错误`);
+          }
+        }
+
+        /* ── 契约阶段：文本 → { text, modules } ───────────────────────────
+         * ★ 这一步此前完全缺失：selectSlice(SLICE.CONTRACT) 期望的是
+         *   { text, modules:[{owner, module, signature}] }，而契约阶段产出的只是文本，
+         *   中间没有解析器 → contract.modules 永远是 undefined →
+         *   「你负责的模块」从未注入过，执行者不知道自己该交哪个文件。 */
+        if (stage.produces === 'contract') {
+          buildContract = contractFor(okTexts.map((x) => x.text).join('\n'), { participants: ids });
+          log(`   [契约解析] ${buildContract.modules.length} 个模块归属`
+            + (buildContract.modules.length
+              ? `　${buildContract.modules.map((m) => m.owner + '→' + m.module).join('　')}`
+              : ''), buildContract.modules.length ? 'ok' : 'warn');
+          if (!buildContract.modules.length) {
+            log('      ⚠ 契约里没解析出模块表 → 后面各人只能靠自己标 path=（越界与重名风险升高）', 'warn');
+          }
+          for (const rj of (buildContract.rejected || []).slice(0, 5)) {
+            log(`      ⚠ 归属丢弃：${rj.module} 的负责人「${rj.owner}」不在参会名单里`, 'warn');
+          }
+        }
 
         /* ── 出标产出 → 立刻匿名化（定序 + 打标） ────────────────────────
          * 必须在评标之前做，且**一次算好、全场复用**：
@@ -890,16 +1029,39 @@ btnRun.addEventListener('click', async () => {
           }
         }
 
-        /* ── 集成验证产出 → 判 build-pass ────────────────────────────── */
+        /* ── 集成验证产出 → 判 build-pass ──────────────────────────────
+         * ★★ 不对称设计（这是本轮补上的最要紧的一条）：
+         *
+         *   真编译结果（buildPass，来自本机执行）是**唯一可信的正向证据**；
+         *   模型自述只在一个方向上可信 —— 它说"未通过"通常是真话（没理由自贬），
+         *   它说"通过了"一律**不采信**（它没编译过，那句话是生成的不是验证的）。
+         *
+         *   所以这里的优先级是：
+         *     ① 有真编译结果       → 以它为准；模型说什么都不改变判定
+         *     ② 没真编译结果但模型承认失败 → 采信（保守方向，直接判未通过）
+         *     ③ 都没                → null（未知），判据会如实报 degraded
+         *
+         *   此前这里只有 `buildPass = judgeBuildPass(text).pass`，
+         *   而它按设计永远返回 null（不肯采信自述）→ 判据静默失效 → 空跑满 4 轮。
+         *   现在①把它接上了。 */
         if (stage.produces === 'integration') {
           const ivText = okTexts.map((x) => x.text).join('\n');
           const j = judgeBuildPass(ivText);
-          buildPass = j.pass;
-          log(`   [集成判定] ${j.pass === true ? '通过' : j.pass === false ? '未通过' : '未知'}`
-            + `（依据 ${j.confidence}${j.evidence ? `：${j.evidence}` : ''}）`,
-          j.pass === false ? 'bad' : 'warn');
-          if (j.pass === null) {
-            log('      ★ 模型自述"通过"不算通过 —— 真正的判据必须来自真实编译/运行结果（见报告 P1）', 'warn');
+          if (buildPass != null) {
+            log(`   [集成判定] 以**本机编译结果**为准：${buildPass ? '通过' : '未通过'}`
+              + `　（集成席自述"${j.evidence || '无明显表态'}"不改变判定）`,
+            buildPass ? 'ok' : 'bad');
+          } else if (j.pass === false) {
+            buildPass = false;
+            log(`   [集成判定] 无编译结果，但集成席承认未通过（可信：模型不会谎称自己失败）`
+              + `　依据「${j.evidence}」`, 'bad');
+          } else {
+            buildPass = null;
+            log('   [集成判定] ★ 无真实编译结果，而模型自述"通过"不可采信 → 判定未知'
+              + '（本模式未产生可编译的产物？）', 'bad');
+          }
+          if (buildPass === null) {
+            log('      → 判据会如实报"缺 buildPass"，本场将跑满迭代上限', 'warn');
           }
         }
 
@@ -967,6 +1129,7 @@ for (const s of listRoleSets()) {
 }
 selMode.value = currentMode;
 selSet.value = currentSet;
+syncBuildLevelUI();   // 产物验证档位只对「工程交付」可见（初始模式通常是别的，先按需隐藏）
 /* ★ 会诊分组下拉：0=不分组。它只对「专家会诊」生效（planPhases 内部判 mode==='panel'），
  *   别的模式选了也不会有副作用 —— 所以不做"仅 panel 可见"的显隐，少一处状态。 */
 for (const [v, label] of [
@@ -1033,6 +1196,11 @@ function renderScene() {
     + `<br><span class="k">· 提示：</span>${m.modelFit.tips.replace(/\*\*/g, '')}`;
 }
 
+/** 产物验证档位只对「工程交付」有意义 —— 别的模式不产生文件，显示了只会误导 */
+function syncBuildLevelUI() {
+  if (lblBuildLevel) lblBuildLevel.style.display = (currentMode === 'build') ? '' : 'none';
+}
+
 selMode.addEventListener('change', () => {
   currentMode = selMode.value;
   renderScene();
@@ -1049,6 +1217,7 @@ selMode.addEventListener('change', () => {
   }
   if (m.needs.includes('material')) log('[模式] 本模式以「材料」为主体：输入框内容会被当作待审材料', 'warn');
   if (m.needs.includes('draft')) log('[模式] 本模式以「草稿」为主体：输入框内容会被当作待改的产出物', 'warn');
+  syncBuildLevelUI();
 });
 
 selSet.addEventListener('change', () => {
@@ -1077,6 +1246,19 @@ selGroup.addEventListener('change', () => {
   for (const adv of b.advices) log(`   · ${adv}`, 'warn');
   if (panelGroupSize) {
     log('   · 分组后「归并结论」只读**组长摘要**（不读组内明细）—— 这是分组降本成立的前提，已由阶段编排层强制', 'warn');
+  }
+});
+
+/* ★ 产物验证档位：前两档不执行任何 AI 写的代码；第三档会真的跑 npm run build。
+ *   这个区别必须让用户看见 —— 它们的安全性质完全不同。 */
+selBuildLevel.addEventListener('change', () => {
+  const v = selBuildLevel.value;
+  if (v === 'build') {
+    log('[产物验证] ★ 已切到「再跑 npm run build」—— 这会**在本机执行 AI 写的代码**。'
+      + '只在信任产物、且知道它在干什么的时候用。', 'bad');
+    log('   · 前两档（仅语法 / 语法+引用）都是纯静态检查，不执行任何东西，日常建议用它们', 'warn');
+  } else {
+    log(`[产物验证] 切到「${v === 'syntax' ? '仅语法' : '语法 + 引用完整性'}」—— 纯静态检查，不执行 AI 写的代码`, 'ok');
   }
 });
 

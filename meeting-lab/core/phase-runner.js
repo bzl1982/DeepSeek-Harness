@@ -101,6 +101,13 @@ function defaultCompress(text, limit) {
   return `${text.slice(0, limit - 1)}…`;
 }
 
+/**
+ * 产出**文件**的阶段（produces 值）—— 这类阶段要按产物格式交付，
+ * 所以要给执行者附上"你交哪个文件、用什么标注"的说明。
+ * 见下方 ctx.artifactGuide。
+ */
+const FILE_PRODUCING = Object.freeze(['artifact', 'patch']);
+
 class PhaseRunner {
   /**
    * @param {object} opts
@@ -261,6 +268,34 @@ class PhaseRunner {
 
     if (stage.produces === 'verdict') {
       text = [text, this.verdictTemplate].filter(Boolean).join('\n\n');
+    }
+
+    /* ══ ★★ 阶段提示词注入点（ctx.phasePrompt）══
+     *
+     * 为什么必须在 runner 里做，而不是让调用方在外面拼 prompt：
+     *   走 runStage 时，**每个人最终拿到什么文本由 _buildTurn 按切片契约组装**，
+     *   调用方并不掌握它。若让调用方在外面另拼一份，就会出现两条组装路径，
+     *   迟早漂移 —— 这正是"plan 出契约、execute 另写一套"踩过的坑。
+     *
+     * 签名：(stage, providerId) => string | null
+     *   - 每个阶段、每个发言者都会被调用一次 → **可以逐人给不同的内容**（这是关键：
+     *     「分头实现」要告诉 p4 交 src/util.js、告诉 p1 交 src/app.js）
+     *   - 返回 null/空串表示这个阶段不附加任何东西
+     *   - 抛异常不影响会议（收敛为"没有附加内容"）
+     *
+     * build 模式的三处用途（都在 core/build-loop.js 里组装）：
+     *   契约阶段   → CONTRACT_TEMPLATE      （否则契约是散文，解析不出 {owner, module}）
+     *   产物阶段   → artifactPromptFor()     （否则模型不知道自己该交哪个文件）
+     *   集成阶段   → buildReportText()       （否则集成席只能靠"读一遍猜有没有问题"）
+     */
+    if (typeof ctx.phasePrompt === 'function') {
+      let extra = null;
+      try {
+        extra = ctx.phasePrompt(stage, providerId);
+      } catch (e) {
+        this.log('warn', `phasePrompt 抛错，忽略本次附加：${e && e.message}`, { stage: stage.name });
+      }
+      if (extra) text = [text, extra].filter(Boolean).join('\n\n');
     }
 
     return {
@@ -555,6 +590,7 @@ module.exports = {
   isGroupInnerStage,
   injectedCount,
   groupsOfPlan,
+  FILE_PRODUCING,
   VERDICT_TEMPLATE,
   NEVER_IN_MERGE_INPUT,
   DEFAULT_MAX_MERGE_CHARS,
