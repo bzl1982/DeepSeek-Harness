@@ -148,7 +148,14 @@ async function demoVerify() {
   out.empty = { verdict: empty.verdict, ran: empty.res.ran };
   out.emptyVerdictOf = verdictOf({ failures: [], ran: 0, summary: {} });
 
+  /* ★ 收尾必须连根目录一起删：
+   *   ArtifactStore.clean() 会 rmSync 后**重新 mkdir**（会议流程里 root 必须存在），
+   *   所以"删掉根目录本身"是调用方的责任 —— 漏了就会在 Temp 里每次留下两个空目录。
+   *   （这个疏漏是跑完报告后 `ls Temp/dsh-build-*` 时发现的。） */
   store.clean(); emptyStore.clean();
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(emptyRoot, { recursive: true, force: true });
+  out.cleaned = [root, emptyRoot];
   return out;
 }
 
@@ -435,7 +442,8 @@ async function main() {
 <div class="note">工作区里一个文件都没有，执行项 <code>ran = ${verify.empty.ran}</code>。<br>
 判定：<strong>buildPass = ${JSON.stringify(verify.empty.verdict.buildPass)}</strong>　理由：${esc(verify.empty.verdict.reason)}</div>
 <p class="kv">这是本轮刻意坚持的「诚实原则」：返回 <code>true</code> 等于说「虚无通过一切检查」。
-没有证据时，答案只能是「不知道」。</p>`);
+没有证据时，答案只能是「不知道」。</p>
+<p class="kv">（上面三个工作区都建在系统临时目录下，跑完连根目录一起删掉了 —— 没在项目目录里留任何东西。）</p>`);
 
   /* ── 契约归属 ── */
   H.push('<h2>六、契约归属（幻觉 owner 必须被丢弃）</h2>');

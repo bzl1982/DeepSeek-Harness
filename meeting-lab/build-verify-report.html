@@ -40,7 +40,7 @@
 <h1>build 模式：文本第一次变成文件</h1>
 <div class="sub">
   产物落盘 + 真编译验证 —— 修一条<strong>断成三截</strong>的失效链<br>
-  生成时间：2026/9/22 23:38:32　｜　提交：<code>6e10fe2 feat(meeting-lab): 文本第一次变成文件 —— 产物落盘 + 真编译验证</code>　｜　
+  生成时间：2026/9/22 23:40:32　｜　提交：<code>df104cf fix(meeting-lab): 「前一行」路径尾锚过紧 —— 两种常见写法整块产物丢失</code>　｜　
   工作目录：<code>meeting-lab/</code>
 </div>
 <h2>一、改的是什么：一条断成三截的失效链</h2>
@@ -161,7 +161,7 @@
 </table>
 <h2>五、真编译演示（真建工作区、真跑子进程）</h2>
 <h3>第一幕：3 个文件，2 处真实错误</h3>
-<p class="kv">工作区：<code>D:\Users\Admin\AppData\Local\Temp\dsh-build-report-19932</code>　文件：<code>config/app.json</code> <code>src/app.js</code> <code>src/math.js</code></p>
+<p class="kv">工作区：<code>D:\Users\Admin\AppData\Local\Temp\dsh-build-report-11332</code>　文件：<code>config/app.json</code> <code>src/app.js</code> <code>src/math.js</code></p>
 <table><tr><th style="width:110px">类型</th><th style="width:150px">文件</th><th style="width:60px">行</th><th style="width:180px">错误码</th><th>本机给出的原始结论</th></tr>
 <tr><td>json</td><td><code>config/app.json</code></td><td><span class="kv">—</span></td><td><code>invalid-json</code></td><td>Expected double-quoted property name in JSON at position 30 (line 1 column 31)</td></tr>
 <tr><td>refs</td><td><code>src/app.js</code></td><td><span class="kv">—</span></td><td><code>missing-ref</code></td><td>require 引用了「./user」，但产物里没有 src/user</td></tr>
@@ -178,6 +178,7 @@
 判定：<strong>buildPass = null</strong>　理由：没有任何检查可执行（工作区为空，或文件类型都不在可验证范围内）→ 不给出&quot;通过&quot;</div>
 <p class="kv">这是本轮刻意坚持的「诚实原则」：返回 <code>true</code> 等于说「虚无通过一切检查」。
 没有证据时，答案只能是「不知道」。</p>
+<p class="kv">（上面三个工作区都建在系统临时目录下，跑完连根目录一起删掉了 —— 没在项目目录里留任何东西。）</p>
 <h2>六、契约归属（幻觉 owner 必须被丢弃）</h2>
 <p class="kv">参会者名单：<code>p1 p2 p3</code>。喂进去的契约里混了两个<strong>不在名单里</strong>的负责人。</p>
 <table><tr><th style="width:150px">模块</th><th style="width:120px">负责人</th><th style="width:100px">结果</th><th>说明</th></tr>
@@ -211,12 +212,12 @@
 <h2>八、验证结果（本节数字由脚本实时跑出来的，不是手写的）</h2>
 <table><tr><th style="width:300px">验证项</th><th style="width:110px">结果</th><th style="width:90px">耗时</th><th>结论行</th></tr>
 <tr><td>全量单元测试</td><td><span class="chip ok">通过</span></td><td class="kv">3.6s</td><td class="mono">tests 400 ｜ pass 400 ｜ fail 0</td></tr>
-<tr><td>产物落盘 + 真编译（端到端，真 orchestrator）</td><td><span class="chip dim">—</span></td><td class="kv">1.0s</td><td class="mono">47 通过 / 0 失败</td></tr>
-<tr><td>build 模式 UI 接线（活页面）</td><td><span class="chip dim">—</span></td><td class="kv">16.9s</td><td class="mono">13 通过 / 0 失败</td></tr>
-<tr><td>阶段编排 / panel 分组</td><td><span class="chip dim">—</span></td><td class="kv">2.8s</td><td class="mono">34 通过 / 0 失败</td></tr>
+<tr><td>产物落盘 + 真编译（端到端，真 orchestrator）</td><td><span class="chip dim">—</span></td><td class="kv">1.2s</td><td class="mono">47 通过 / 0 失败</td></tr>
+<tr><td>build 模式 UI 接线（活页面）</td><td><span class="chip dim">—</span></td><td class="kv">17.0s</td><td class="mono">13 通过 / 0 失败</td></tr>
+<tr><td>阶段编排 / panel 分组</td><td><span class="chip dim">—</span></td><td class="kv">2.9s</td><td class="mono">34 通过 / 0 失败</td></tr>
 <tr><td>链路接线</td><td><span class="chip ok">通过</span></td><td class="kv">0.2s</td><td class="mono">11/11 项通过</td></tr>
 <tr><td>外部回答面板</td><td><span class="chip ok">通过</span></td><td class="kv">0.6s</td><td class="mono">19/19 项通过</td></tr>
-<tr><td>测试台自检</td><td><span class="chip ok">通过</span></td><td class="kv">8.5s</td><td class="mono">9/9 项通过</td></tr>
+<tr><td>测试台自检</td><td><span class="chip ok">通过</span></td><td class="kv">8.6s</td><td class="mono">9/9 项通过</td></tr>
 </table>
 <div class="note ok-note">全部通过。</div>
 <h2>九、实测得来的平台事实（写进注释，供以后省时间）</h2>
@@ -237,5 +238,5 @@
 </ul>
 <footer>
   meeting-lab · Phase 0 独立测试台　｜　报告由 <code>tools/build-build-report.js</code> 生成　｜
-  本轮总耗时 33.9s
+  本轮总耗时 34.2s
 </footer></div></body></html>
