@@ -125,7 +125,7 @@ meeting-lab/
 | `node tools/verify-external.js [端口] [--shot x.png]` | 外部 AI 回答面板 19 项端到端 |
 | `node tools/verify-panel-phases.js [--verbose]` | ★ **阶段编排层 34 项**：panel 分组真跑 + 归并约束 + 对账（纯 Node，不需浏览器） |
 | `node tools/verify-build-artifacts.js` | ★ **产物落盘 + 真编译 47 项**：走真 `MeetingOrchestrator` 演一场必然失败的交付，断言「自己说通过」不能翻案（纯 Node，不需浏览器） |
-| `node tools/verify-build-ui.js [端口] [--live]` | ★ **build 模式 UI 接线**：档位显隐 / 风险提示 / 产物阶段流程条；`--live` 真开一场会议并断言工作区在系统临时目录 |
+| `node tools/verify-build-ui.js [端口] [--live]` | ★ **build 模式 UI 接线 16 项（含 `--live` 20 项）**：窗口代码是否陈旧（sha256 对账）/ 档位显隐 / 风险提示 / 产物阶段流程条；`--live` 真开一场会议并断言工作区在系统临时目录 |
 | `node tools/check-api.js [--live]` | 检查 API 通道可用性 |
 | `node tools/build-modes-page.js` | 生成 `modes.html`（全模式一览页） |
 | `node tools/build-build-report.js [--no-run]` | ★ 生成本轮交付报告 `build-verify-report.html` —— **报告里的数字由它实时跑出来**，不是手写的 |
@@ -284,13 +284,22 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 验证：单测 **400/400**（+105）｜build 端到端 **47/47**（走真 orchestrator，连跑两次幂等；
 其中让集成席故意说"我已全部检查通过、可以交付"，verdict 必须仍是 `false`）｜
-build UI **17/17**（真实页面；含 `--live` 真启动一次会议，确认工作区建在系统临时目录而非项目目录）
+build UI **20/20**（真实页面；含 `--live` 真启动一次会议，确认工作区建在系统临时目录而非项目目录；
+不带 `--live` 时 16/16 —— 其中 ⓪ 会拿窗口里核心文件的 sha256 跟磁盘对一遍：
+`require` 是加载时解析的，改了 `core/` 不重载＝还在跑旧代码，这一节专门防这个坑）
 ｜既有的阶段编排 34/34、链路 11/11、外部回答 19/19、测试台自检 9/9 全部无回归。
 
 ★ 另附一份**能看的对账**：`node tools/build-build-report.js` → `build-verify-report.html`。
 报告里的数字（解析命中数、安全闸放行/拒绝、真编译抓到几处错、修好后判定是否翻过来、7 个验证套件的结论行）
 **全部由脚本实时跑出来**，不是手写的 —— 所以它既是文档也是一次对账；哪天不一致，报告自己会显示。
 （测试台里挂着 3 个真网页 AI 时 `Page.captureScreenshot` 会卡死，这份报告就是截图的替代方案。）
+
+★★ **顺手补上「窗口跑的可能是旧代码」这个坑**：`require` 是**加载时**解析的，
+改了 `core/` 下的文件而没重载页面，窗口里跑的还是旧代码 ——「看着改了、其实没生效」。
+本轮真撞上过：修好解析器后，跑着的窗口仍在用旧解析器（而 HTML 的改动却会立刻生效，两件事表现不一致，
+最容易误判）。现在 `shell/index.html` 把 6 个核心文件的 sha256 挂到 `window.__coreStamp`，
+`verify-build-ui.js` 的 ⓪ 节跟磁盘逐一对账；不一致就自动重载再对 ——
+顺带证明了「重载真的会重新 `require` 核心代码，不只是重取 HTML」。
 
 ### 上一轮：阶段编排层 —— 让模式契约**真正执行**
 

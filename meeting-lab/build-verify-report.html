@@ -40,7 +40,7 @@
 <h1>build 模式：文本第一次变成文件</h1>
 <div class="sub">
   产物落盘 + 真编译验证 —— 修一条<strong>断成三截</strong>的失效链<br>
-  生成时间：2026/9/22 23:40:32　｜　提交：<code>df104cf fix(meeting-lab): 「前一行」路径尾锚过紧 —— 两种常见写法整块产物丢失</code>　｜　
+  生成时间：2026/9/22 23:47:26　｜　提交：<code>9b41469 fix(meeting-lab): 报告脚本收尾漏删根目录 —— 每次在 Temp 留下两个空目录</code>　｜　
   工作目录：<code>meeting-lab/</code>
 </div>
 <h2>一、改的是什么：一条断成三截的失效链</h2>
@@ -161,7 +161,7 @@
 </table>
 <h2>五、真编译演示（真建工作区、真跑子进程）</h2>
 <h3>第一幕：3 个文件，2 处真实错误</h3>
-<p class="kv">工作区：<code>D:\Users\Admin\AppData\Local\Temp\dsh-build-report-11332</code>　文件：<code>config/app.json</code> <code>src/app.js</code> <code>src/math.js</code></p>
+<p class="kv">工作区：<code>D:\Users\Admin\AppData\Local\Temp\dsh-build-report-30852</code>　文件：<code>config/app.json</code> <code>src/app.js</code> <code>src/math.js</code></p>
 <table><tr><th style="width:110px">类型</th><th style="width:150px">文件</th><th style="width:60px">行</th><th style="width:180px">错误码</th><th>本机给出的原始结论</th></tr>
 <tr><td>json</td><td><code>config/app.json</code></td><td><span class="kv">—</span></td><td><code>invalid-json</code></td><td>Expected double-quoted property name in JSON at position 30 (line 1 column 31)</td></tr>
 <tr><td>refs</td><td><code>src/app.js</code></td><td><span class="kv">—</span></td><td><code>missing-ref</code></td><td>require 引用了「./user」，但产物里没有 src/user</td></tr>
@@ -189,7 +189,7 @@
 </table>
 <h2>七、失败清单必须逐字稳定</h2>
 <p class="kv">同一份失败连生成两次：
-<span class="chip bad">不一致</span>
+<span class="chip ok">逐字相同</span>
 　含时间戳/耗时：<span class="chip ok">没有</span></p>
 <p class="kv">为什么这么较真：这份文本要喂给 <code>newCritiques()</code> 做「本轮相对上轮无新增」判定。
 掺入噪声会让「已修好」被判成「又出现新批评」，<strong>收敛永不发生</strong>。</p>
@@ -211,15 +211,15 @@
 3. 不要解释，不要复述报错内容。</pre>
 <h2>八、验证结果（本节数字由脚本实时跑出来的，不是手写的）</h2>
 <table><tr><th style="width:300px">验证项</th><th style="width:110px">结果</th><th style="width:90px">耗时</th><th>结论行</th></tr>
-<tr><td>全量单元测试</td><td><span class="chip ok">通过</span></td><td class="kv">3.6s</td><td class="mono">tests 400 ｜ pass 400 ｜ fail 0</td></tr>
-<tr><td>产物落盘 + 真编译（端到端，真 orchestrator）</td><td><span class="chip dim">—</span></td><td class="kv">1.2s</td><td class="mono">47 通过 / 0 失败</td></tr>
-<tr><td>build 模式 UI 接线（活页面）</td><td><span class="chip dim">—</span></td><td class="kv">17.0s</td><td class="mono">13 通过 / 0 失败</td></tr>
-<tr><td>阶段编排 / panel 分组</td><td><span class="chip dim">—</span></td><td class="kv">2.9s</td><td class="mono">34 通过 / 0 失败</td></tr>
+<tr><td>全量单元测试</td><td><span class="chip ok">通过</span></td><td class="kv">3.7s</td><td class="mono">tests 400 ｜ pass 400 ｜ fail 0</td></tr>
+<tr><td>产物落盘 + 真编译（端到端，真 orchestrator）</td><td><span class="chip ok">通过</span></td><td class="kv">1.1s</td><td class="mono">47 通过 / 0 失败</td></tr>
+<tr><td>build 模式 UI 接线（活页面）</td><td><span class="chip ok">通过</span></td><td class="kv">17.0s</td><td class="mono">16 通过 / 0 失败</td></tr>
+<tr><td>阶段编排 / panel 分组</td><td><span class="chip ok">通过</span></td><td class="kv">2.9s</td><td class="mono">34 通过 / 0 失败</td></tr>
 <tr><td>链路接线</td><td><span class="chip ok">通过</span></td><td class="kv">0.2s</td><td class="mono">11/11 项通过</td></tr>
 <tr><td>外部回答面板</td><td><span class="chip ok">通过</span></td><td class="kv">0.6s</td><td class="mono">19/19 项通过</td></tr>
 <tr><td>测试台自检</td><td><span class="chip ok">通过</span></td><td class="kv">8.6s</td><td class="mono">9/9 项通过</td></tr>
 </table>
-<div class="note ok-note">全部通过。</div>
+<div class="note ok-note">全部通过，且每一项的结论都由数字算出来（没有"无法判定"）。</div>
 <h2>九、实测得来的平台事实（写进注释，供以后省时间）</h2>
 <table><tr><th style="width:320px">事实</th><th>说明</th></tr>
 <tr><td>Node 22.7+ 起 `--experimental-detect-module` 默认开启</td><td>含 `import` 的 `.js` 在无 `package.json` 时**自动判定为 ESM（退出码 0）**。所以「见到 import 就报错」是误报 —— 我的原假设是反的，实测后改了代码和用例</td></tr>
@@ -227,6 +227,7 @@
 <tr><td>Node 在语法错前会先打一行 `(node:32224) Warning:`</td><td>第一行里的数字是**进程号不是行号**。取行号必须跳过 `(node:` 开头的行（此处踩过真 bug）</td></tr>
 <tr><td>`ws` 模块在本机只有 `desktop/node_modules/ws`</td><td>`D:\Users\Admin\.workbuddy\binaries\node\workspace` 不存在；不过 Node 24 自带全局 `WebSocket`，多数情况可免</td></tr>
 <tr><td>测试台有 3 个真网页 AI 时截不了图</td><td>`Page.captureScreenshot` 会卡死（合成器被占住）→ 本报告就是那个替代方案</td></tr>
+<tr><td>★ `require` 是**加载时**解析的，改了 `core/` 不重载＝窗口还在跑旧代码</td><td>而 HTML 的改动却会立刻生效 —— 两件事表现不一致，最容易误判成&quot;改了没用&quot;。本轮真撞上过（修好解析器后窗口仍用旧解析器）。现在页面把 6 个核心文件的 sha256 挂到 `window.__coreStamp`，验证脚本逐一对账，不一致就自动重载再对</td></tr>
 </table>
 <h2>十、坦白：还没有的</h2>
 <ul>

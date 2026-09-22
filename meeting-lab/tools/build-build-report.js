@@ -181,12 +181,18 @@ function demoContract() {
    ══════════════════════════════════════════════════════════════════ */
 
 function demoStability(verdict) {
+  /* ★ 注意 critiquesFrom 返回的是**数组**（`[文本]`），不是字符串 ——
+   *   直接 `a === b` 比的是引用，必然 false（初版就这么写的，报告里渲染出一个
+   *   莫名其妙的"不一致"）。要比内容。 */
   const a = critiquesFrom(verdict, { maxItems: 20 });
   const b = critiquesFrom(verdict, { maxItems: 20 });
+  const ta = a.join('\n');
+  const tb = b.join('\n');
   return {
-    text: a,
-    identical: a === b,
-    hasTimestamp: /\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}|\d+\s*ms/.test(a),
+    text: ta,
+    count: a.length,
+    identical: ta === tb,
+    hasTimestamp: /\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}|\d+\s*ms/.test(ta),
   };
 }
 
@@ -207,45 +213,55 @@ function sh(cmd, args, timeoutMs = 240000) {
 }
 
 const SUITES = [
-  { name: '全量单元测试', args: ['--test'], grab: (o) => {
-    const n = (k) => { const m = o.match(new RegExp(`^\\u2139 ${k} (\\d+)`, 'm')); return m ? Number(m[1]) : null; };
-    return { line: `tests ${n('tests')} ｜ pass ${n('pass')} ｜ fail ${n('fail')}`, ok: n('fail') === 0 && n('pass') > 0 };
-  } },
-  { name: '产物落盘 + 真编译（端到端，真 orchestrator）', file: 'tools/verify-build-artifacts.js', args: [], needPort: false },
-  { name: 'build 模式 UI 接线（活页面）', file: 'tools/verify-build-ui.js', args: ['9223'], needPort: true },
-  { name: '阶段编排 / panel 分组', file: 'tools/verify-panel-phases.js', args: [], needPort: false },
-  { name: '链路接线', file: 'tools/verify-pipeline.js', args: ['9223'], needPort: true },
-  { name: '外部回答面板', file: 'tools/verify-external.js', args: ['9223'], needPort: true },
-  { name: '测试台自检', file: 'tools/verify-shell.js', args: ['9223'], needPort: true },
+  { name: '全量单元测试', args: ['--test'] },
+  { name: '产物落盘 + 真编译（端到端，真 orchestrator）', file: 'tools/verify-build-artifacts.js', args: [] },
+  { name: 'build 模式 UI 接线（活页面）', file: 'tools/verify-build-ui.js', args: ['9223'] },
+  { name: '阶段编排 / panel 分组', file: 'tools/verify-panel-phases.js', args: [] },
+  { name: '链路接线', file: 'tools/verify-pipeline.js', args: ['9223'] },
+  { name: '外部回答面板', file: 'tools/verify-external.js', args: ['9223'] },
+  { name: '测试台自检', file: 'tools/verify-shell.js', args: ['9223'] },
 ];
 
+/**
+ * 跑一遍全部验证，**从抓到的数字算结论**。
+ *
+ * ★ 初版是拿正则去"猜"结论行对不对（`/：(\d+) 通过 \/ 0 失败/`），结果
+ *   `检查结果：47 通过 / 0 失败` 这种被抽成 `47 通过 / 0 失败` 后就匹配不上了，
+ *   于是 ok 变成 null —— 而控制台仍打 ✔、报告里渲染成灰色的"未知"。
+ *   这恰恰是本轮一直在防的那类故障：**判据缺输入却静默通过**。
+ *   改成：先把数字抓出来（pass / fail），ok 直接由数字算（fail===0 && pass>0），
+ *   抓不到数字就老实标"无法判定"并在报告里点出来。
+ */
 function runSuites() {
   const node = process.execPath;
   return SUITES.map((s) => {
     const started = Date.now();
     const r = s.file ? sh(node, [s.file, ...s.args]) : sh(node, s.args);
     const o = r.out || '';
-    /* 抓各自的结论行（每个脚本的措辞不同，尽量宽容） */
-    let line = '';
-    const m1 = o.match(/检查结果：(\d+) 通过 \/ (\d+) 失败/);
-    const m2 = o.match(/接线验证：(\d+)\/(\d+) 项通过/);
-    const m3 = o.match(/(?:外部回答面板验证|自检结果)：(\d+)\/(\d+) 项通过/);
-    const m4 = o.match(/通过 (\d+)\s*失败 (\d+)/);
-    if (m1) line = `${m1[1]} 通过 / ${m1[2]} 失败`;
-    else if (m2) line = `${m2[1]}/${m2[2]} 项通过`;
-    else if (m3) line = `${m3[1]}/${m3[2]} 项通过`;
-    else if (m4) line = `${m4[1]} 通过 / ${m4[2]} 失败`;
-    else if (s.grab) { const g = s.grab(o); line = g.line; }
-    else line = o.trim().split('\n').slice(-1)[0] || '（无输出）';
 
-    let ok = null;
-    if (s.grab) ok = s.grab(o).ok;
-    else if (/：(\d+) 通过 \/ 0 失败/.test(line)) ok = true;
-    else if (/\/(\d+) 项通过/.test(line)) ok = /^\d+\/\1$/.test(line.trim()) ? true : (line.match(/(\d+)\/(\d+)/) || [])[1] === (line.match(/(\d+)\/(\d+)/) || [])[2];
-    else if (/通过 (\d+)\s*失败 0/.test(line)) ok = true;
-    else ok = null;
+    let pass = null; let failN = null; let line = '';
 
-    return { name: s.name, kind: s.file || 'node --test', line, ok, ms: Date.now() - started, raw: o.slice(-400) };
+    /* ① node --test 的汇总行：ℹ tests N / ℹ pass N / ℹ fail N */
+    const g = (k) => { const m = o.match(new RegExp(`^\\u2139 ${k}\\s+(\\d+)`, 'm')); return m ? Number(m[1]) : null; };
+    const t = g('tests'); const p = g('pass'); const f = g('fail');
+    if (t != null && p != null && f != null) {
+      pass = p; failN = f; line = `tests ${t} ｜ pass ${p} ｜ fail ${f}`;
+    } else {
+      /* ② 各脚本自己的结论行 —— ★ 有两种格式，第二个数的含义不同，必须分开处理：
+       *   「检查结果：47 通过 / 0 失败」  → (通过, 失败)
+       *   「接线验证：11/11 项通过」      → (通过, **总数**)  ← 失败数要减出来
+       *   混为一谈会把"11/11 全过"读成"11 通过 11 失败"。 */
+      const a = o.match(/检查结果：(\d+) 通过 \/ (\d+) 失败/);
+      const b = o.match(/(?:接线验证|外部回答面板验证|自检结果|检查结果)：(\d+)\/(\d+) 项通过/);
+      const c = o.match(/(?:^|\n)\s*通过 (\d+)\s+失败 (\d+)/);
+      if (a) { pass = Number(a[1]); failN = Number(a[2]); line = `${pass} 通过 / ${failN} 失败`; }
+      else if (b) { pass = Number(b[1]); failN = Number(b[2]) - Number(b[1]); line = `${pass}/${b[2]} 项通过`; }
+      else if (c) { pass = Number(c[1]); failN = Number(c[2]); line = `${pass} 通过 / ${failN} 失败`; }
+      else line = o.trim().split('\n').slice(-1)[0] || '（无输出）';
+    }
+
+    const ok = (pass != null && failN != null) ? (failN === 0 && pass > 0) : null;
+    return { name: s.name, kind: s.file || 'node --test', line, ok, pass, fail: failN, ms: Date.now() - started, raw: o.slice(-400) };
   });
 }
 
@@ -294,6 +310,9 @@ const FACTS = [
   ['Node 在语法错前会先打一行 `(node:32224) Warning:`', '第一行里的数字是**进程号不是行号**。取行号必须跳过 `(node:` 开头的行（此处踩过真 bug）'],
   ['`ws` 模块在本机只有 `desktop/node_modules/ws`', '`D:\\Users\\Admin\\.workbuddy\\binaries\\node\\workspace` 不存在；不过 Node 24 自带全局 `WebSocket`，多数情况可免'],
   ['测试台有 3 个真网页 AI 时截不了图', '`Page.captureScreenshot` 会卡死（合成器被占住）→ 本报告就是那个替代方案'],
+  ['★ `require` 是**加载时**解析的，改了 `core/` 不重载＝窗口还在跑旧代码',
+   '而 HTML 的改动却会立刻生效 —— 两件事表现不一致，最容易误判成"改了没用"。本轮真撞上过（修好解析器后窗口仍用旧解析器）。'
+   + '现在页面把 6 个核心文件的 sha256 挂到 `window.__coreStamp`，验证脚本逐一对账，不一致就自动重载再对'],
 ];
 
 /* ══════════════════════════════════════════════════════════════════
@@ -473,13 +492,21 @@ ${stability.identical ? chip(true, '逐字相同') : chip(false, '—', '不一�
   } else {
     H.push('<table><tr><th style="width:300px">验证项</th><th style="width:110px">结果</th><th style="width:90px">耗时</th><th>结论行</th></tr>');
     suites.forEach((s) => {
-      H.push(`<tr><td>${esc(s.name)}</td><td>${chip(s.ok)}</td><td class="kv">${(s.ms / 1000).toFixed(1)}s</td><td class="mono">${esc(s.line)}</td></tr>`);
+      H.push(`<tr><td>${esc(s.name)}</td><td>${chip(s.ok, '通过', '未通过', '无法判定')}</td><td class="kv">${(s.ms / 1000).toFixed(1)}s</td><td class="mono">${esc(s.line)}</td></tr>`);
     });
     H.push('</table>');
     const badOnes = suites.filter((s) => s.ok === false);
-    H.push(badOnes.length
-      ? `<div class="note bad-note">有 ${badOnes.length} 项未通过 —— 报告如实显示，不做粉饰。</div>`
-      : '<div class="note ok-note">全部通过。</div>');
+    const unknown = suites.filter((s) => s.ok == null);
+    if (badOnes.length) {
+      H.push(`<div class="note bad-note">有 ${badOnes.length} 项未通过 —— 报告如实显示，不做粉饰。</div>`);
+    }
+    if (unknown.length) {
+      H.push(`<div class="note bad-note">有 ${unknown.length} 项<strong>无法判定</strong>：脚本没吐出能识别的结论行
+        （${unknown.map((s) => esc(s.name)).join('、')}）。这不算通过 —— 是判据缺输入，要去看原始输出。</div>`);
+    }
+    if (!badOnes.length && !unknown.length) {
+      H.push('<div class="note ok-note">全部通过，且每一项的结论都由数字算出来（没有"无法判定"）。</div>');
+    }
   }
 
   /* ── 平台事实 ── */
@@ -507,8 +534,13 @@ ${stability.identical ? chip(true, '逐字相同') : chip(false, '—', '不一�
   console.log(`已生成：${OUT}`);
   console.log(`  解析演示 ${parse.files.length} 个文件 ｜ 安全闸 ${gate.length} 例 ｜ `
     + `真编译 ${verify.bad.failures.length} 处错误 → 修好后 ${JSON.stringify(verify.fixed.verdict.buildPass)}`);
+  console.log(`  失败清单 ${stability.count} 条 ｜ 逐字稳定：${stability.identical ? '是' : '否（不合格）'} ｜ `
+    + `含时间戳：${stability.hasTimestamp ? '有（不合格）' : '没有'}`);
+  console.log(`  契约：接受 ${contract.modules.length} 个 ｜ 丢弃 ${contract.rejected.length} 个（幻觉 owner）`);
   if (!NO_RUN) {
-    suites.forEach((s) => console.log(`  ${s.ok === false ? '✗' : '✔'} ${s.name}　${s.line}`));
+    suites.forEach((s) => console.log(`  ${s.ok === false ? '✗' : s.ok == null ? '?' : '✔'} ${s.name}　${s.line}`));
+    const unknown = suites.filter((s) => s.ok == null);
+    if (unknown.length) console.log(`  ⚠ 有 ${unknown.length} 项无法判定（没认出结论行）—— 去看原始输出，别当通过`);
   }
 }
 

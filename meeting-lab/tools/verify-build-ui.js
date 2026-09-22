@@ -5,6 +5,7 @@
  * 核心逻辑（解析/落盘/真编译/判定）由这个脚本证明不了 —— 那是
  * tools/verify-build-artifacts.js（走真 orchestrator 全链路）与三个单测的职责。
  * 本脚本只管**页面这一层**：
+ *   · ⓪ 窗口里跑的是不是**当前磁盘上的**代码（require 是加载时解析的，改了 core 不重载＝还在跑旧代码）
  *   · 产物验证档位下拉在 build 模式下出现、别的模式下隐藏（别的模式不产生文件，显示了只会误导）
  *   · 三个档位都在，默认是最安全的「语法 + 引用完整性」
  *   · 切到「会执行代码」那一档时，日志里有明确的风险提示（安全性质不同，必须让人看见）
@@ -59,6 +60,54 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   };
 
   console.log('build 模式 UI 接线验证（真实测试台页面，端口 ' + PORT + '）');
+
+  section('⓪ 窗口里跑的是不是**当前磁盘上的**代码');
+
+  /* ★ 为什么要有这一节：
+   *   require 是**加载时**解析的。改了 core/ 下的文件而没重载页面，窗口里跑的还是旧代码 ——
+   *   "看着改了、其实没生效"极容易被带沟里（本轮就撞上过：修好解析器后跑着的窗口仍用旧解析器）。
+   *   所以拿页面上的 __coreStamp（各核心文件的 sha256 前 12 位）跟磁盘对一遍。
+   *   不一致就自动重载一次再对 —— 顺带证明「重载真的会重新 require 核心代码」（不只是重取 HTML）。 */
+  const crypto = require('crypto');
+  const fs = require('fs');
+  const nodePath = require('path');
+  const diskHash = {};
+  for (const rel of ['artifact-bus', 'build-verify', 'build-loop', 'phase-runner', 'modes', 'orchestrator']) {
+    const p = nodePath.join(__dirname, '..', 'core', `${rel}.js`);
+    diskHash[rel] = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex').slice(0, 12);
+  }
+  const readStamp = async () => {
+    const s = await ev('JSON.stringify(window.__coreStamp||{})');
+    try { return JSON.parse(s || '{}'); } catch (e) { return {}; }
+  };
+  const waitReady = async () => {
+    for (let i = 0; i < 20; i += 1) {
+      await sleep(300);
+      const ok = await ev("!!document.getElementById('sel-mode')");
+      if (ok === true) return true;
+    }
+    return false;
+  };
+  const diffOf = (stamp) => Object.keys(diskHash).filter((k) => stamp[k] !== diskHash[k]);
+
+  let stamp = await readStamp();
+  let stale = diffOf(stamp);
+  let reloaded = false;
+  if (stale.length) {
+    await send('Page.reload', { ignoreCache: true });
+    await waitReady();
+    stamp = await readStamp();
+    stale = diffOf(stamp);
+    reloaded = true;
+  }
+  check('页面就绪（发现陈旧代码时会自动重载 —— 重载是让 core 改动生效的唯一办法）',
+    await ev("!!document.getElementById('sel-mode')") === true,
+    reloaded ? '本次发生过重载' : '本次本来就一致，未重载');
+  check('★ 窗口里的核心模块与磁盘完全一致（require 真的会重新解析，不是只重取 HTML）',
+    stale.length === 0, stale.length ? `不一致：${stale.join('、')} —— 请重载页面` : `${Object.keys(diskHash).length} 个文件指纹全等`);
+  check('指纹机制本身可用（不是全都 undefined 造成的假通过）',
+    !stamp.__error && Object.keys(stamp).length === Object.keys(diskHash).length,
+    stamp.__error ? `采集出错：${stamp.__error}` : `采到 ${Object.keys(stamp).length} 个`);
 
   /* ---------- ① 先记下当前模式，用于跑完复位 ---------- */
   const originalMode = await ev("document.getElementById('sel-mode').value");

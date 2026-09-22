@@ -195,6 +195,24 @@ const fsMod = require('fs');
 const dsWeb = require('../adapters/deepseek-web');
 const genericWeb = require('../adapters/generic-web');
 
+/* ★ 指纹自证：窗口里跑的是不是**当前磁盘上的**代码？
+ *   require 是**加载时**解析的 —— 改了 core/ 下的文件而没重载页面，窗口里跑的还是旧代码。
+ *   这种"看着改了、其实没生效"最容易被带沟里（本轮就撞上过一次：修好解析器后，
+ *   跑着的窗口仍在用旧解析器）。所以把核心文件的 sha256 挂到 window 上，
+ *   由 tools/verify-build-ui.js 跟磁盘对一遍 —— 只读文件算 hash，不改变任何行为。 */
+window.__coreStamp = (() => {
+  const out = {};
+  const list = ['artifact-bus', 'build-verify', 'build-loop', 'phase-runner', 'modes', 'orchestrator'];
+  try {
+    const crypto = require('crypto');
+    for (const rel of list) {
+      const abs = require.resolve(`../core/${rel}`);
+      out[rel] = crypto.createHash('sha256').update(fsMod.readFileSync(abs)).digest('hex').slice(0, 12);
+    }
+  } catch (e) { out.__error = String(e && e.message); }
+  return out;
+})();
+
 // 先用 3 个 AI 验证链路（减少登录负担）；跑通后加满 9 个
 const PROVIDERS = [
   { id: 'deepseek-web', name: '深度求索-DeepSeek', url: 'https://chat.deepseek.com/', part: 'persist:agent-deepseek-web', profile: dsWeb.profile },
