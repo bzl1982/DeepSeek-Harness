@@ -69,6 +69,19 @@ const SLICE = Object.freeze({
 });
 
 /**
+ * ★ 绝不进"归并/收敛"输入的产出类型（单一事实源，phase-runner 也从这里取）。
+ *   - ballot（名次表）：归并者看到别人的名次会**跟票**（tournament 已论证）；
+ *   - verdict（已有结论）：会诱发"抄上一份结论"；
+ *   - score（打分）：同 ballot，且会把归并退化成算术平均。
+ *   它们照样写在会议记录里（要审计），只是不作为归并者的输入。
+ *
+ *   为什么这个常量放在 modes.js：**预估与执行必须共用同一份规则**。
+ *   否则 estimateCost 会把 3 份 ballot 也算成"要注入"，预估比实际高 3 份
+ *   —— 静态预估失真，"开跑前看到的成本"就不可信了。
+ */
+const NEVER_IN_MERGE_INPUT = Object.freeze(['ballot', 'verdict', 'score']);
+
+/**
  * 席位选择器（phase.seat）：
  *   'all'       全部参会者
  *   'challenge' 角色分配里属于质证类的
@@ -738,10 +751,15 @@ function estimateCost(modeId, {
   const breakdown = [];
   let accum = 0;          // 到此阶段为止"已产生的发言条数"（跨组共享的部分）
   let innerAccum = 0;     // ★ 分组时"本组内"已产生的发言条数（组间隔离，不跨组累积）
+  /* ★ 归并输入可见份数：剔除 ballot/verdict/score 之后的累积（见 NEVER_IN_MERGE_INPUT）。
+   *   收敛阶段（slice=ALL）只吃这一类，用它做基数才对得上实际执行。 */
+  let mergeVisible = 0;
   let firstGroupSize = 0;
+  const groupSizes = [];  // ★ 各组的**真实**人数（人数不整除时末组更小，账不一样）
   let prevGroupMembers = new Set(); // 上一组的人，用来判断"这是新的一组还是同一组"
   let callsPerRound = 0;
   let contextPerRound = 0;
+  let groupOrder = 0;
 
   for (const p of plan) {
     /* ★ 分组阶段必须按"组内独立累积"算，否则会把降本算成涨价：
@@ -775,20 +793,35 @@ function estimateCost(modeId, {
       inject = n; // 每人看同一份"匿名候选包"（与人数无关）
       note = '每人看同一份匿名候选包（防锚定，包大小固定）';
     } else if (p.slice === SLICE.OTHERS || p.slice === SLICE.ALL) {
+      /* ★ 收敛阶段（ALL）的可见份数要**剔除 ballot/verdict/score**：
+       *   归并者不该看到别人的名次表（跟票）或上一份结论（抄袭）。
+       *   这是执行层的硬规则，预估必须跟它一致，否则预估偏高，用户看到的成本是假的。 */
+      const base = p.slice === SLICE.ALL ? mergeVisible : baseAccum;
       if (p.speak === SPEAK.SEQUENTIAL) {
-        inject = n * baseAccum + (n * (n - 1)) / 2; // 第 k 人看 baseAccum + k-1 条
+        inject = n * base + (n * (n - 1)) / 2; // 第 k 人看 base + k-1 条
         note = `顺序接龙：第 k 人读前 k-1 份 → O(n²)`;
       } else {
-        inject = n * baseAccum;                      // 并行：都看已积累的全部
+        inject = n * base;                      // 并行：都看已积累的全部
         note = '并行：每人读已积累的全部发言';
+      }
+      if (p.slice === SLICE.ALL && base !== baseAccum) {
+        note += '（已剔除名次表/上轮结论，防跟票）';
       }
     }
     if (isGroupInner) note += '（组内，组间不可见）';
     if (isGroupLeader) {
-      // 组长：读"本组组内发言"（firstGroupSize 份）+ 已发言组长的摘要
+      /* 组长：读**本组全部明细** + 之前已发言组长的产出。
+       * ★ 本组大小必须取"这一组自己的"人数 —— 原实现用 firstGroupSize 乘所有组长，
+       *   人数不整除时（如 9 人分 4 组 = 4/4/1）会高估（把末组 1 人算成 4 人）。 */
       const G = n;
-      inject = G * firstGroupSize + (G * (G - 1)) / 2;
-      note = `组长会诊：每人读本组 ${firstGroupSize} 份 + 前面组长的摘要`;
+      let sum = 0;
+      for (let k = 0; k < G; k += 1) {
+        const gs = groupSizes[k] != null ? groupSizes[k] : firstGroupSize;
+        sum += gs + k;   // 第 k 个组长读本组 gs 份 + 前面 k 个组长的产出
+      }
+      inject = sum;
+      const sizes = groupSizes.slice(0, G).join('/');
+      note = `组长会诊：每人读本组全部明细（各组 ${sizes || firstGroupSize} 人）+ 前面组长的产出`;
     }
     if (isPickerStage) note += `（发言者由主持人动态点名，此处按 ${pickerEstimate} 人预估）`;
 
@@ -796,8 +829,17 @@ function estimateCost(modeId, {
     contextPerRound += inject;
     breakdown.push({ phase: p.name, speakers: n, slice: p.slice, inject, note, estimated: isPickerStage || undefined });
 
-    if (isGroupInner) { innerAccum += n; if (!firstGroupSize) firstGroupSize = p.groupSize; }
-    else { accum += n; innerAccum = 0; }
+    if (isGroupInner) {
+      innerAccum += n;
+      groupSizes[groupOrder] = p.groupSize;   // ★ 记下"这一组自己"的人数
+      groupOrder += 1;
+      if (!firstGroupSize) firstGroupSize = p.groupSize;
+    } else {
+      accum += n;
+      innerAccum = 0;
+      // 产出属于 ballot/verdict/score 的阶段不进归并输入（见 NEVER_IN_MERGE_INPUT）
+      if (!NEVER_IN_MERGE_INPUT.includes(p.produces)) mergeVisible += n;
+    }
   }
 
   const maxCalls = callsPerRound * rounds;
@@ -815,23 +857,31 @@ function estimateCost(modeId, {
     // 注意字段名是 phase（不是 name）—— 写错会渲染成「阶段「undefined」」
     advices.push(`阶段「${worst.phase}」注入 ${worst.inject} 份，是主要开销（${worst.note}）`);
   }
-  if (maxContext > 60 && modeId === 'panel' && !panelGroupSize && participants.length > panelGroupSize + 1) {
+  if (modeId === 'panel' && !panelGroupSize && participants.length >= 4 && contextPerRound > 0) {
     /* ★ 分组到底能省多少？**算出来，别拍脑袋**。
-     *   常见误算是只盯着"会诊"那一段（9 人 36 份 → 12 份，"省 2/3"），
-     *   但 9 人 panel 的真正大头是后面的「归并结论」（117 份，占总量 76%）——
-     *   只分会诊、不动归并，总账省不了多少。所以要按总量对比。 */
+     *   常见误算是只盯着"会诊"那一段（9 人 36 份 → 9 份，"省 3/4"），
+     *   而真正的大头还有「归并结论」——只分会诊、不动归并，总账省不了多少。
+     *   所以按**总量**对比。
+     *
+     *   ★ 门槛修正（2026-09-22）：原判据是 `maxContext > 60`，那是估算还偏大时写的。
+     *   估算精确化后 9 人 panel 只有 45 份 → 这个门槛**永远不成立**，
+     *   结果"能省 47%"的建议在最该出现的场景里一声不吭。
+     *   改为直接看**省下来的比例**（≥20% 才提醒），判据与结论同源，不再拍绝对值。 */
     const grouped = estimateCost(modeId, { participants, assignment, panelGroupSize: 3 });
     const saved = Math.round((1 - grouped.contextPerRound / contextPerRound) * 100);
-    advices.push(`可开 panelGroupSize=3 分组：注入量 ${contextPerRound} → ${grouped.contextPerRound} 份（省 ${saved}%）`);
+    if (saved >= 20) {
+      advices.push(`可开 panelGroupSize=3 分组：注入量 ${contextPerRound} → ${grouped.contextPerRound} 份（省 ${saved}%）`);
+    }
   }
   if (panelGroupSize && modeId === 'panel') {
     /* ★ 这条不是废话，是分组的**成立前提**：
      *   分组的降本来自"组内明细不再向上传播，只留组长摘要"。
      *   若编排层在「归并结论」阶段照旧注入全部 messages（含 9 条组内明细），
      *   分组就白做了 —— 总注入量甚至会比不分组更高（因为多了组长那一层）。
-     *   所以编排层必须按 `groupLeaders` 标记限定该阶段可见的消息。 */
+     *   2026-09-22 起这条前提已由 `core/phase-runner.js` **强制**（R3 规则），
+     *   文案相应改为"已强制"，不再写成待办。 */
     advices.push('★ 分组降本的前提：归并阶段只读**组长摘要**（不读组内明细）'
-      + '—— 需编排层按 groupLeaders 标记限定可见消息，否则分组白做');
+      + '—— 已由阶段编排层强制（phase-runner.js R3）；成本数字也已与执行对齐');
   }
   if (rounds > 1) {
     advices.push(`最多循环 ${rounds} 轮 → 最坏 ${maxCalls} 次调用；收敛判据生效会提前停（判据失效时才跑满）`);
@@ -1303,6 +1353,7 @@ module.exports = {
   parseBallots,          // 评标自然语言 → 结构化名次表（原"贯通性缺口"的解析层）
   estimateCost,          // 单模式成本估算（调用次数 + 上下文注入量）
   costOverview,          // 全模式成本档位一览
+  NEVER_IN_MERGE_INPUT,  // ★ 不进归并输入的产出类型（预估与执行共用的单一事实源）
   judgeBuildPass,        // 集成结果判定（不对称设计：承认失败可信，"通过"不采信）
   buildVerdictPrompt,    // 定标阶段 prompt 组装（喂 Borda 均值表，不让 AI 拍板）
 };

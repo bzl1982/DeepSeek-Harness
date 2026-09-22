@@ -98,6 +98,7 @@
     <span class="tag">独立运行 · 不接入客户端</span>
     <label class="pick">会议模式<select id="sel-mode"></select></label>
     <label class="pick">角色组<select id="sel-set"></select></label>
+    <label class="pick" title="专家会诊分组降本：把「9 人顺序接龙(O(N²))」变成「组内接龙 + 组长接龙」，只对「专家会诊」生效">会诊分组<select id="sel-group"></select></label>
     <button id="btn-recast" class="ghost" title="用新的随机种子按模型能力重新选角">重排角色</button>
     <input id="topic" value="请评审「通辽会议接入微软多智能体框架」的可行路径。" />
     <button id="btn-run">开始会议</button>
@@ -171,6 +172,10 @@ const { getModel } = require('../core/models');
 const { createApiAdapter } = require('../adapters/api-adapter');
 const { getRedacted } = require('../adapters/dsh-config');
 const { createWebAdapter } = require('../adapters/web-adapter');
+/* ★ 本轮新增：阶段编排器 —— 把 planPhases 的契约（接龙 / 组边界 / 归并约束）真正执行。
+ *   此前每个阶段都是 orch.runTurn()（**广播**：同一段 text 发给人人），
+ *   于是"顺序接龙"名不副实、组边界没人管、归并照样读全部明细（分组白做）。 */
+const { PhaseRunner } = require('../core/phase-runner');
 const dsWeb = require('../adapters/deepseek-web');
 const genericWeb = require('../adapters/generic-web');
 
@@ -195,6 +200,7 @@ const API_CANDIDATES = [
 /* ---------- 模式 & 角色 状态 ---------- */
 let currentMode = 'broadcast';
 let currentSet = 'trio';
+let panelGroupSize = 0;    // ★ 专家会诊分组：0=不分组；N=每组 N 人（组内接龙 + 组长接龙）
 let roleMap = {};          // providerId -> 角色前缀文本（由 applyRoles 填充）
 let assignment = [];       // 角色分配结果（供 planPhases 按职能挑发言人）
 let castSeed = 'demo-1';   // ★ 选角种子：同一个种子 = 同一套编制；点「重排角色」换种子
@@ -215,6 +221,7 @@ const sceneEl = document.getElementById('scene');
 const flowEl = document.getElementById('flow');
 const selMode = document.getElementById('sel-mode');
 const selSet = document.getElementById('sel-set');
+const selGroup = document.getElementById('sel-group');
 const btnRun = document.getElementById('btn-run');
 const extbox = document.getElementById('extbox');
 const extHead = document.getElementById('ext-head');
@@ -662,6 +669,15 @@ const orch = new MeetingOrchestrator({
   },
 });
 
+/* ★ 阶段编排器：凡是"上下文因人而异"的阶段（OTHERS / ALL）都走它逐人发送；
+ *   固定产物类的阶段（TASK / MATERIAL / DRAFT / CRITIQUES / CONTRACT / CANDIDATES）
+ *   人人看到同一份，继续走 orch.runTurn 广播 —— 行为与之前完全一致，零风险。 */
+const phaseRunner = new PhaseRunner({
+  meeting,
+  orchestrator: orch,
+  logger: ({ level, msg }) => { if (level !== 'info') log(`[编排] ${msg}`, 'warn'); },
+});
+
 /* ---------- 状态灯（网页版 + API 两路都要亮） ---------- */
 meeting.__onStateChange = null;
 for (const [id, c] of cells) {
@@ -699,10 +715,11 @@ btnRun.addEventListener('click', async () => {
   /* ★ 成本预估：点"开始"之前就告诉你这场会最坏要烧多少。
    *   用户的原始诉求是"别瞎聊浪费 token"—— 等开完才发现烧了 60 次调用就晚了。
    *   注意两个指标：调用次数（花在次数上的钱）+ 上下文注入份数（花在字上的钱，O(N²) 在这）。 */
-  const cost = estimateCost(currentMode, { participants: ids, assignment });
+  const cost = estimateCost(currentMode, { participants: ids, assignment, panelGroupSize });
   log(`[成本预估] 档位 ${TIER_CN[cost.tier] || cost.tier}`
     + `　单轮 ${cost.callsPerRound} 次调用 / 注入 ${cost.contextPerRound} 份`
     + `　最坏 ${cost.maxCalls} 次 / ${cost.maxContext} 份`
+    + (panelGroupSize ? `　（已开分组：每组 ${panelGroupSize} 人）` : '')
     + (cost.rounds > 1 ? `（上限 ${cost.rounds} 轮，判据生效会提前停）` : ''),
   cost.tier === 'heavy' ? 'warn' : 'ok');
   for (const a of cost.advices) log(`   · ${a}`, 'warn');
@@ -726,7 +743,10 @@ btnRun.addEventListener('click', async () => {
     while (true) {
       iteration += 1;
       meeting.round = iteration;  // 让本轮消息带上轮次（CANDIDATES 必须按轮筛候选）
-      const plan = planPhases(currentMode, { participants: ids, assignment });
+      const plan = planPhases(currentMode, { participants: ids, assignment, panelGroupSize });
+      /* ★ 阶段上下文：接龙 / 组边界 / 归并约束都靠它（由 PhaseRunner 解析分组结构）。
+       *   字段在每轮每阶段前刷新 —— draft / critiques / candidates 是随会推进变化的。 */
+      const stageCtx = phaseRunner.prepare(plan, { task, round: iteration });
       if (maxIter > 1) {
         log('');
         log(`──── 第 ${iteration} 轮迭代（上限 ${maxIter}）────`, 'hd');
@@ -775,14 +795,48 @@ btnRun.addEventListener('click', async () => {
           stageText = sl.text || task;
         }
 
-        const r = await orch.runTurn({
-          text: stageText,
-          participants: stage.speakers,
-          timeoutMs: 180000,
-          kind: stage.produces || null,   // ★ 透传产出类型 → message.kind → CANDIDATES 的筛选依据
-        });
+        /* ★ 分工：
+         *   「上下文因人而异」的阶段（OTHERS / ALL）→ 走阶段编排器**逐人发送**：
+         *      · sequential 时每人看到前几人**本阶段刚产出**的内容（真接龙）
+         *      · 分组时按组边界裁剪（组间不可见）→ 降本真的落地
+         *      · 归并阶段只读组长产出 + 剔除名次表（防跟票）
+         *   其余阶段（固定产物：TASK/MATERIAL/DRAFT/CRITIQUES/CONTRACT/CANDIDATES，
+         *   以及 verdict 的 Borda 输入）人人看到同一份 → 仍用 runTurn 广播，行为不变。 */
+        const rosterStage = stage.produces !== 'verdict'
+          && (stage.slice === SLICE.OTHERS || stage.slice === SLICE.ALL);
+
+        let r;
+        if (rosterStage) {
+          Object.assign(stageCtx, {
+            task,
+            material: task,
+            draft: currentDraft || task,
+            critiques: prevCritiques,
+            candidates: null,
+            round: iteration,
+            timeoutMs: 180000,
+          });
+          const sr = await phaseRunner.runStage(stage, stageCtx);
+          r = { results: sr.results, ok: sr.ok, failed: sr.failed, skipped: sr.skipped };
+          if (sr.skipped) {
+            log(`   [跳过] ${sr.skipReason === 'already-run' ? '该阶段本轮已执行过（归并只跑一次）' : '无人发言'}`, 'warn');
+          } else {
+            log(`   [逐人发送] 每人看到的前文份数：`
+              + sr.results.map((x) => `${x.providerId}:${x.injected}`).join(' · ')
+              + `　小计 ${sr.injected} 份`, 'warn');
+          }
+        } else {
+          r = await orch.runTurn({
+            text: stageText,
+            participants: stage.speakers,
+            timeoutMs: 180000,
+            kind: stage.produces || null,   // ★ 透传产出类型 → message.kind → CANDIDATES 的筛选依据
+          });
+        }
+
         for (const res of r.results) {
           log(`${res.ok ? '✔' : '✗'} ${res.providerId}  ${res.state}  ${res.durationMs}ms`
+            + (res.injected != null ? `  看到 ${res.injected} 份` : '')
             + `${res.error ? '  ' + res.error : ''}`, res.ok ? 'ok' : 'bad');
         }
         totalOk += r.ok.length;
@@ -913,13 +967,24 @@ for (const s of listRoleSets()) {
 }
 selMode.value = currentMode;
 selSet.value = currentSet;
+/* ★ 会诊分组下拉：0=不分组。它只对「专家会诊」生效（planPhases 内部判 mode==='panel'），
+ *   别的模式选了也不会有副作用 —— 所以不做"仅 panel 可见"的显隐，少一处状态。 */
+for (const [v, label] of [
+  [0, '不分组'], [2, '每组 2 人'], [3, '每组 3 人'], [4, '每组 4 人'], [5, '每组 5 人'],
+]) {
+  const o = document.createElement('option');
+  o.value = String(v);
+  o.textContent = label;
+  selGroup.appendChild(o);
+}
+selGroup.value = String(panelGroupSize);
 
 /** 全部参会席位（网页版 + API） */
 function allSeatIds() { return [...cells.keys(), ...apiCells.keys()]; }
 
 function renderFlow() {
   const ids = allSeatIds();
-  const plan = planPhases(currentMode, { participants: ids, assignment });
+  const plan = planPhases(currentMode, { participants: ids, assignment, panelGroupSize });
   const mode = getMode(currentMode);
   flowEl.innerHTML = '';
   const t = document.createElement('span');
@@ -992,6 +1057,27 @@ selSet.addEventListener('change', () => {
   renderFlow();
   log(`[角色组] 切换为「${currentSet}」—— 按能力重新分配，每个 AI 换了一个视角`, 'hd');
   logCasting();
+});
+
+/* ★ 会诊分组：立刻把"省多少"算给用户看（别等他开完会才发现烧了多少） */
+selGroup.addEventListener('change', () => {
+  panelGroupSize = Number(selGroup.value) || 0;
+  renderFlow();
+  const ids = allSeatIds();
+  const m = getMode(currentMode);
+  if (currentMode !== 'panel') {
+    log(`[会诊分组] 已设为每组 ${panelGroupSize || '不分组'} 人 —— 仅「专家会诊」会用到它，当前模式是「${m.label}」`, 'warn');
+    return;
+  }
+  const a = estimateCost('panel', { participants: ids, assignment, panelGroupSize: 0 });
+  const b = estimateCost('panel', { participants: ids, assignment, panelGroupSize });
+  log(`[会诊分组] 每组 ${panelGroupSize || '不分组'} 人：注入 ${a.contextPerRound} → ${b.contextPerRound} 份`
+    + `（省 ${Math.round((1 - b.contextPerRound / a.contextPerRound) * 100)}%）`
+    + `　调用 ${a.callsPerRound} → ${b.callsPerRound} 次`, 'ok');
+  for (const adv of b.advices) log(`   · ${adv}`, 'warn');
+  if (panelGroupSize) {
+    log('   · 分组后「归并结论」只读**组长摘要**（不读组内明细）—— 这是分组降本成立的前提，已由阶段编排层强制', 'warn');
+  }
 });
 
 /* 重排角色：换一个随机种子，在「够格的人」里重抽一套编制 */

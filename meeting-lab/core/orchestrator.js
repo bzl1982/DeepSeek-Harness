@@ -260,10 +260,55 @@ class MeetingOrchestrator {
   }
 
   /**
+   * ★ 逐人发送（阶段编排层专用）：**给指定的一个 AI 送一段"只属于它的"文本**。
+   *
+   * 为什么必须有它（而不是复用 runTurn）：
+   *   runTurn 的语义是"广播"——同一段 text 发给人人。
+   *   但模式层（modes.js）的 `speak` / `slice` 契约要求**每人看到不同的前文**：
+   *     · sequential 接龙 → 第 k 人必须看到前 k-1 人**本阶段刚产出**的内容
+   *     · slice OTHERS   → 每个人拿到的上下文不同（不含自己）
+   *   用 runTurn 跑接龙，所有人都拿同一份阶段前快照，"接龙"名不副实。
+   *
+   * 与 runTurn 的两处刻意差异：
+   *   1. **不写 user 消息**。文本是运行时按人组装的上下文，不是用户输入；
+   *      若每人写一条，9 人一场会就会往会议记录里塞 9 条假的"用户发言"。
+   *   2. `round` 可覆盖（阶段编排器要保证同一阶段的产出落在同一轮）。
+   *
+   * 附件仍走完整两阶段握手（先投递、后等 ACK）。
+   */
+  async speakTo(providerId, { text = '', files = [], timeoutMs = 120000, kind = null, round = null } = {}) {
+    if (!this.getAdapter(providerId)) throw new Error(`speakTo: no adapter for ${providerId}`);
+
+    const attRefs = [];
+    for (const f of files) {
+      const ref = createAttachmentRef({
+        attachmentId: f.attachmentId || `att_${Math.random().toString(36).slice(2, 10)}`,
+        name: f.name,
+        size: f.size,
+        mime: f.mime,
+        sha256: f.sha256,
+        localPath: f.localPath,
+      });
+      this.meeting.registerAttachment(ref);
+      this.attachmentBus.register(ref);
+      attRefs.push(ref);
+    }
+
+    let uploadGate = { action: 'PROCEED', okCount: 0, total: 0 };
+    if (attRefs.length) {
+      this.attachmentBus.openBatch([providerId]);
+      await this._uploadForAgent(providerId, attRefs);
+      uploadGate = await this._awaitUploadAcks({ targets: [providerId], allowDegrade: true, timeoutMs });
+    }
+
+    return this._sendAndWaitForAgent({ providerId, text, attRefs, uploadGate, timeoutMs, kind, round });
+  }
+
+  /**
    * Phase C：单个 AI 的发送 + 等待回复。
    * 绝不允许抛错——一切异常收敛为 { ok:false, state:<异常态> }。
    */
-  async _sendAndWaitForAgent({ providerId, text, attRefs, uploadGate, timeoutMs, kind = null }) {
+  async _sendAndWaitForAgent({ providerId, text, attRefs, uploadGate, timeoutMs, kind = null, round = null }) {
     const started = Date.now();
     const sm = this.meeting.addAgent(providerId);
     const adapter = this.getAdapter(providerId);
@@ -332,7 +377,7 @@ class MeetingOrchestrator {
            *     评标阶段 → 'ballot'   （名次表，**绝不能**被当成候选再发出去 → 会跟票）
            *   没有这个字段，环切片的输入侧就接不上 —— 这是第五轮发现的"贯通性缺口"。 */
           kind: kind || undefined,
-          round: this.meeting.round,
+          round: round != null ? round : this.meeting.round,
           status: out.ok ? 'completed' : 'failed',
         });
       }
@@ -378,7 +423,7 @@ class MeetingOrchestrator {
   }
 
   /** 对"闭麦"的 AI 单独重试（不重开整场会议） */
-  async retryAgent(providerId, { text = '', files = [], timeoutMs = 120000 } = {}) {
+  async retryAgent(providerId, { text = '', files = [], timeoutMs = 120000, kind = null, round = null } = {}) {
     if (!this.getAdapter(providerId)) throw new Error(`retryAgent: no adapter for ${providerId}`);
     const prev = this.silenced.get(providerId);
     const sm = this.meeting.getAgent(providerId);
@@ -390,18 +435,8 @@ class MeetingOrchestrator {
 
     this.silenced.delete(providerId);
 
-    // 重试也走完整两阶段（有附件时先握手）
-    let uploadGate = { action: 'PROCEED', okCount: 0, total: 0 };
-    if (files.length) {
-      this.attachmentBus.openBatch([providerId]);
-      await this._uploadForAgent(providerId, files);
-      uploadGate = await this._awaitUploadAcks({
-        targets: [providerId],
-        allowDegrade: true,
-        timeoutMs,
-      });
-    }
-    return this._sendAndWaitForAgent({ providerId, text, attRefs: files, uploadGate, timeoutMs });
+    // 重试也走完整两阶段（有附件时先握手）—— 复用 speakTo，避免两条路径行为漂移
+    return this.speakTo(providerId, { text, files, timeoutMs, kind, round });
   }
 
   log(level, msg, data) {

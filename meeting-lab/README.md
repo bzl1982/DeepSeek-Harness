@@ -30,8 +30,13 @@ cd "D:\DeepSeek Harness\meeting-lab"
 node --test test/*.test.js
 ```
 
-当前：**85 个用例全部通过**。覆盖——
+当前：**292 个用例全部通过**。覆盖——
 
+- `phase-runner.test.js` —— ★ **阶段编排层**（28 用例）：接龙真生效 / 并行快照冻结 /
+  组边界 / 组长只读本组 / 归并只读组长 / ballot 不进归并 / 超量压缩 / 归并幂等 / 失败隔离 /
+  **试算与静态预估逐一对账**
+- `panel-group.test.js` —— ★ **Q7 分组降本**：9 人分 3 组，注入量 45 → 24份
+- `external.test.js` —— ★ **外部 AI 回答成为一等公民**（17 用例）：粘贴标注解析 / 进切片 / 匿名 / 审计
 - `completion.test.js` —— 完成检测：信号不足不误判、流式短暂稳定不误判、超时收敛
 - `stream-tracker.test.js` —— ★ **streamEnd（CDP 网络层）**：宽限期内不早判、流在飞不判完、多流并行、跨轮清零回归
 - `web-adapter.test.js` —— ★ **两个真 bug 的回归保险**（空回复误判完成 / streamEnd 跨轮闩锁）
@@ -74,18 +79,43 @@ meeting-lab/
 │   ├── completion.js           # ★ 完成检测器（5 信号联合）
 │   ├── attachment-bus.js       # ★ 附件总线（ACK 门闩）
 │   ├── speaker.js              # 发言策略：broadcast / round_robin / llm_selector / manual
-│   └── orchestrator.js         # ★ 会议编排：两阶段（先握手后发言）+ 失败隔离
+│   ├── orchestrator.js         # ★ 会议编排：两阶段（先握手后发言）+ 失败隔离 + speakTo（逐人发送）
+│   ├── modes.js                # ★ 模式 = 阶段序列 + 上下文切片 + 终止判据 + 成本估算
+│   ├── phase-runner.js         # ★ 阶段编排器：把 modes 的契约真正执行（接龙/组边界/归并约束）
+│   ├── roles.js                # 角色库 + 分配（按能力选角，防"9 个复读机"）
+│   ├── casting.js              # 能力感知选角 + 席位候选排名账本
+│   ├── context-strategy.js     # 角色分化提示 + Hy4 注入公式 + KIMI 触发条件
+│   ├── summarizer.js           # 纪要压缩（轮纪要 ≤300 字 / 每 5 轮全局压缩）
+│   ├── stream-tracker.js       # streamEnd 信号（CDP 网络层）
+│   ├── external.js             # ★ 外部 AI 回答（用户"复制回来"的那一步）成为一等公民
+│   └── models.js               # 模型能力档案（含每模型 charLimit）
 ├── adapters/
 │   ├── contract.js             # 统一契约 + 校验（含 withGuards）
 │   ├── web-adapter.js          # 通用工厂 + 页面侧信号采集探针
 │   ├── deepseek-web.js         # DeepSeek 选择器 profile（特化）
-│   └── generic-web.js          # 通用选择器 profile（宽松兜底）
-├── test/                       # node --test
-├── demo/run-demo.js            # 终端演示
-└── shell/                      # 最小 Electron 壳（3 个 webview 可视化验证）
+│   ├── generic-web.js          # 通用选择器 profile（宽松兜底）
+│   ├── api-adapter.js          # 真实 API 通道（主席/压缩/判停走这条）
+│   ├── human-relay.js          # 人工中转（座位层）
+│   └── dsh-config.js           # 复用客户端已配置的模型/密钥（带脱敏）
+├── test/                       # node --test（292 用例）
+├── demo/                       # 终端演示（run-demo / run-modes-demo / run-casting-demo）
+├── tools/                      # 验证与生成脚本（见下）
+└── shell/                      # 最小 Electron 壳（webview + CDP 可视化验证）
 ```
 
-★ = 三个要验证的核心
+### tools/ 里的验证脚本（每个都幂等，可反复跑）
+
+| 脚本 | 作用 |
+|---|---|
+| `node tools/verify-shell.js [端口] [--shot x.png]` | 测试台自检：重载页面 + 断言渲染进程零异常、下拉/流程/场景卡/API 席位 |
+| `node tools/verify-pipeline.js [端口]` | 评审链路端到端（kind 透传 → 匿名候选 → 名次表 → Borda → 定标） |
+| `node tools/verify-external.js [端口] [--shot x.png]` | 外部 AI 回答面板 19 项端到端 |
+| `node tools/verify-panel-phases.js [--verbose]` | ★ **阶段编排层 34 项**：panel 分组真跑 + 归并约束 + 对账（纯 Node，不需浏览器） |
+| `node tools/check-api.js [--live]` | 检查 API 通道可用性 |
+| `node tools/build-modes-page.js` | 生成 `modes.html`（全模式一览页） |
+| `node tools/run-interaction-proof.js` | 生成 `INTERACTION-PROOF.md`（交互证据） |
+
+★ = 核心
 
 ---
 
@@ -172,8 +202,8 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 1. 把 `core/` 抽成客户端可复用的模块（仍不碰 `meeting.html` 的现有逻辑）
 2. 把 `shell/` 的 driver 换成客户端 `meeting.html` 里那套（`wv.insertText` + `wv.debugger`）——**已在 shell 里预演过，可直接搬**
-3. 客户端 `meeting.html` 接入：状态灯 + 附件握手 + 会议记录模型
-4. 加 `SpeakerStrategy`（轮询 → 动态点名）+ 主持人（用 API，不用网页版）
+3. 客户端 `meeting.html` 接入：状态灯 + 附件握手 + 会议记录模型 + **阶段编排器**（`core/phase-runner.js` 可直接复用）
+4. `build` 模式的产物落到 `{path, content}` 落盘（现在只当文本收）+ 真编译验证
 5. 保留升级路径：Meeting Core 与编排层之间协议已隔离，将来可换成 Microsoft Agent Framework sidecar
 
 ---
@@ -189,7 +219,35 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 
 ## 修订记录
 
-### 第二轮（本轮）：分歧落地 + 客户端小改
+### 本轮：阶段编排层 —— 让模式契约**真正执行**
+
+问题：`planPhases()` 早就产出了 `speak/slice/groupSize/groupLeaders/produces` 一整套契约，
+但每个阶段都是 `orch.runTurn()`（**广播**：同一段 text 发给人人），于是三条契约在运行期全部失效：
+
+| 契约 | 失效后的实际行为 | 后果 |
+|---|---|---|
+| `speak: sequential`（接龙） | 人人拿到同一份"阶段前快照" | 「层层加码」从未发生 |
+| `groupSize`（组边界） | 无人执行 | 分组降本只活在 plan 里，实际注入量还是 O(N²) |
+| 归并（`ALL` 切片） | 组内 9 份明细照样灌进归并席 | **分了组反而更贵**（多了一层组长） |
+
+改法：**新增 `core/phase-runner.js`**（plan 出契约，runner 强制契约）+ `orchestrator.speakTo()`
+（逐人发送，给每个人不同的上下文）+ 阶段来源标记（provenance：这条消息是哪一阶段产出的）。
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 接龙 | 🐛 所有人看同一份快照 | ✅ 第 k 人看到前 k-1 人**本阶段刚产出**的内容 |
+| 并行 | 与接龙无区别 | ✅ 快照**冻结**在阶段开始前（防锚定） |
+| 组边界 | 纸面 | ✅ 组间不可见（组 2 看不到组 1） |
+| 组长 | 无此阶段执行 | ✅ 读本组全部明细 + **前面组长的本阶段产出**（不是组长们的会诊发言） |
+| 归并输入 | 全部明细 | ✅ **只读组长产出**；剔除 `ballot/verdict/score`（防跟票）；超量走压缩；带 verdict 模板；一轮只跑一次 |
+| 9 人 panel 注入量 | 45 份（分组也白搭） | ✅ 分组后真的 24 份（省 47%） |
+| 成本预估 | 🐛 不整除分组高估（4/4/1 当成 4/4/4）；**不知道 ballot 不注入**；省钱的建议因门槛过高永不触发 | ✅ 与执行**逐一对账一致**（8 档分组 × 10 模式全部相等） |
+| 用例数 | 264 | **292**（+28），另有 34 项端到端 |
+
+★ 一条方法论：**成本预估与执行必须共用同一份规则**（`NEVER_IN_MERGE_INPUT` 定义在 `modes.js`）。
+否则"开跑前看到的成本"就是假的 —— 而用户最在意的正是"别瞎聊浪费 token"。
+
+### 第二轮：分歧落地 + 客户端小改
 
 | 项 | 改前 | 改后 |
 |---|---|---|
