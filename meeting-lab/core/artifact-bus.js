@@ -180,8 +180,26 @@ function pathFromLeadingComment(body) {
 function pathFromPrecedingLine(line) {
   const s = String(line || '').trim();
   if (!s) return null;
-  const m = s.match(/(?:\*\*|`|【|\[)?\s*(?:文件|path|file(?:name)?)?\s*[:：=]?\s*([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\s*(?:\*\*|`|】|\])?\s*$/);
-  return m ? m[1] : null;
+
+  /* ★ 尾锚放宽（2026-09-22 实测后补）：
+   *   原来要求路径**紧贴行尾**，于是两种极常见的写法整块丢失 ——
+   *     · 「还有入口文件 `src/index.js`：」 —— 句尾带中文冒号（中文模型的强习惯）
+   *     · 「<!-- path=src/api.js -->」  —— HTML 注释包裹
+   *   丢掉一块产物 = 那个文件根本不存在 → 编译期报「引用不存在」，
+   *   严重的是会议**不知道少了一个文件**（"丢文件"比"报错"危险，这是本文件的核心判断）。
+   *   所以尾锚只放宽到「收尾符号 + 中英文冒号」这一档；**故意不放宽句号/逗号**
+   *   —— 句尾带句号的行更可能是散文（「我已经把 src/a.js 改好了。」），
+   *     把它当标题会把下一块的内容写到错的文件上。 */
+  const m = s.match(/(?:\*\*|`|【|\[)?\s*(?:文件|path|file(?:name)?)?\s*[:：=]?\s*([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\s*(?:\*\*|`|】|\]|-->)?\s*[：:]?\s*$/);
+  if (!m) return null;
+
+  /* ★ 歧义不猜：同一行里除了它还有别的路径 → 返回 null。
+   *   例「先看 src/old.js 与 src/new.js 的区别：」——猜错会把内容写进别人的文件。
+   *   宁可丢（丢会被"引用不存在"检查抓到），不可猜错（猜错会静默写到错的地方）。 */
+  const others = (s.match(/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8}/g) || []).filter((x) => x !== m[1]);
+  if (others.length) return null;
+
+  return m[1];
 }
 
 /** 尝试把一段文本当"结构化产物 JSON"解析（写法 ⑥，与 fenced 块并列） */

@@ -8,6 +8,7 @@
     "test": "node --test",
     "shell": "electron .",
     "build:modes": "node tools/build-modes-page.js",
+    "build:report": "node tools/build-build-report.js",
     "check:api": "node tools/check-api.js"
   },
   "license": "MIT"

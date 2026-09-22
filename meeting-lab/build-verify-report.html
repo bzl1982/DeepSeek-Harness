@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>build 模式：产物落盘 + 真编译验证</title>
+<style>
+  :root { --bg:#0b0e14; --fg:#e6e6e6; --dim:#8aa; --line:#22303f; --in:#4da3ff; --ok:#3ddc84; --warn:#ffb454; --bad:#ff6b6b; --panel:#121722; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:28px 22px 60px; background:var(--bg); color:var(--fg);
+         font:14px/1.7 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  h2 { font-size:17px; margin:34px 0 12px; padding-left:10px; border-left:3px solid var(--in); }
+  h3 { font-size:14px; margin:20px 0 8px; color:var(--in); }
+  .sub { color:var(--dim); font-size:12.5px; margin-bottom:18px; }
+  .sub code { color:var(--fg); }
+  code, .mono { font-family: Consolas,"Cascadia Mono",monospace; font-size:12.5px; }
+  table { width:100%; border-collapse:collapse; margin:10px 0 4px; }
+  th,td { border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top; }
+  th { background:#182130; color:var(--dim); font-weight:600; font-size:12.5px; }
+  td code { color:var(--warn); }
+  .chip { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11.5px; border:1px solid; white-space:nowrap; }
+  .chip.ok { color:var(--ok); border-color:#1e5b3a; background:#0e2a1c; }
+  .chip.bad { color:var(--bad); border-color:#5b2020; background:#2a0f0f; }
+  .chip.dim { color:var(--dim); border-color:var(--line); }
+  .chain { display:flex; gap:0; align-items:stretch; flex-wrap:wrap; margin:14px 0 6px; }
+  .node { flex:1 1 260px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; position:relative; }
+  .node .no { font-size:20px; color:var(--bad); font-weight:700; }
+  .node .was { color:#ffb4b4; font-size:13px; margin:6px 0 10px; }
+  .node .arrow { color:var(--dim); font-size:12px; margin-bottom:4px; }
+  .node .now { color:var(--ok); font-size:12.5px; }
+  .sep { display:flex; align-items:center; color:var(--dim); padding:0 6px; font-size:18px; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:11px 13px;
+        overflow:auto; margin:8px 0; color:#cfe3ff; }
+  .note { background:#101827; border-left:3px solid var(--warn); padding:9px 12px; margin:12px 0; color:#e3d5b4; font-size:13px; }
+  .ok-note { border-left-color:var(--ok); background:#0d1a15; color:#c9e8d8; }
+  .bad-note { border-left-color:var(--bad); background:#1a0f0f; color:#f0cccc; }
+  ul { margin:6px 0 6px 18px; padding:0; } li { margin:4px 0; }
+  .kv { color:var(--dim); }
+  footer { margin-top:40px; padding-top:14px; border-top:1px solid var(--line); color:var(--dim); font-size:12px; }
+</style></head><body><div class="wrap">
+<h1>build 模式：文本第一次变成文件</h1>
+<div class="sub">
+  产物落盘 + 真编译验证 —— 修一条<strong>断成三截</strong>的失效链<br>
+  生成时间：2026/9/22 23:38:32　｜　提交：<code>6e10fe2 feat(meeting-lab): 文本第一次变成文件 —— 产物落盘 + 真编译验证</code>　｜　
+  工作目录：<code>meeting-lab/</code>
+</div>
+<h2>一、改的是什么：一条断成三截的失效链</h2>
+<div class="note">判据缺输入时<strong>不报错、不崩溃</strong>，只是「白烧钱」—— 这是最难发现的一类故障。
+后果：<code>shouldStop('build')</code> 永远 <code>degraded</code> + <code>missingInput:['buildPass']</code>
+→ 会议只能空跑满 <code>maxIterations(4)</code>。与上一轮的 <code>winnerId</code> 属同族。</div>
+<div class="chain">
+<div class="node">
+      <div class="no">①</div>
+      <div class="was">契约是一段文本，消费方要的是结构 —— **中间没有解析器**</div>
+      <div class="arrow">↓ 本轮补上</div>
+      <div class="now">core/build-loop.js · parseContractModules（表格 / 列表 / 行内三种写法都能认）</div>
+    </div>
+<div class="sep">→</div>
+<div class="node">
+      <div class="no">②</div>
+      <div class="was">`produces:'artifact'` 只是消息上的一个字符串标记 —— **产物从未变成文件**</div>
+      <div class="arrow">↓ 本轮补上</div>
+      <div class="now">core/artifact-bus.js · 解析 {path,content} → 三道安全闸 → ArtifactStore 真落盘</div>
+    </div>
+<div class="sep">→</div>
+<div class="node">
+      <div class="no">③</div>
+      <div class="was">没有真实编译结果 → judgeBuildPass 诚实地返回 null，**但没东西接替它**</div>
+      <div class="arrow">↓ 本轮补上</div>
+      <div class="now">core/build-verify.js · 真子进程跑 node --check / JSON.parse / 引用完整性 → buildPass</div>
+    </div>
+</div>
+<h2>二、三个新模块各管什么</h2>
+<h3><code>core/artifact-bus.js</code> <span class="kv">（约 537 行）· 解析 AI 回复 → {path,content}，并安全落盘</span></h3>
+<table><tr><th style="width:230px">关键设计</th><th>为什么这么设计</th></tr>
+<tr><td>宽容解析（认 5 种写法）</td><td>prompt 只教一种，但解析器认五种。因为「丢文件」比「报错」危险 —— 会议照常往下走，「失败」被伪装成「通过」</td></tr>
+<tr><td>三道安全闸</td><td>normalizeArtifactPath 白名单 → resolve 后再验「在 root 内」 → root 必须显式传、无默认值</td></tr>
+<tr><td>跨作者冲突「先到者保留」</td><td>同一路径两份不是「后者更新」，而是契约被违背；让后者覆盖会抹掉「哪儿断了」的证据</td></tr>
+<tr><td>同批同名后者取代前者</td><td>同一作者在同一批里重写，取最后一份（此处曾因只标记不替换数组元素而是真 bug）</td></tr>
+</table>
+<h3><code>core/build-verify.js</code> <span class="kv">（约 660 行）· 在真实子进程里跑检查，产出可信的 buildPass</span></h3>
+<table><tr><th style="width:230px">关键设计</th><th>为什么这么设计</th></tr>
+<tr><td>三档安全级别</td><td>syntax（零执行） → static（零执行，默认） → build（**会执行任意代码**，默认关闭）</td></tr>
+<tr><td>空工作区返回 null 而非 true</td><td>返回 true 等于说「虚无通过一切检查」；没有证据时答案只能是「不知道」</td></tr>
+<tr><td>引用完整性用状态机而非正则</td><td>注释里的 `// require('./old')` 不算引用。漏报只是少查一条，误报会让会议白跑一轮</td></tr>
+<tr><td>诚实标注查不了的</td><td>TS/JSX 明确报「未验证」并写进 summary，不假装能验</td></tr>
+</table>
+<h3><code>core/build-loop.js</code> <span class="kv">（约 407 行）· 把契约 / 产物 / 编译 / 判定串成流水线</span></h3>
+<table><tr><th style="width:230px">关键设计</th><th>为什么这么设计</th></tr>
+<tr><td>owner 必须在参会者名单里</td><td>模型常写角色名（「架构师」）或幻觉 id（「Agent-1」）→ 丢弃并计入 rejected。一个错的归属比没有归属更糟</td></tr>
+<tr><td>失败清单逐字稳定</td><td>只含结构性字段（kind/file/line/code），不含时间戳/耗时 —— 否则「已修好」会被判成「又出现新批评」，收敛永不发生</td></tr>
+<tr><td>给集成席的报告不给判定权</td><td>它的措辞里刻意不出现「通过」，防止 judgeBuildPass 的坚持白费</td></tr>
+</table>
+<h2>三、解析演示（真的调解析器跑的）</h2>
+<p class="kv">喂进去的是一段故意很乱的回复：有的代码块在 info 里写 <code>path=</code>，
+有的把路径藏在 HTML 注释里，有的路径写在块内首行注释，有的干脆靠「上一行标题」认出来。</p>
+<table><tr><th style="width:170px">识别到的路径</th><th style="width:120px">认出来的依据</th><th>内容首行</th></tr>
+<tr><td><code>src/user.js</code></td><td>info-string</td><td class="mono">module.exports = { name: 'user' };</td></tr>
+<tr><td><code>src/api.js</code></td><td>preceding-line</td><td class="mono">const user = require('./user');</td></tr>
+<tr><td><code>config/app.json</code></td><td>leading-comment</td><td class="mono">// config/app.json</td></tr>
+<tr><td><code>src/index.js</code></td><td>preceding-line</td><td class="mono">require('./api');</td></tr>
+</table>
+<p class="kv">统计：4 个 fenced 块 → 认出 <strong>4</strong> 个文件，
+丢弃 <strong>0</strong> 个（丢弃会进 <code>rejected</code> 数组，不静默消失）。</p>
+<h2>四、安全闸演示（真的拿恶意路径去撞）</h2>
+<table><tr><th style="width:250px">AI 给出的路径</th><th style="width:150px">结果</th><th>拒绝原因</th></tr>
+<tr>
+      <td class="mono">../../etc/passwd</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>traversal</code> <span class="kv">— 往上爬三级，想逃出工作区</span></td>
+    </tr>
+<tr>
+      <td class="mono">/etc/shadow</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>absolute</code> <span class="kv">— 绝对路径</span></td>
+    </tr>
+<tr>
+      <td class="mono">C:\Windows\system32\evil.dll</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>absolute-drive</code> <span class="kv">— 盘符 + 绝对路径</span></td>
+    </tr>
+<tr>
+      <td class="mono">\\attacker\share\x.js</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>unc</code> <span class="kv">— UNC 网络路径</span></td>
+    </tr>
+<tr>
+      <td class="mono">~/.ssh/authorized_keys</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>home-shorthand</code> <span class="kv">— 家目录简写</span></td>
+    </tr>
+<tr>
+      <td class="mono">package.json. </td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>trailing-dot-or-space</code> <span class="kv">— 尾随空格，Windows 会静默剥掉 → 落点与预期不符</span></td>
+    </tr>
+<tr>
+      <td class="mono">run.exe</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>forbidden-ext</code> <span class="kv">— 可执行扩展名</span></td>
+    </tr>
+<tr>
+      <td class="mono">config/CON.js</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>reserved-name</code> <span class="kv">— Windows 保留设备名</span></td>
+    </tr>
+<tr>
+      <td class="mono">a b.js</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>control-char</code> <span class="kv">— 空字节</span></td>
+    </tr>
+<tr>
+      <td class="mono">src/../../../x.js</td>
+      <td><span class="chip bad">拒绝</span></td>
+      <td><code>traversal</code> <span class="kv">— 夹在中间的上跳</span></td>
+    </tr>
+<tr>
+      <td class="mono">src/a.py</td>
+      <td><span class="chip ok">放行</span></td>
+      <td><span class="kv">正常文件（对照组：应当通过）</span></td>
+    </tr>
+</table>
+<h2>五、真编译演示（真建工作区、真跑子进程）</h2>
+<h3>第一幕：3 个文件，2 处真实错误</h3>
+<p class="kv">工作区：<code>D:\Users\Admin\AppData\Local\Temp\dsh-build-report-19932</code>　文件：<code>config/app.json</code> <code>src/app.js</code> <code>src/math.js</code></p>
+<table><tr><th style="width:110px">类型</th><th style="width:150px">文件</th><th style="width:60px">行</th><th style="width:180px">错误码</th><th>本机给出的原始结论</th></tr>
+<tr><td>json</td><td><code>config/app.json</code></td><td><span class="kv">—</span></td><td><code>invalid-json</code></td><td>Expected double-quoted property name in JSON at position 30 (line 1 column 31)</td></tr>
+<tr><td>refs</td><td><code>src/app.js</code></td><td><span class="kv">—</span></td><td><code>missing-ref</code></td><td>require 引用了「./user」，但产物里没有 src/user</td></tr>
+<tr><td>refs</td><td><code>src/app.js</code></td><td><span class="kv">—</span></td><td><code>missing-ref</code></td><td>require 引用了「./nowhere」，但产物里没有 src/nowhere</td></tr>
+</table>
+<div class="note bad-note">判定：<strong>buildPass = false</strong>
+　理由：3 处真实错误（本机执行结果，非模型自述）</div>
+<h3>第二幕：把两处错修好 → 判定自己翻过来</h3>
+<p class="kv">证明判定跟着<strong>证据</strong>走，不跟着谁的话走。文件：<code>config/app.json</code> <code>src/app.js</code> <code>src/math.js</code> <code>src/user.js</code></p>
+<div class="note ok-note">判定：<strong>buildPass = true</strong>
+　理由：全部 5 项检查通过　（实际执行 5 项检查）</div>
+<h3>第三幕：空工作区 —— 它敢不敢说「通过」</h3>
+<div class="note">工作区里一个文件都没有，执行项 <code>ran = 0</code>。<br>
+判定：<strong>buildPass = null</strong>　理由：没有任何检查可执行（工作区为空，或文件类型都不在可验证范围内）→ 不给出&quot;通过&quot;</div>
+<p class="kv">这是本轮刻意坚持的「诚实原则」：返回 <code>true</code> 等于说「虚无通过一切检查」。
+没有证据时，答案只能是「不知道」。</p>
+<h2>六、契约归属（幻觉 owner 必须被丢弃）</h2>
+<p class="kv">参会者名单：<code>p1 p2 p3</code>。喂进去的契约里混了两个<strong>不在名单里</strong>的负责人。</p>
+<table><tr><th style="width:150px">模块</th><th style="width:120px">负责人</th><th style="width:100px">结果</th><th>说明</th></tr>
+<tr><td><code>src/math.js</code></td><td><code>p1</code></td><td><span class="chip ok">接受</span></td><td class="kv">签名：add(a,b)　写法：table</td></tr>
+<tr><td><code>src/app.js</code></td><td><code>p2</code></td><td><span class="chip ok">接受</span></td><td class="kv">签名：start()　写法：table</td></tr>
+<tr><td><code>src/db.js</code></td><td><code>Agent-1</code></td><td><span class="chip bad">丢弃</span></td><td><code>unknown-owner</code> <span class="kv">— 一个错的归属比没有归属更糟（会放行越界写入）</span></td></tr>
+<tr><td><code>src/net.js</code></td><td><code>架构师</code></td><td><span class="chip bad">丢弃</span></td><td><code>unknown-owner</code> <span class="kv">— 一个错的归属比没有归属更糟（会放行越界写入）</span></td></tr>
+</table>
+<h2>七、失败清单必须逐字稳定</h2>
+<p class="kv">同一份失败连生成两次：
+<span class="chip bad">不一致</span>
+　含时间戳/耗时：<span class="chip ok">没有</span></p>
+<p class="kv">为什么这么较真：这份文本要喂给 <code>newCritiques()</code> 做「本轮相对上轮无新增」判定。
+掺入噪声会让「已修好」被判成「又出现新批评」，<strong>收敛永不发生</strong>。</p>
+<pre>【本机真实检查结果 —— 不是谁的判断，是编译器/解析器的输出】
+共 3 处错误：
+1. [json] config/app.json
+   报错：Expected double-quoted property name in JSON at position 30 (line 1 column 31)
+   提示：JSON 语法错误会让任何读取它的代码直接抛异常。
+2. [refs] src/app.js
+   报错：require 引用了「./user」，但产物里没有 src/user
+   提示：要么补上这个文件，要么把引用改成实际存在的路径 —— 别改引用的写法来&quot;绕过&quot;检查。
+3. [refs] src/app.js
+   报错：require 引用了「./nowhere」，但产物里没有 src/nowhere
+   提示：要么补上这个文件，要么把引用改成实际存在的路径 —— 别改引用的写法来&quot;绕过&quot;检查。
+
+★ 要求：
+1. 只修上面列出的问题，**不要重写整个文件**；
+2. 只交回**你改动过的文件**（每个文件一个代码块，照旧用 path= 标路径）；
+3. 不要解释，不要复述报错内容。</pre>
+<h2>八、验证结果（本节数字由脚本实时跑出来的，不是手写的）</h2>
+<table><tr><th style="width:300px">验证项</th><th style="width:110px">结果</th><th style="width:90px">耗时</th><th>结论行</th></tr>
+<tr><td>全量单元测试</td><td><span class="chip ok">通过</span></td><td class="kv">3.6s</td><td class="mono">tests 400 ｜ pass 400 ｜ fail 0</td></tr>
+<tr><td>产物落盘 + 真编译（端到端，真 orchestrator）</td><td><span class="chip dim">—</span></td><td class="kv">1.0s</td><td class="mono">47 通过 / 0 失败</td></tr>
+<tr><td>build 模式 UI 接线（活页面）</td><td><span class="chip dim">—</span></td><td class="kv">16.9s</td><td class="mono">13 通过 / 0 失败</td></tr>
+<tr><td>阶段编排 / panel 分组</td><td><span class="chip dim">—</span></td><td class="kv">2.8s</td><td class="mono">34 通过 / 0 失败</td></tr>
+<tr><td>链路接线</td><td><span class="chip ok">通过</span></td><td class="kv">0.2s</td><td class="mono">11/11 项通过</td></tr>
+<tr><td>外部回答面板</td><td><span class="chip ok">通过</span></td><td class="kv">0.6s</td><td class="mono">19/19 项通过</td></tr>
+<tr><td>测试台自检</td><td><span class="chip ok">通过</span></td><td class="kv">8.5s</td><td class="mono">9/9 项通过</td></tr>
+</table>
+<div class="note ok-note">全部通过。</div>
+<h2>九、实测得来的平台事实（写进注释，供以后省时间）</h2>
+<table><tr><th style="width:320px">事实</th><th>说明</th></tr>
+<tr><td>Node 22.7+ 起 `--experimental-detect-module` 默认开启</td><td>含 `import` 的 `.js` 在无 `package.json` 时**自动判定为 ESM（退出码 0）**。所以「见到 import 就报错」是误报 —— 我的原假设是反的，实测后改了代码和用例</td></tr>
+<tr><td>`node --check` 的能力边界</td><td>真解析、带准确行列号、**不执行代码**；但**抓不到**「引用不存在的模块」—— 而那正是集成失败最常见的形态 → 引用完整性因此成为性价比最高的一条</td></tr>
+<tr><td>Node 在语法错前会先打一行 `(node:32224) Warning:`</td><td>第一行里的数字是**进程号不是行号**。取行号必须跳过 `(node:` 开头的行（此处踩过真 bug）</td></tr>
+<tr><td>`ws` 模块在本机只有 `desktop/node_modules/ws`</td><td>`D:\Users\Admin\.workbuddy\binaries\node\workspace` 不存在；不过 Node 24 自带全局 `WebSocket`，多数情况可免</td></tr>
+<tr><td>测试台有 3 个真网页 AI 时截不了图</td><td>`Page.captureScreenshot` 会卡死（合成器被占住）→ 本报告就是那个替代方案</td></tr>
+</table>
+<h2>十、坦白：还没有的</h2>
+<ul>
+  <li><strong>没有截图</strong> —— 测试台里挂着 3 个真网页 AI，<code>Page.captureScreenshot</code> 会卡死（合成器被占住）。
+      这份报告就是替代方案。</li>
+  <li><strong><code>build</code> 档默认关闭</strong> —— 它和默认两档的<strong>安全性质完全不同</strong>：前两档零执行，
+      第三档会真的在本机跑 AI 写的代码。所以默认是 <code>static</code>，切过去时给明确风险提示。</li>
+  <li><strong>每个模式只在一场真实会议里跑过一轮</strong> —— 长会议的收敛行为（多轮修复回路）还没在真 AI 上压过。</li>
+</ul>
+<footer>
+  meeting-lab · Phase 0 独立测试台　｜　报告由 <code>tools/build-build-report.js</code> 生成　｜
+  本轮总耗时 33.9s
+</footer></div></body></html>

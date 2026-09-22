@@ -75,6 +75,37 @@ test('写法⑤ 代码块前一行是 Markdown 标题形式的路径', () => {
   assert.strictEqual(r.files[0].how, 'preceding-line');
 });
 
+test('写法⑤-a 前一行句尾带中文冒号（中文模型最常见的写法，曾整块丢失）', () => {
+  const r = parseArtifacts('还有入口文件 `src/index.js`：\n```js\nlet a = 1;\n```\n');
+  assert.strictEqual(r.files.length, 1, '带冒号的标题也要认出来');
+  assert.strictEqual(r.files[0].path, 'src/index.js');
+  assert.strictEqual(r.files[0].how, 'preceding-line');
+});
+
+test('写法⑤-b 前一行用 HTML 注释包裹（曾整块丢失）', () => {
+  const r = parseArtifacts('<!-- path=src/api.js -->\n```js\nlet b = 2;\n```\n');
+  assert.strictEqual(r.files.length, 1);
+  assert.strictEqual(r.files[0].path, 'src/api.js');
+  assert.strictEqual(r.files[0].how, 'preceding-line');
+});
+
+test('写法⑤-c 前一行是「文件：xxx.js」的键值形式', () => {
+  const r = parseArtifacts('文件：src/db.js\n```js\nlet c = 3;\n```\n');
+  assert.strictEqual(r.files[0].path, 'src/db.js');
+});
+
+test('★ 写法⑤-d 一行里出现两个路径 → 歧义不猜，返回 null（宁可丢，不可猜错）', () => {
+  const r = parseArtifacts('先看 src/old.js 与 src/new.js 的区别：\n```js\nlet d = 4;\n```\n');
+  assert.strictEqual(r.files.length, 0, '猜错会把内容写进别人的文件，宁可不认');
+  assert.strictEqual(r.rejected.length, 1);
+  assert.strictEqual(r.rejected[0].reason, 'no-path');
+});
+
+test('★ 写法⑤-e 句尾带句号的散文不当标题（那更可能是在叙述，不是在指名文件）', () => {
+  const r = parseArtifacts('我已经把 src/a.js 改好了。\n```js\nlet e = 5;\n```\n');
+  assert.strictEqual(r.files.length, 0, '句号结尾的行不作数——防止把下一块内容写到错的文件');
+});
+
 test('写法⑥ json 代码块里包一个 {files:[…]} 产物包', () => {
   const body = JSON.stringify({ files: [{ path: 'a/b.js', content: 'const x=1;\n' }, { path: 'c.json', content: '{}' }] });
   const r = parseArtifacts('```json\n' + body + '\n```\n');

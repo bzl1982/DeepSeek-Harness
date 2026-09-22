@@ -30,9 +30,10 @@ cd "D:\DeepSeek Harness\meeting-lab"
 node --test test/*.test.js
 ```
 
-当前：**389 个用例全部通过**。覆盖——
+当前：**400 个用例全部通过**。覆盖——
 
-- `artifact-bus.test.js` —— ★ **产物总线**（38 用例）：五种标注写法解析 / 路径安全闸
+- `artifact-bus.test.js` —— ★ **产物总线**（43 用例）：五种标注写法解析（含**前一行尾锚**：
+  句尾带中文冒号 / HTML 注释包裹 / **一行出现两个路径则拒绝猜**）/ 路径安全闸
   （绝对路径·盘符·UNC·`..`·可执行扩展名·保留名）/ 契约归属校验 / **跨作者冲突先到者保留** /
   真磁盘落盘与 sha256 / **认不出的块必须进 rejected（不许静默丢）**
 - `build-verify.test.js` —— ★ **真编译验证**（29 用例）：`node --check` 真解析（含准确行号）/
@@ -109,7 +110,7 @@ meeting-lab/
 │   ├── api-adapter.js          # 真实 API 通道（主席/压缩/判停走这条）
 │   ├── human-relay.js          # 人工中转（座位层）
 │   └── dsh-config.js           # 复用客户端已配置的模型/密钥（带脱敏）
-├── test/                       # node --test（389 用例）
+├── test/                       # node --test（400 用例）
 ├── demo/                       # 终端演示（run-demo / run-modes-demo / run-casting-demo）
 ├── tools/                      # 验证与生成脚本（见下）
 └── shell/                      # 最小 Electron 壳（webview + CDP 可视化验证）
@@ -123,8 +124,11 @@ meeting-lab/
 | `node tools/verify-pipeline.js [端口]` | 评审链路端到端（kind 透传 → 匿名候选 → 名次表 → Borda → 定标） |
 | `node tools/verify-external.js [端口] [--shot x.png]` | 外部 AI 回答面板 19 项端到端 |
 | `node tools/verify-panel-phases.js [--verbose]` | ★ **阶段编排层 34 项**：panel 分组真跑 + 归并约束 + 对账（纯 Node，不需浏览器） |
+| `node tools/verify-build-artifacts.js` | ★ **产物落盘 + 真编译 47 项**：走真 `MeetingOrchestrator` 演一场必然失败的交付，断言「自己说通过」不能翻案（纯 Node，不需浏览器） |
+| `node tools/verify-build-ui.js [端口] [--live]` | ★ **build 模式 UI 接线**：档位显隐 / 风险提示 / 产物阶段流程条；`--live` 真开一场会议并断言工作区在系统临时目录 |
 | `node tools/check-api.js [--live]` | 检查 API 通道可用性 |
 | `node tools/build-modes-page.js` | 生成 `modes.html`（全模式一览页） |
+| `node tools/build-build-report.js [--no-run]` | ★ 生成本轮交付报告 `build-verify-report.html` —— **报告里的数字由它实时跑出来**，不是手写的 |
 | `node tools/run-interaction-proof.js` | 生成 `INTERACTION-PROOF.md`（交互证据） |
 
 ★ = 核心
@@ -231,6 +235,11 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
   并写进给集成席的报告，而不是当成通过（诚实优先于"看起来全能"）。
 - **`.js` 里混用 `import` 与 `require` 不会被 `--check` 抓**：`--check` 是纯语法检查，
   不检查运行时可用性。要抓这类问题得真跑（第三档）。
+- **产物路径「前一行」写法的两条边界**（都是刻意选的，不是漏做）：
+  ① 一行里出现**两个以上不同路径**时**拒绝猜**（返回 null）——「先看 `src/old.js` 与 `src/new.js` 的区别：」
+     这种句子猜错会把内容写进别人的文件，宁可丢（丢会被"引用不存在"检查抓到）；
+  ② 句尾带**句号/逗号**的行不作数——那更可能是在叙述（「我已经把 `src/a.js` 改好了。」），
+     当标题用会把下一块内容写到错的文件。句尾带**冒号**则认（那是标题的强习惯）。
 - 访问真实网页 AI 需自行登录；各站点 ToS 禁止自动化，属内部研究，请限速使用
 - `shell/` 用了 `nodeIntegration: true`（仅为本地测试台方便），**不可照搬到生产**
 
@@ -254,6 +263,10 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 - **解析**：五种代码块标注写法都认（`path=` / info 里跟路径 / 整段即路径 / 首行注释 / 前一行标题，
   外加结构化 JSON 产物包）；**认不出来的块进 `rejected` 而不是被静默丢掉** ——
   丢文件比报错危险得多（会议照常往下走，"失败"被伪装成"通过"）。
+  ★ **「前一行」写法的尾锚是本轮生成报告时实测发现并放宽的**：原来要求路径紧贴行尾，
+  于是「还有入口文件 \`src/index.js\`：」与「\`<!-- path=src/api.js -->\`」两种常见写法
+  **整块丢失**（4 段代码块只认出 2 段）。放宽到「收尾符号 + 中英文冒号」，
+  并加「一行两个路径就拒绝猜」与「句尾句号不作数」两条保险（见「已知限制」）。
 - **落盘**：三道安全闸 —— 路径归一（拒绝对路径/盘符/UNC/`..`/控制字符/可执行扩展名/保留名）、
   resolve 后再验一次在 root 内、**root 必须显式传且没有默认值**（防 AI 产物覆盖项目自己的源码）。
   跨作者写同一路径 → **先到者保留 + 记冲突**（让后者覆盖就把"哪儿断了"的证据抹掉了）。
@@ -269,10 +282,15 @@ Phase 2 接客户端时，是**扩展现有 adapter**，不是推倒重来。
 - **注入点**：新增 `ctx.phasePrompt(stage, providerId)` —— 契约模板 / 逐人交付说明 /
   编译报告都从这里进 prompt。**不让调用方在外面另拼一份**：那样会有两条组装路径，迟早漂移。
 
-验证：单测 **389/389**（+97）｜build 端到端 **47/47**（走真 orchestrator，连跑两次幂等；
+验证：单测 **400/400**（+105）｜build 端到端 **47/47**（走真 orchestrator，连跑两次幂等；
 其中让集成席故意说"我已全部检查通过、可以交付"，verdict 必须仍是 `false`）｜
 build UI **17/17**（真实页面；含 `--live` 真启动一次会议，确认工作区建在系统临时目录而非项目目录）
 ｜既有的阶段编排 34/34、链路 11/11、外部回答 19/19、测试台自检 9/9 全部无回归。
+
+★ 另附一份**能看的对账**：`node tools/build-build-report.js` → `build-verify-report.html`。
+报告里的数字（解析命中数、安全闸放行/拒绝、真编译抓到几处错、修好后判定是否翻过来、7 个验证套件的结论行）
+**全部由脚本实时跑出来**，不是手写的 —— 所以它既是文档也是一次对账；哪天不一致，报告自己会显示。
+（测试台里挂着 3 个真网页 AI 时 `Page.captureScreenshot` 会卡死，这份报告就是截图的替代方案。）
 
 ### 上一轮：阶段编排层 —— 让模式契约**真正执行**
 
