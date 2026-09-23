@@ -1039,13 +1039,14 @@ async function clickComposerSend(wv) {
  *   配了 trigger 的席位走"文件选择器拦截"策略（点站点自己的📎→拦截 chooser→塞真实节点）；
  *   没配的走旧策略（querySelector 第一个 input[type=file]——DP/豆包/Kimi 已实测可通）。 */
 const ATTACH_BUTTONS = {
-  'tongyi-web': { trigger: 'button[aria-label="添加附件"]' },                  // 实测首页点击无面板弹出，待进对话后复测
-  'gemini-web': { trigger: 'button[aria-label="上传和工具"]', menu: true },   // 点开菜单后再点"上传文件"
-  'yuanbao-web': { trigger: 'button[aria-label="添加"]', menu: true },        // 添加菜单里找上传项
-  'chatgpt-web': { trigger: 'button[data-testid="composer-plus-btn"]', menu: true }, // "添加文件等"菜单
-  'google-search': { trigger: 'button[aria-label="添加文件和工具"]', menu: true }, // 谷歌 AI 模式（菜单项"添加文件"，已走查验证 chooser 弹出）
-  'wenxin-web': { synthetic: ['input'] },   // 实测: 派 change+input 时能挂上, 零事件不挂 → 文心只听 input
-  // 'kimi-web' / 'deepseek-web' / 'doubao-web'：直接塞已验证可通，零合成事件
+  // drop:true = 启用"合成拖放"通道（内容级，实测通义/文心首页即挂上）
+  'tongyi-web': { trigger: 'button[aria-label="添加附件"]', drop: true },
+  'wenxin-web': { synthetic: ['input'], drop: true },
+  'gemini-web': { trigger: 'button[aria-label="上传和工具"]', menu: true },
+  'yuanbao-web': { trigger: 'button[aria-label="添加"]', menu: true },
+  'chatgpt-web': { trigger: 'button[data-testid="composer-plus-btn"]', menu: true, drop: true },
+  'google-search': { trigger: 'button[aria-label="添加文件和工具"]', menu: true, drop: true },
+  // 'kimi-web' / 'deepseek-web' / 'doubao-web'：直接塞已验证可通，零配置即可
 };
 
 function makeWebviewDriver(wv, providerId) {

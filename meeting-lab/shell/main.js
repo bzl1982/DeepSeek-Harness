@@ -12,6 +12,7 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 const { app, BrowserWindow, ipcMain, webContents } = require('electron');
 
 const REUSE_LOGIN = process.argv.includes('--reuse-login');
@@ -167,40 +168,112 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
         const clicked = await trustClick(`(() => {
           return document.querySelector(${JSON.stringify(attach.trigger)});
         })`);
-        if (!clicked) return { ok: false, error: '没找到附着按钮或不在视口内: ' + attach.trigger };
-        /** 轮询等 chooser（固定 sleep 会漏：谷歌菜单渲染 ~1.5s，1.2s 就放弃过） */
-        const waitChooser = async (ms) => {
-          const t0 = Date.now();
-          while (!opened && Date.now() - t0 < ms) await sleepMs(200);
-          return !!opened;
-        };
-        if (!(await waitChooser(2500)) && attach.menu) {
-          // 触发按钮开的可能是菜单（谷歌"添加文件和工具"/ChatGPT"添加文件等"）
-          //   → 精确文本匹配菜单项（排除触发按钮自己），受信任点击
-          await trustClick(`(() => {
-            var trig = document.querySelector(${JSON.stringify(attach.trigger)});
-            var cands = document.querySelectorAll('[role="menuitem"],[role="menu"] *,li,button,[jsaction]');
-            for (var i = 0; i < cands.length; i++) {
-              var el = cands[i];
-              if (el === trig || el.contains(trig) || el.offsetParent === null || el.children.length > 3) continue;
-              var t = (el.textContent || '').trim();
-              if (t === '添加文件' || /^(上传文件|上传附件|本地文件|从电脑上传|从本地文件上传)/.test(t)) return el;
-            }
-            return null;
-          })`);
-          await waitChooser(4000);
-        }
+        if (!clicked) {
+          // ★ 不 early-return！附着按钮找不到/不在视口 → 继续往下走策略 C/B（否则拖放通道被跳过）
+          console.log('[cdp-set-files] 策略 A 找不到附着按钮（' + attach.trigger + '），继续后续策略');
+        } else {
+          /** 轮询等 chooser（固定 sleep 会漏：谷歌菜单渲染 ~1.5s，1.2s 就放弃过） */
+          const waitChooser = async (ms) => {
+            const t0 = Date.now();
+            while (!opened && Date.now() - t0 < ms) await sleepMs(200);
+            return !!opened;
+          };
+          if (!(await waitChooser(2500)) && attach.menu) {
+            // 触发按钮开的可能是菜单（谷歌"添加文件和工具"/ChatGPT"添加文件等"）
+            //   → 精确文本匹配菜单项（排除触发按钮自己），受信任点击
+            await trustClick(`(() => {
+              var trig = document.querySelector(${JSON.stringify(attach.trigger)});
+              var cands = document.querySelectorAll('[role="menuitem"],[role="menu"] *,li,button,[jsaction]');
+              for (var i = 0; i < cands.length; i++) {
+                var el = cands[i];
+                if (el === trig || el.contains(trig) || el.offsetParent === null || el.children.length > 3) continue;
+                var t = (el.textContent || '').trim();
+                if (t === '添加文件' || /^(上传文件|上传附件|本地文件|从电脑上传|从本地文件上传)/.test(t)) return el;
+              }
+              return null;
+            })`);
+            await waitChooser(4000);
+          }
 
-        if (opened && opened.backendNodeId) {
-          await dbg.sendCommand('DOM.setFileInputFiles', { files, backendNodeId: opened.backendNodeId });
-          return { ok: true, via: 'chooser' };
+          if (opened && opened.backendNodeId) {
+            await dbg.sendCommand('DOM.setFileInputFiles', { files, backendNodeId: opened.backendNodeId });
+            /* ★ 芯片验收：塞进真实节点 ≠ 站点挂上了（谷歌不在 AI 模式时静默无痕）。
+             *   1.5s 后页面正文不含文件名 → 视为未挂上，继续走拖放/直塞（自愈式降级）。 */
+            const names = files.map((p) => path.basename(p));
+            const ackChooser = await wc.executeJavaScript(`(function(){
+              var t = document.body.innerText || '';
+              var names = ${JSON.stringify(names)};
+              for (var i = 0; i < names.length; i++) { if (t.indexOf(names[i]) >= 0) return 'staged'; }
+              return 'no-chip';
+            })();`);
+            if (ackChooser === 'staged') return { ok: true, via: 'chooser' };
+            console.log('[cdp-set-files] 策略 A 塞入成功但页面无芯片，继续后续策略');
+          } else {
+            console.log('[cdp-set-files] 策略 A 未等到 chooser（' + attach.trigger + '），继续后续策略');
+          }
         }
-        console.log('[cdp-set-files] 策略 A 未等到 chooser（' + attach.trigger + '），退回策略 B');
       } catch (errA) {
         console.log('[cdp-set-files] 策略 A 异常: ' + errA.message + '，退回策略 B');
       } finally {
         try { dbg.removeListener('message', onMsg); } catch (_) {}
         try { await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: false }); } catch (_) {}
+      }
+    }
+
+    /* ── 策略 C：合成拖放（内容级——读文件字节，在页面里造真 File 对象，
+     *   沿输入区往上 6 层逐个派 dragenter/dragover/drop；不依赖站点附着按钮、
+     *   也不依赖真实文件路径。实测：通义/文心首页即挂上（staged=true）。
+     *   ACK 判据：1.5s 后页面正文出现文件名 = 真挂上） ── */
+    if (attach && attach.drop && files.length) {
+      try {
+        const MAX = 20 * 1024 * 1024;
+        const picked = [];
+        let total = 0;
+        for (const p of files) {
+          const st = fs.statSync(p);
+          total += st.size;
+          if (total > MAX) break;
+          picked.push({
+            name: path.basename(p),
+            type: /\.(md|txt|csv|json|log)$/i.test(p) ? 'text/plain' : 'application/octet-stream',
+            b64: fs.readFileSync(p).toString('base64'),
+          });
+        }
+        if (!picked.length) throw new Error('没有可投递的文件（或超过 20MB 上限）');
+        const ack = await wc.executeJavaScript(`(async () => {
+          var FILES = ${JSON.stringify(picked)};
+          var makeFile = function (f) {
+            var bin = atob(f.b64);
+            var arr = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            return new File([arr], f.name, { type: f.type });
+          };
+          var comp = document.querySelector('textarea, [contenteditable="true"], [role="textbox"]');
+          var targets = [];
+          var t = comp;
+          for (var d = 0; d < 6 && t; d++) { targets.push(t); t = t.parentElement; }
+          if (document.body) targets.push(document.body);
+          for (var k = 0; k < targets.length; k++) {
+            try {
+              var dt = new DataTransfer();
+              for (var j = 0; j < FILES.length; j++) dt.items.add(makeFile(FILES[j]));
+              var mk = function (n) {
+                return { bubbles: true, cancelable: true, dataTransfer: dt, composed: true };
+              };
+              ['dragenter', 'dragover', 'drop'].forEach(function (n) {
+                targets[k].dispatchEvent(new DragEvent(n, mk(n)));
+              });
+            } catch (e) { /* 这一层不行就下一层 */ }
+          }
+          await new Promise(function (r) { setTimeout(r, 1500); });
+          var text = document.body.innerText || '';
+          for (var m = 0; m < FILES.length; m++) { if (text.indexOf(FILES[m].name) >= 0) return 'staged'; }
+          return 'no-chip';
+        })();`);
+        if (ack === 'staged') return { ok: true, via: 'drop' };
+        console.log('[cdp-set-files] 策略 C 拖放后页面未出现文件名（' + (attach.trigger || 'drop') + '），继续策略 B');
+      } catch (errC) {
+        console.log('[cdp-set-files] 策略 C 异常: ' + errC.message + '，继续策略 B');
       }
     }
 
@@ -234,12 +307,21 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
         }
       })();`);
     }
-    return { ok: true, via: 'direct' };
+    /* ★ 策略 B 也验芯片：静默黑洞（塞进未接线的 input）必须报失败，不许日志假成功 */
+    await sleepMs(1500);
+    const namesB = files.map((p) => path.basename(p));
+    const ackB = await wc.executeJavaScript(`(function(){
+      var t = document.body.innerText || '';
+      var names = ${JSON.stringify(namesB)};
+      for (var i = 0; i < names.length; i++) { if (t.indexOf(names[i]) >= 0) return 'staged'; }
+      return 'no-chip';
+    })();`);
+    if (ackB === 'staged') return { ok: true, via: 'direct' };
+    return { ok: false, error: '页面未出现附件（该站点直接塞通道无效，需站点专属适配）' };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
-
 function createWindow() {
   const win = new BrowserWindow({
     width: 1680,
