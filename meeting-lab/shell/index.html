@@ -1035,6 +1035,16 @@ async function clickComposerSend(wv) {
 }
 
 /* ---------- webview -> driver ---------- */
+/* ★ per-provider 附着按钮选择器（侦察自 2026-09-23 各家真实 DOM）：
+ *   配了 trigger 的席位走"文件选择器拦截"策略（点站点自己的📎→拦截 chooser→塞真实节点）；
+ *   没配的走旧策略（querySelector 第一个 input[type=file]——DP/豆包/Kimi 已实测可通）。 */
+const ATTACH_BUTTONS = {
+  'tongyi-web': { trigger: 'button[aria-label="添加附件"]' },
+  'gemini-web': { trigger: 'button[aria-label="上传和工具"]', menu: true },   // 点开菜单后再点"上传文件"
+  'yuanbao-web': { trigger: 'button[aria-label="添加"]', menu: true },        // 添加菜单里找上传项
+  // 'chatgpt-web' / 'wenxin-web'：附着按钮待定点侦察，暂走旧策略（文件进黑洞已知）
+};
+
 function makeWebviewDriver(wv, providerId) {
   return {
     // 在页面里执行脚本并取回 JSON
@@ -1122,11 +1132,14 @@ function makeWebviewDriver(wv, providerId) {
     // 用 CDP 直接给 <input type=file> 塞文件（不模拟文件选择器，可靠得多）
     // ★ 经 IPC 让主进程代持 webContents.debugger —— renderer 里 require('electron')
     //   根本没有 webContents 模块（主进程专属），之前 9 席全倒在这一步。
+    //   配了 ATTACH_BUTTONS 的席位走"chooser 拦截"策略（点站点自己的📎）。
     setFiles: async (paths) => {
       try {
+        const attach = ATTACH_BUTTONS[providerId] || null;
         const r = await ipcRenderer.invoke('cdp-set-files', {
           webContentsId: wv.getWebContentsId(),
           files: paths,
+          attach,
         });
         if (!r || !r.ok) throw new Error((r && r.error) || 'CDP 调用失败');
         return true;

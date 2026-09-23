@@ -117,8 +117,12 @@ ipcMain.on('seat-popup-update', (e, { id, text }) => {
 
 /* ★ CDP 塞文件（renderer 无法访问 webContents 模块——那是主进程专属，
  *   所以 setFiles 必须经 IPC 让主进程代持 webContents.debugger）。
- *   输入 { webContentsId, files: [绝对路径] }，输出 { ok, error? } */
-ipcMain.handle('cdp-set-files', async (e, { webContentsId, files }) => {
+ *   输入 { webContentsId, files: [绝对路径], attach?: {trigger, menu?} }，输出 { ok, via?, error? }
+ *
+ *   策略 A（有 attach.trigger 时）：文件选择器拦截——点站点自己的📎按钮，
+ *     拦截弹出的 chooser，把文件塞进真实 backendNodeId（绕开"抓错 input"黑洞）。
+ *   策略 B（兜底）：querySelector 找第一个 input[type=file] 直接塞（DP/豆包/Kimi 已验证可通）。 */
+ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
   const wc = webContents.fromId(webContentsId);
   if (!wc) return { ok: false, error: 'webContents 不存在（webview 可能还没 dom-ready）' };
   const dbg = wc.debugger;
@@ -127,6 +131,51 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files }) => {
       dbg.attach('1.3');
       await new Promise((r) => setTimeout(r, 250));
     }
+
+    /* ── 策略 A：chooser 拦截 ── */
+    if (attach && attach.trigger) {
+      let opened = null;
+      const onMsg = (evt, method, params) => {
+        if (method === 'Page.fileChooserOpened' && params && params.backendNodeId && !opened) opened = params;
+      };
+      try {
+        await dbg.sendCommand('Page.enable');
+        await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
+        dbg.on('message', onMsg);
+        const clickRes = await wc.executeJavaScript(`(function(){
+          var b = document.querySelector(${JSON.stringify(attach.trigger)});
+          if (!b) return 'no-trigger';
+          b.click(); return 'clicked';
+        })();`);
+        if (clickRes !== 'clicked') {
+          return { ok: false, error: '没找到附着按钮: ' + attach.trigger };
+        }
+        await new Promise((r) => setTimeout(r, 900));
+        if (!opened && attach.menu) {
+          // 触发按钮开的可能是菜单（如 Gemini"上传和工具"）→ 点含"上传文件"的菜单项
+          await wc.executeJavaScript(`(function(){
+            var items = document.querySelectorAll('[role="menuitem"],[role="option"],li,button,div[tabindex]');
+            for (var i = 0; i < items.length; i++) {
+              var it = items[i];
+              if (it.offsetParent !== null && /上传文件|上传附件|本地文件|从电脑/.test(it.textContent || '')) { it.click(); return; }
+            }
+          })();`);
+          await new Promise((r) => setTimeout(r, 900));
+        }
+        if (opened && opened.backendNodeId) {
+          await dbg.sendCommand('DOM.setFileInputFiles', { files, backendNodeId: opened.backendNodeId });
+          return { ok: true, via: 'chooser' };
+        }
+        console.log('[cdp-set-files] 策略 A 未等到 chooser（' + attach.trigger + '），退回策略 B');
+      } catch (errA) {
+        console.log('[cdp-set-files] 策略 A 异常: ' + errA.message + '，退回策略 B');
+      } finally {
+        try { dbg.removeListener('message', onMsg); } catch (_) {}
+        try { await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: false }); } catch (_) {}
+      }
+    }
+
+    /* ── 策略 B：querySelector 第一个 input[type=file] 直接塞 ── */
     // 没有 file input 就造一个（部分站点懒加载/自定义上传）
     await wc.executeJavaScript(`(function(){
       var inp = document.querySelector('input[type="file"]');
@@ -146,7 +195,7 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files }) => {
     // ★ 一个合成事件都不要派！DOM.setFileInputFiles 本身就会触发浏览器原生的
     //   input+change 事件（实测：再手动派发 = Kimi/豆包收到两份重复文件）。
     //   附言/发送由用户在对话框里自己填自己做（用户裁决：不许自动发出去）。
-    return { ok: true };
+    return { ok: true, via: 'direct' };
   } catch (err) {
     return { ok: false, error: err.message };
   }
