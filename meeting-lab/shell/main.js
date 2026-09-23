@@ -12,7 +12,7 @@
  */
 
 const path = require('path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, webContents } = require('electron');
 
 const REUSE_LOGIN = process.argv.includes('--reuse-login');
 
@@ -113,6 +113,44 @@ ipcMain.on('seat-popup-update', (e, { id, text }) => {
   if (!win || win.isDestroyed()) return;
   const safe = JSON.stringify(text || '');
   win.webContents.executeJavaScript(`(function(){var b=document.getElementById('b');if(b)b.textContent=${safe};})()`).catch(() => {});
+});
+
+/* ★ CDP 塞文件（renderer 无法访问 webContents 模块——那是主进程专属，
+ *   所以 setFiles 必须经 IPC 让主进程代持 webContents.debugger）。
+ *   输入 { webContentsId, files: [绝对路径] }，输出 { ok, error? } */
+ipcMain.handle('cdp-set-files', async (e, { webContentsId, files }) => {
+  const wc = webContents.fromId(webContentsId);
+  if (!wc) return { ok: false, error: 'webContents 不存在（webview 可能还没 dom-ready）' };
+  const dbg = wc.debugger;
+  try {
+    if (!dbg.isAttached()) {
+      dbg.attach('1.3');
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // 没有 file input 就造一个（部分站点懒加载/自定义上传）
+    await wc.executeJavaScript(`(function(){
+      var inp = document.querySelector('input[type="file"]');
+      if (!inp) {
+        inp = document.createElement('input');
+        inp.type = 'file'; inp.style.display = 'none';
+        document.body.appendChild(inp);
+      }
+      return true;
+    })();`);
+    const root = await dbg.sendCommand('DOM.getDocument', { depth: -1 });
+    const found = await dbg.sendCommand('DOM.querySelector', {
+      nodeId: root.root.nodeId, selector: 'input[type="file"]',
+    });
+    if (!found || !found.nodeId) return { ok: false, error: '页面上找不到 <input type=file>（造的兜底也没生效）' };
+    await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: found.nodeId });
+    await wc.executeJavaScript(`(function(){
+      var inp = document.querySelector('input[type="file"]');
+      if (inp) { inp.dispatchEvent(new Event('change', { bubbles: true })); inp.dispatchEvent(new Event('input', { bubbles: true })); }
+    })();`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 function createWindow() {

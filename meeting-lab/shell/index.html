@@ -1119,36 +1119,15 @@ function makeWebviewDriver(wv, providerId) {
     },
 
     // 用 CDP 直接给 <input type=file> 塞文件（不模拟文件选择器，可靠得多）
+    // ★ 经 IPC 让主进程代持 webContents.debugger —— renderer 里 require('electron')
+    //   根本没有 webContents 模块（主进程专属），之前 9 席全倒在这一步。
     setFiles: async (paths) => {
       try {
-        if (!wv.debugger.isAttached()) {
-          wv.debugger.attach('1.3');
-          await new Promise((r) => setTimeout(r, 300));
-        }
-        // 没有 file input 就造一个（部分站点是懒加载/自定义上传）
-        await wv.executeJavaScript(`
-          (function(){
-            var inp = document.querySelector('input[type="file"]');
-            if (!inp) {
-              inp = document.createElement('input');
-              inp.type = 'file'; inp.style.display = 'none';
-              document.body.appendChild(inp);
-            }
-            return true;
-          })();
-        `);
-        const root = await wv.debugger.sendCommand('DOM.getDocument', { depth: -1 });
-        const found = await wv.debugger.sendCommand('DOM.querySelector', {
-          nodeId: root.root.nodeId, selector: 'input[type="file"]',
+        const r = await ipcRenderer.invoke('cdp-set-files', {
+          webContentsId: wv.getWebContentsId(),
+          files: paths,
         });
-        if (!found.nodeId) return false;
-        await wv.debugger.sendCommand('DOM.setFileInputFiles', { files: paths, nodeId: found.nodeId });
-        await wv.executeJavaScript(`
-          (function(){
-            var inp = document.querySelector('input[type="file"]');
-            if (inp) { inp.dispatchEvent(new Event('change', { bubbles: true })); inp.dispatchEvent(new Event('input', { bubbles: true })); }
-          })();
-        `);
+        if (!r || !r.ok) throw new Error((r && r.error) || 'CDP 调用失败');
         return true;
       } catch (e) {
         log(`[CDP 上传失败] ${providerId}: ${e.message}`, 'bad');
