@@ -275,7 +275,7 @@
         <label class="ck" title="勾上后消息自动带「【主持人】」标注"><input type="checkbox" id="chair-tag" checked>主持人标注</label>
         <button id="chair-send">📢 广播</button>
         <label class="filepick">📎 文件<input id="chair-files" type="file" multiple /></label>
-        <button id="chair-files-send" class="ghost" title="把所选文件通过 CDP 投给每个网页席位，随后自动补一句附言并回车（文件随消息真正发出）；API 席位以文字告知文件名">发文件给所有人</button>
+        <button id="chair-files-send" class="ghost" title="把所选文件通过 CDP 挂到每个网页席位的输入框（不自动发送——你在各窗口填好叮嘱语后自己发）；API 席位以文字告知文件名">发文件给所有人</button>
         <span class="flexsp"></span>
         <button id="btn-pause" class="ghost" disabled title="暂停会议：所有席位在当前轮次边界停下等待（仅透明广播会议支持）">⏸ 暂停</button>
         <button id="btn-stop" class="danger" disabled title="停止会议：立即叫停，已完成的发言照常落盘。AI 卡住不用再关软件重启">⏹ 停止会议</button>
@@ -938,22 +938,13 @@ async function chairSendFiles() {
   const names = files.map((p) => osPath.basename(p));
   log(`[主持人→全体] 发送 ${files.length} 个文件：${names.join('、')}`, 'hd');
   let okN = 0;
-  const caption = `【主持人发送了文件】${names.join('、')}（请查收附件）`;
   for (const [id, c] of cells) {
     if (c.enabled === false) continue;
     let ok = false;
-    try {
-      const driver = makeWebviewDriver(c.wv, id);
-      ok = await driver.setFiles(files);
-      if (ok) {
-        // ★ 塞文件只等于"挂上附件"，必须补一句附言并回车，文件才随消息真正发出去
-        //   （实测：不补发送，文心/元宝的文件就停在输入框里过夜）
-        await new Promise((r) => setTimeout(r, 1200));
-        await driver.sendText(caption);
-      }
-    } catch (_) { ok = false; }
+    try { ok = await makeWebviewDriver(c.wv, id).setFiles(files); } catch (_) { ok = false; }
     if (ok) okN += 1;
-    log(`   ${ok ? '✔' : '✗'} ${c.provider.name}${ok ? '' : '（CDP 上传失败）'}`, ok ? 'ok' : 'bad');
+    /* ★ 用户裁决：不许自动发送！附件挂上后停在输入框，等用户自己填叮嘱语一起发 */
+    log(`   ${ok ? '✔' : '✗'} ${c.provider.name}${ok ? '（附件已挂上，等你填叮嘱后发送）' : '（CDP 上传失败）'}`, ok ? 'ok' : 'bad');
   }
   for (const [, ac] of apiCells) {
     if (!ac.rawAdapter) continue;
@@ -961,7 +952,7 @@ async function chairSendFiles() {
       await ac.rawAdapter.sendText(`【主持人发送了文件】${names.join('、')}（API 通道无法直接接收本地文件，仅以文件名告知）`);
     } catch (_) { /* 尽力而为 */ }
   }
-  log(`  → 文件已投递 ${okN} 个网页席位；API 席位以文字告知文件名`, okN ? 'ok' : 'warn');
+  log(`  → 附件已挂上 ${okN} 个网页席位（不自动发送——你在各窗口填叮嘱后自己发）；API 席位以文字告知文件名`, okN ? 'ok' : 'warn');
 }
 chairFilesSendEl.addEventListener('click', () => { chairSendFiles(); });
 

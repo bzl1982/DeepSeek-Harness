@@ -143,12 +143,9 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files }) => {
     });
     if (!found || !found.nodeId) return { ok: false, error: '页面上找不到 <input type=file>（造的兜底也没生效）' };
     await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: found.nodeId });
-    // ★ 只派发 change 事件——真实用户选文件时浏览器语义就在这一刻；
-    //   之前 change+input 都派，Kimi/豆包两家对两个事件都响应 → 实测收到两份重复文件。
-    await wc.executeJavaScript(`(function(){
-      var inp = document.querySelector('input[type="file"]');
-      if (inp) { inp.dispatchEvent(new Event('change', { bubbles: true })); }
-    })();`);
+    // ★ 一个合成事件都不要派！DOM.setFileInputFiles 本身就会触发浏览器原生的
+    //   input+change 事件（实测：再手动派发 = Kimi/豆包收到两份重复文件）。
+    //   附言/发送由用户在对话框里自己填自己做（用户裁决：不许自动发出去）。
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
