@@ -921,8 +921,19 @@ chairSendEl.addEventListener('click', () => { chairBroadcast(); });
 chairTextEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) chairBroadcast(); });
 
 /* 主持人发文件：网页席位走 CDP setFileInputFiles；API 席位以文字告知文件名 */
+/* ★ Electron 33 取文件真实路径：File.path 属性已被移除（永远 undefined），
+ *   必须走 webUtils.getPathForFile —— 之前「发文件给所有人」提示"请先选择文件"
+ *   的真凶就是它（选了文件却被 filter(Boolean) 清空）。全部链路统一走这个助手。 */
+function filePathOf(f) {
+  try {
+    const { webUtils } = require('electron');
+    return webUtils.getPathForFile(f);
+  } catch (e) { /* 旧内核回退 */ }
+  return f.path || null;
+}
+
 async function chairSendFiles() {
-  const files = [...chairFilesEl.files].map((f) => f.path).filter(Boolean);
+  const files = [...chairFilesEl.files].map(filePathOf).filter(Boolean);
   if (!files.length) { log('[主持人] 请先在「📎 文件」里选择要发送的文件', 'warn'); return; }
   const names = files.map((p) => osPath.basename(p));
   log(`[主持人→全体] 发送 ${files.length} 个文件：${names.join('、')}`, 'hd');
@@ -1275,7 +1286,7 @@ async function runTransparent(task) {
   // 议题资料（用户选的文件 → 拷进议题文件夹归档）
   const materials = [];
   if (materialsEl && materialsEl.files) {
-    for (const f of materialsEl.files) { if (f && f.path) materials.push(f.path); }
+    for (const f of materialsEl.files) { const p = filePathOf(f); if (p) materials.push(p); }
   }
 
   // 独立适配器（干净的 webview 驱动，不带角色注入）
@@ -2084,13 +2095,11 @@ function ddListSeats() {
   for (const [id, c] of apiCells) out.push({ id, name: c.label || id, kind: 'api', entry: c });
   return out;
 }
-/** 附件真实路径：Electron 33 必须走 webUtils.getPathForFile（File.path 已废弃） */
+/** 附件真实路径：统一走 filePathOf（webUtils，Electron 33 唯一正解） */
 function ddFilePaths() {
   const paths = [];
   for (const f of ddFiles.files) {
-    let p = null;
-    try { p = require('electron').webUtils.getPathForFile(f); } catch (e) { /* 旧内核回退 */ }
-    if (!p && f.path) p = f.path;
+    const p = filePathOf(f);
     if (p) paths.push(p);
   }
   return paths;
