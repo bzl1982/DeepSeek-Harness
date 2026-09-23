@@ -940,6 +940,7 @@ async function chairSendFiles() {
   let okN = 0;
   for (const [id, c] of cells) {
     if (c.enabled === false) continue;
+    if (NO_CHAT_SEATS.has(id)) { log(`   ⊘ ${c.provider.name}（搜索页无对话界面，跳过文件投递）`, 'warn'); continue; }
     let ok = false;
     try { ok = await makeWebviewDriver(c.wv, id).setFiles(files); } catch (_) { ok = false; }
     if (ok) okN += 1;
@@ -1039,11 +1040,15 @@ async function clickComposerSend(wv) {
  *   配了 trigger 的席位走"文件选择器拦截"策略（点站点自己的📎→拦截 chooser→塞真实节点）；
  *   没配的走旧策略（querySelector 第一个 input[type=file]——DP/豆包/Kimi 已实测可通）。 */
 const ATTACH_BUTTONS = {
-  'tongyi-web': { trigger: 'button[aria-label="添加附件"]' },
+  'tongyi-web': { trigger: 'button[aria-label="添加附件"]' },                  // 实测首页点击无面板弹出，待进对话后复测
   'gemini-web': { trigger: 'button[aria-label="上传和工具"]', menu: true },   // 点开菜单后再点"上传文件"
   'yuanbao-web': { trigger: 'button[aria-label="添加"]', menu: true },        // 添加菜单里找上传项
-  // 'chatgpt-web' / 'wenxin-web'：附着按钮待定点侦察，暂走旧策略（文件进黑洞已知）
+  'chatgpt-web': { trigger: 'button[data-testid="composer-plus-btn"]', menu: true }, // "添加文件等"菜单
+  'wenxin-web': { synthetic: ['input'] },   // 实测: 派 change+input 时能挂上, 零事件不挂 → 文心只听 input
+  // 'kimi-web' / 'deepseek-web' / 'doubao-web'：直接塞已验证可通，零合成事件
 };
+/* 非对话型席位：没有聊天界面，文件投递无意义 */
+const NO_CHAT_SEATS = new Set(['google-search']);
 
 function makeWebviewDriver(wv, providerId) {
   return {
@@ -2206,6 +2211,7 @@ async function ddDispatchSeat(seatId, transport) {
   if (!r.ok) return;
   ddPersist(); ddRenderSummary(); ddRenderSeats();
   try {
+    if (NO_CHAT_SEATS.has(seatId)) throw new Error('搜索页无对话界面，文件投递不适用');
     if (meta.entry.popped) throw new Error('该席位已弹出为独立窗口，自动投递暂停（用 📋 复制稿件手动贴）');
     const files = ddFilePaths();
     if (meta.kind === 'web') {

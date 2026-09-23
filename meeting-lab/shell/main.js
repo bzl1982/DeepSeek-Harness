@@ -192,9 +192,19 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
     });
     if (!found || !found.nodeId) return { ok: false, error: '页面上找不到 <input type=file>（造的兜底也没生效）' };
     await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: found.nodeId });
-    // ★ 一个合成事件都不要派！DOM.setFileInputFiles 本身就会触发浏览器原生的
-    //   input+change 事件（实测：再手动派发 = Kimi/豆包收到两份重复文件）。
-    //   附言/发送由用户在对话框里自己填自己做（用户裁决：不许自动发出去）。
+    // ★ 默认零合成事件（setFileInputFiles 自带原生 input+change，多派=重复文件）。
+    //   例外：per-provider synthetic 配置（文心框架只听 input 事件，实测零事件挂不上）。
+    if (attach && Array.isArray(attach.synthetic) && attach.synthetic.length) {
+      const evts = JSON.stringify(attach.synthetic);
+      await wc.executeJavaScript(`(function(){
+        var inp = document.querySelector('input[type="file"]');
+        if (!inp) return;
+        var names = ${evts};
+        for (var i = 0; i < names.length; i++) {
+          inp.dispatchEvent(new Event(names[i], { bubbles: true }));
+        }
+      })();`);
+    }
     return { ok: true, via: 'direct' };
   } catch (err) {
     return { ok: false, error: err.message };
