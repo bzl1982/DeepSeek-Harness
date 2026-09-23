@@ -313,11 +313,27 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
       return true;
     })();`);
     const root = await dbg.sendCommand('DOM.getDocument', { depth: -1 });
-    const found = await dbg.sendCommand('DOM.querySelector', {
+    /* ★ 选"最宽松"的文件输入框，别抓第一个！
+     *   实测：谷歌/ChatGPT 页面上 image/* 专用输入框排在前面（给"添加图片"用），
+     *   抓第一个 = 把 .md/.txt 塞进图片框 → 被当非法类型静默丢弃（一直收不到的真因之一）。 */
+    const all = await dbg.sendCommand('DOM.querySelectorAll', {
       nodeId: root.root.nodeId, selector: 'input[type="file"]',
     });
-    if (!found || !found.nodeId) return { ok: false, error: '页面上找不到 <input type=file>（造的兜底也没生效）' };
-    await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: found.nodeId });
+    let targetNode = null;
+    for (const nid of (all.nodeIds || [])) {
+      try {
+        const desc = await dbg.sendCommand('DOM.describeNode', { nodeId: nid });
+        const attrs = (desc.node && desc.node.attributes) || [];
+        const ai = attrs.indexOf('accept');
+        const accept = ai >= 0 ? String(attrs[ai + 1]) : '';
+        if (/^\s*image\//.test(accept)) continue;   // 图片专用 → 跳过
+        targetNode = nid;
+        break;
+      } catch (e) { /* 描述失败就试下一个 */ }
+    }
+    if (targetNode === null && all.nodeIds && all.nodeIds.length) targetNode = all.nodeIds[0];
+    if (!targetNode) return { ok: false, error: '页面上找不到 <input type=file>（造的兜底也没生效）' };
+    await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: targetNode });
     // ★ 默认零合成事件（setFileInputFiles 自带原生 input+change，多派=重复文件）。
     //   例外：per-provider synthetic 配置（文心框架只听 input 事件，实测零事件挂不上）。
     if (attach && Array.isArray(attach.synthetic) && attach.synthetic.length) {
