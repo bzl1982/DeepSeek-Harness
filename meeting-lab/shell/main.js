@@ -12,9 +12,44 @@
  */
 
 const path = require('path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 
 const REUSE_LOGIN = process.argv.includes('--reuse-login');
+
+// 9 个 webview 同时渲染时 GPU 进程极易崩溃，会把整个程序带走（表现为"闪退"）。
+// 关闭硬件加速规避；网页 AI 用软件渲染照样正常显示对话页，功能不受影响。
+//
+// ★ 2026-09-23 修复「拖拽复制卡死」：绝不能加 disable-software-rasterizer！
+//   disable-gpu 之后 Chromium 用 SwiftShader（软件光栅）兜底出帧；
+//   disable-software-rasterizer 把这条兜底路径也砍掉 → 等于没有任何光栅器。
+//   文本选区拖拽 / 滚动 / 拖拽影像生成都需要连续出帧 → 直接挂死整个窗口。
+//   日志里的 "Message rejected by interface blink.mojom.WidgetHost" 就是合成器
+//   死掉的指纹（实测：去掉该开关后 12 个 target 全部正常渲染）。
+app.commandLine.appendSwitch('disable-gpu');
+
+/* ★ 2026-09-23 修复「Gemini 复制按钮点了没反应」：
+ *   网页 AI 的复制按钮走 navigator.clipboard.writeText()，而 Electron 默认
+ *   拒绝 webview 的 clipboard-sanitized-write 权限 → promise 静默失败，
+ *   按钮看起来"点了没反应"。这里对所有 session 统一放行剪贴板读写
+ *   （顺带放行媒体/通知等网页 AI 常用权限），其余权限维持默认拒绝。
+ *   app.on('session-created') 在 Electron 12+ 可用（本机 33.2.0 实测支持）。 */
+const COMMON_PERMS = new Set([
+  'clipboard-sanitized-write',
+  'clipboard-read',
+  'media',
+  'audioCapture',
+  'videoCapture',
+  'notifications',
+  'fullscreen',
+  'pointerLock',
+  'mediaKeySystem',
+]);
+app.on('session-created', (session) => {
+  session.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(COMMON_PERMS.has(permission));
+  });
+  session.setPermissionCheckHandler((wc, permission) => COMMON_PERMS.has(permission));
+});
 
 // 客户端 userData 目录 = appData + 应用名（客户端 productName 是 "DeepSeek Harness"）。
 // ★ 不写死盘符与用户名：
@@ -27,6 +62,58 @@ const CLIENT_USER_DATA = path.join(app.getPath('appData'), 'DeepSeek Harness');
 if (REUSE_LOGIN) {
   app.setPath('userData', CLIENT_USER_DATA);
 }
+
+/* ★ 席位弹出窗口：
+ *   网页席位 → 同一个 partition = 直接复用登录态（无需重登）。
+ *   API 席位 → 无网页，弹出的是「对话记录」窗口（可全屏 / 自由调大小），
+ *              渲染进程开会时通过 seat-popup-update 把最新文本同步进来。
+ *   窗口关闭时通知渲染进程恢复格子。 */
+const apiPopupWins = new Map();
+
+ipcMain.handle('seat-popup-open', (e, { id, name, url, partition, api }) => {
+  if (api) {
+    const win = new BrowserWindow({
+      width: 1200,
+      height: 860,
+      title: `${name || id} · 通辽会议`,
+      backgroundColor: '#0b0e14',
+      webPreferences: { sandbox: true, contextIsolation: true },
+    });
+    win.loadURL('data:text/html,' + encodeURIComponent(
+      '<!doctype html><html><head><meta charset="utf-8">'
+      + '<style>body{background:#0b0e14;color:#bcd;font-family:Consolas,monospace;padding:14px;'
+      + 'font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;overflow:auto}</style>'
+      + '</head><body id="b">（等待会议下发第一条消息…）</body></html>'
+    ));
+    win.on('closed', () => {
+      apiPopupWins.delete(id);
+      if (!e.sender.isDestroyed()) e.sender.send('seat-popup-closed', id);
+    });
+    apiPopupWins.set(id, win);
+    return true;
+  }
+
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 860,
+    title: `${name || id} · 通辽会议`,
+    backgroundColor: '#0b0e14',
+    webPreferences: { partition, sandbox: true, contextIsolation: true },
+  });
+  win.loadURL(url);
+  win.on('closed', () => {
+    if (!e.sender.isDestroyed()) e.sender.send('seat-popup-closed', id);
+  });
+  return true;
+});
+
+/* API 弹出窗口的对话内容实时同步 */
+ipcMain.on('seat-popup-update', (e, { id, text }) => {
+  const win = apiPopupWins.get(id);
+  if (!win || win.isDestroyed()) return;
+  const safe = JSON.stringify(text || '');
+  win.webContents.executeJavaScript(`(function(){var b=document.getElementById('b');if(b)b.textContent=${safe};})()`).catch(() => {});
+});
 
 function createWindow() {
   const win = new BrowserWindow({

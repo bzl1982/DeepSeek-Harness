@@ -1,0 +1,191 @@
+以下是针对你的会议测试台布局重构需求（基于你提供的自包含咨询案）的逐题建议。我直接按 §0 的 5 个问题作答，每条建议均附带成本、反例、字段级设计，并在结尾给出对草案 v0 的态度和总体推荐方案。
+
+Q1：非窗口功能如何组织，才能既随时可用、又不用时完全腾出空间给网格？
+
+给出 3 个拓扑方案，重点对比成本与适用边界。
+
+方案 A：顶部控制甲板（你的草案 v0 方向）
+
+结构：在 .header 下方插入 .topdeck（flex 纵向排列），内部按模式渲染控件组；折叠时整个甲板高度收为 0 或 display:none，网格自动拉伸占满。
+
+维度 说明
+
+成本 DOM：新增 1 个 .topdeck 容器 + 内部若干组（.seatbar/.chairbar/.modezone/.extbox），约 10~15 个节点；状态：2 种（展开/折叠）+ N 种模式显隐；折叠后不触发 webview 重排（网格仅 flex 尺寸变化，12 个 cell 始终在 DOM 中且未被 display:none）。
+
+反例（什么时候不该用） 如果控制面板总高度超过视口 50%（例如同时展开日志、外部 AI 回答、所有模式设置），会严重挤压网格纵向空间，导致 12 个 webview 被压得过小无法操作。不适合控件极多且需要同时展开的重度配置场景。
+
+字段级设计 容器：.topdeck；折叠触发：.topdeck.collapsed { height: 0; min-height: 0; overflow: hidden; } 或通过 body.deckcollapsed .topdeck { display: none; }（甲板内无 webview，安全）；模式键：data-mode="transparent" 等。
+
+方案 B：侧边 overlay 抽屉
+
+结构：删除固定右栏，改为一个绝对定位的抽屉（默认 transform: translateX(100%)），点击按钮后滑出覆盖在网格右侧上方，不占布局流。
+
+维度 说明
+
+成本 DOM：新增 .overlay-drawer + 触发按钮；状态：开/关 + 动画；折叠后完全不占布局空间，网格始终 100% 宽高。但需管理 z-index 和遮罩层。
+
+反例（什么时候不该用） 如果用户需要频繁对照控制面板与网格内容（例如广播时看 AI 反应），抽屉覆盖会遮挡一半网格，体验差。不适合需要长时间同时查看面板和网格的场景。
+
+字段级设计 容器：.overlay-drawer { position: fixed; right: 0; top: 0; bottom: 0; width: 380px; transform: translateX(100%); transition: transform .2s; z-index: 100; }；展开时加 .open 类回拉；触发：<button id="drawer-toggle">控制</button>。
+
+方案 C：底部停靠条（仅用于日志/摘要）
+
+结构：在 .main 下方放 .logdock，全宽，折叠时仅留标题栏。
+
+维度 说明
+
+成本 DOM：新增 .logdock + 内部 .log/.summary；状态：展开（占 30% 高）/ 折叠（28px 标题）；折叠后网格纵向自动补满，不触发 webview 重排。
+
+反例（什么时候不该用） 如果日志需要独立窗口或与其他控制面板联动，底部条孤立，难以与顶部模式感知整合。不适合需要把日志和控制面板组织在一起的拓扑。
+
+字段级设计 容器：.logdock { flex: 0 0 30%; overflow: hidden; }；折叠：.logdock.collapsed { flex: 0 0 28px; }；触发：点击 .logdock .title 切换类。
+
+Q1 结论：推荐 方案 A + C 组合（顶部甲板 + 底部日志），彻底放弃固定右栏。方案 B 可作为备选，但不符合你“挪到上面”的明确要求。
+
+Q2：会议日志与外部 AI 回答的落位建议
+
+会议日志（.log + .summary）
+
+• 最适合落位：底部全宽停靠条（方案 C）。
+
+• 字段级理由：
+
+  • 持续滚动：开会时日志不断追加，需要较大垂直空间且用户视线常停留在下半部分（尤其网格在上方时）。底部展开 30% 高度可提供足够滚动区域，折叠后只留 28px 标题，完全腾出空间。
+
+  • 与网格关系：日志在底部不会干扰顶部控制操作；网格纵向被压缩但宽度不变，webview 仍可正常交互。
+
+  • 反例：如果放顶部甲板，展开时会把网格整体下压，12 个 webview 高度骤减，且滚动条在顶部不符合阅读习惯。
+
+外部 AI 回答（.extbox）
+
+• 最适合落位：顶部控制甲板（方案 A）内的 .extbox 折叠表单。
+
+• 字段级理由：
+
+  • 间歇录入：用户只在需要时打开表单粘贴回答，大部分时间可折叠成一行标题（.extbox .head）。
+
+  • 放顶部符合你“挪到上面”的要求，且与模式感知整合（例如 transparent 模式才显示）。
+
+  • 反例：如果放侧边 overlay，用户录入时需等待抽屉滑出，打断工作流；放底部则不符合“上面”的指令。
+
+Q2 结论：日志到底部，外部 AI 回答到顶部甲板。两者均通过折叠真正腾空间。
+
+Q3：模式感知顶栏怎么做才不臃肿
+
+显隐 / 分组 / 步骤化具体方案
+
+核心思路：采用 MODE_CONTROLS 映射 + CSS 类切换，避免逐个 if。
+
+模式 需显示的控件组（字段级容器名） 说明
+
+transparent（透明广播） .tmbox, .chairbar, .logdock, .extbox 会议设置+主持人操作+日志+外部回答
+
+panel（专家会诊） .group, .logdock, .extbox 角色组+日志+外部回答（无广播设置）
+
+build（工程交付） .buildlevel, .logdock 产物验证+日志（无外部回答）
+
+显隐规则：
+• 常驻组：.seatbar（参会芯片/重排）、.chairbar（广播/文件/暂停/停止）——所有模式都有，仅 ⏸⏹ 在空闲时 disabled。
+
+• 模式专属组：包裹在 .modezone 内，根据 currentMode 决定渲染哪些子块。
+
+• 步骤化（可选）：可增加 data-phase="config" / data-phase="running"，在开会前隐藏监控类控件，开会后隐藏配置类。但建议优先用模式分组，步骤化可作为补充，避免过早复杂化。
+
+字段级 HTML 结构片段：
+<div class="topdeck" data-mode="transparent" data-phase="config">
+  <div class="seatbar">...</div>
+  <div class="chairbar">...</div>
+  <div class="modezone">
+    <div class="tmbox">...</div>  <!-- 仅 transparent 模式渲染 -->
+    <div class="buildlevel">...</div>  <!-- 仅 build 模式渲染 -->
+  </div>
+  <div class="extbox">...</div>
+</div>
+
+
+成本：新增 MODE_CONTROLS 映射对象（约 10 行 JS），每种模式对应一个数组；状态：模式切换时调用 renderDeck() 重渲染 .modezone 内容（复用现有 renderFlow/renderScene 思路）。无额外 DOM 常驻开销，因为不显示的组直接从 DOM 移除或 display:none。
+
+反例：如果所有控件全堆在甲板里靠滚动条解决，会失去模式感知的意义，用户易误操作。不该在模式差异大时采用“一屏堆砌”。
+
+Q4：折叠如何真正腾空间（CSS/JS 模式）
+
+给出 3 种可落地的折叠实现模式，重点说明坑点（尤其 webview 重排/卸载风险）。
+
+模式 1：Flex 容器整体 min-height:0 + height:0 + overflow:hidden
+
+• 适用场景：顶部甲板、底部停靠条等不包含 webview 的区域。
+
+• CSS 规则：
+  .topdeck { flex: 0 0 auto; height: 120px; overflow: hidden; transition: height .2s; }
+  .topdeck.collapsed { height: 0; min-height: 0; padding: 0; border: 0; }
+  
+• 坑点：如果容器内有绝对定位元素，可能溢出；需确保内部元素也参与折叠。
+
+• webview 风险：无，因为甲板内无 webview。
+
+模式 2：display:none 整容器（仅限确认无 webview 的容器）
+
+• 适用场景：顶部甲板整体折叠（用户点击“▴ 展开控制甲板”时）。
+
+• CSS 规则：body.deckcollapsed .topdeck { display: none; }
+
+• 坑点：display:none 会导致内部任何元素失去渲染（但甲板内只有表单/文本，安全）。绝不能用于包含 webview 的容器（会卸载）。
+
+• webview 风险：只要确保 .topdeck 内绝不包含 <webview> 标签，即可安全使用。
+
+模式 3：Grid 区域收缩（用于网格自身）
+
+• 适用场景：如果未来需要动态调整网格行数/列数，但当前 12 格固定。
+
+• CSS 规则：grid-template-rows: 1fr; 配合父容器 flex 变化。
+
+• 坑点：Grid 区域收缩不会卸载 webview，但可能触发重排（重新计算单元格尺寸），Electron webview 重排通常安全（不会重建），但需测试性能。
+
+• webview 风险：低，只要不对 cell 用 display:none。
+
+Q4 结论：对你的场景，模式 1 + 模式 2 组合最合适：顶部甲板用模式 2（整体 display:none 彻底腾空间），内部面板用模式 1（高度动画折叠）；网格区保持 flex 尺寸收缩，绝不对 cell 用 display:none。
+
+Q5：主持人栏（.chairbar）的显隐/位置方案
+
+方案：常驻顶栏，状态驱动可用性
+
+• 位置：始终在 .topdeck 内（或 .header 下方），作为主持人操作入口。
+
+• 显隐规则：
+
+  • 常驻显示：广播、发文件、⏸暂停、⏹停止按钮始终可见。
+
+  • 可用性变化：空闲时 ⏸⏹ disabled；开会中 enabled。
+
+  • 广播语义：空闲时直接发给网页/API；开会中汇编进下一轮提示（已有逻辑）。
+
+• 成本：DOM 无额外成本（现有 .chairbar 直接移入甲板）；状态：2 种（空闲/开会），通过 body.meeting-running 类切换按钮 disabled 属性。
+
+• 反例：如果拆成“开会期才显示”，空闲时用户无法使用广播/发文件功能，违反“随时可用”原则。不该在空闲时隐藏整个栏。
+
+• 字段级设计：
+  <div class="chairbar">
+    <button id="broadcast">📢 广播</button>
+    <button id="sendfile">📎 发文件</button>
+    <button id="pause" disabled>⏸ 暂停</button>
+    <button id="stop" disabled>⏹ 停止</button>
+  </div>
+  
+  JS: if (meetingState === 'running') { pauseBtn.disabled = false; stopBtn.disabled = false; }
+
+总体推荐方案
+
+对草案 v0 的态度：部分采纳，需调整。
+
+• 采纳：删除固定右栏 .side，让网格占满整宽；引入顶部控制甲板 .topdeck（可整体折叠，真腾空间）；底部增加 .logdock 全宽停靠条；模式感知采用 MODE_CONTROLS 映射；主持人栏常驻顶栏并根据状态启用。
+
+• 调整：
+
+  1. 日志落位：从草案中“可能放顶部”明确改为底部停靠条（理由见 Q2），避免挤压网格。
+  2. 折叠机制：顶部甲板折叠用 display:none（而非仅 min-height:0），确保彻底腾空间；底部日志用 flex 收缩。
+  3. 模式感知：增加 data-phase 步骤化作为可选增强，但首版先实现模式分组显隐。
+  4. 反例补充：在文档中明确标注每个方案的反例，避免后续维护时误用。
+
+一句话总结：删右栏 → 顶部甲板（模式感知+折叠） + 底部日志（折叠） → 网格占满 → 主持人栏常驻顶栏。此方案满足“非窗口功能全部可真正折叠、挪到上面、模式感知”的核心需求，且不会触发 webview 重排。
+
+如果需要，我可以继续提供关键 CSS 规则片段或协助你梳理 renderDeck() 的 JS 伪代码。

@@ -1,0 +1,158 @@
+下面按你给的 §0 五问答。先给总判断：**草案 v0 方向基本对，但只能“部分采纳”**。关键修正三点：  
+1）**会议日志不要放顶部甲板**，放底部全宽可折叠 dock 更合理；  
+2）**主持人栏不要塞进可折叠 topdeck**，它应常驻顶栏第二行，只随 `idle/running` 变状态；  
+3）**模式感知不要只按 mode，要按 `mode + phase`**，否则开会前配置和开会中监控会混在一起。
+
+---
+
+## Q1：非窗口功能怎么组织？给 2~3 个拓扑方案
+
+| 方案 | 拓扑 | 成本 | 什么时候不该这么做 |
+|---|---|---|---|
+| A. 顶部可折叠控制甲板 + 底部日志 dock（推荐） | `header → globalbar → topdeck(可折叠) → main.grid → logdock(可折叠)` | 新增 `.topdeck`、`.logdock` 两个容器；状态 +2：`topdeck-collapsed`、`logdock-collapsed`；模式映射 +1：`DECK_GROUPS`。顶甲板内无 webview，可安全 `display:none`；折叠会改变 `.main` 高度，触发 webview resize，但不会卸载 9 个 `<webview>`。 | 屏幕高度很紧、日志必须和网格并排看、用户坚决不要底部栏时，别用。 |
+| B. 侧边 overlay 抽屉 | 删 `.side`，改 `.drawer`：`position:absolute; right:0; transform:translateX(100%)`，点按钮滑出覆盖网格 | CSS 成本：z-index、transform、焦点管理、ESC 关闭；DOM 不增加布局占位；**不占布局宽度，网格不 resize**。 | 需要一边看网格一边大量输入外部 AI 回答时别用；Electron webview 原生层可能盖住抽屉，焦点也容易乱。 |
+| C. 底部全宽控制台 / tabs | 所有非窗口功能进底部 tabs，网格占满 | 底部高度变化会压网格；tab 状态 +1；适合日志，不适合全部配置。 | 开会前配置流程需要顶部引导时别用；日志已经占底部时别重复。 |
+| D. 顶部命令面板 / 模态 | 按钮弹出 modal，平时 0 占位 | 遮罩、焦点陷阱、ESC；不永久占空间。 | 持续滚动的会议日志不适合模态；开会中频繁切会打断。 |
+
+**推荐**：A 为主，B 作为外部 AI 回答 / 透明广播设置的备选。  
+**做不到声明**：“随时可用 + 不用时完全腾空间 + 完全不改变 webview 尺寸”三者不可兼得。只要网格容器尺寸变，webview 就会收到 resize；能避免的是**卸载/重建**，不是 resize。
+
+---
+
+## Q2：会议日志与外部 AI 回答各自放哪？
+
+### 会议日志：放底部全宽 `.logdock`
+理由：它是**持续滚动、只读、追加、宽行**的参考文本，底部终端式最符合节奏；不抢顶部配置区；折叠成 1 行标题后网格自动补满。
+
+字段级建议：
+```html
+<footer class="logdock" id="logdock">
+  <button class="logdock-head" id="logdock-toggle">会议日志</button>
+  <div class="logdock-body">
+    <div class="log" id="log"></div>
+    <aside class="summary">摘要</aside>
+  </div>
+</footer>
+```
+```css
+.logdock{flex:0 0 32%; min-height:0; display:flex; flex-direction:column; border-top:1px solid #ddd}
+body.logdock-collapsed .logdock{flex-basis:28px}
+body.logdock-collapsed .logdock-body{display:none}
+.logdock-body{flex:1; min-height:0; display:flex}
+.log{flex:1; overflow-y:auto}
+.summary{width:280px; overflow:auto; border-left:1px solid #eee}
+```
+模式键：`logdock` 所有模式常驻；`phase=running` 默认展开，`phase=idle` 默认折叠。  
+成本：底部占 28px~32% 高，网格高度变；若 cell 有手动拖高 `dragCellHeight`，会冲突，建议网格容器 `overflow:auto`，cell 高度用 `minmax(0,1fr)`。  
+反例：如果日志是主要工作对象，比如调试会议，放底部会压网格，应改独立窗口或 overlay。
+
+### 外部 AI 回答：放顶部甲板 `.extbox`
+理由：它是**间歇录入表单**，和开会前配置同节奏；顶部展开、收起，不永久占宽。  
+字段级：`.topdeck .extbox`，`#extbox-toggle` 切 `.open`，`.extbox.open .body{display:block}`。  
+模式键：`extbox` 全模式可见，`idle` 默认展开，`running` 默认折叠。  
+成本：顶部高度变化，会触发 grid resize，但不卸载 webview。  
+反例：如果经常粘贴长文本，顶部展开会严重压网格，改用侧边 overlay 抽屉。
+
+用户原话“都挪到上面”可理解为“不要右栏”。若字面必须日志也在顶部，最小替代是 `.logstrip` 高 120px、默认折叠、展开时 overlay 覆盖网格，而不是占布局。否则不推荐。
+
+---
+
+## Q3：模式感知顶栏怎么做才不臃肿？
+
+不要只做 `MODE_CONTROLS`，要做 `mode + phase` 双键：
+
+```js
+const DECK_GROUPS = {
+  seatbar:    { modes:'*',              phases:'*' },
+  tmbox:      { modes:['transparent'],  phases:['idle'] },
+  buildlevel: { modes:['build'],        phases:['idle','running'] },
+  group:      { modes:['panel'],        phases:['idle'] },
+  extbox:     { modes:'*',              phases:['idle','running'], defaultOpen:{idle:true, running:false} },
+  flow:       { modes:'*',              phases:['idle'] },
+  scene:      { modes:'*',              phases:['idle'] }
+};
+```
+渲染规则：
+```js
+el.hidden = !(g.modes === '*' || g.modes.includes(mode))
+          || !(g.phases === '*' || g.phases.includes(phase));
+document.body.dataset.mode = mode;       // transparent / panel / build
+document.body.dataset.phase = phase;     // idle / running
+```
+HTML 用 `data-deck-group`：
+```html
+<div class="modezone" data-deck-group="tmbox">...</div>
+<div class="modezone" data-deck-group="buildlevel">...</div>
+<div class="modezone" data-deck-group="group">...</div>
+```
+成本：多一个常量、一个 `renderDeck()`、两个 body data 状态；用 `hidden` 不销毁 DOM，输入值保留。  
+反例：如果模式差异很小，别做映射，直接 CSS 显隐；如果表单跨模式共享，不要整组 `hidden`，只隐藏子项。
+
+推荐分两阶段：  
+- `idle`：模式配置、议题资料、角色组、外部 AI 回答、流程说明。  
+- `running`：主持人栏、日志、轮次状态、只读设置。
+
+---
+
+## Q4：折叠如何真正腾空间？
+
+| 实现模式 | 用法 | 坑 / 反例 |
+|---|---|---|
+| flex 容器整体 collapse | `.topdeck{flex:0 0 auto; min-height:0; overflow:hidden}`；`body.topdeck-collapsed .topdeck{display:none}` | 顶甲板内无 webview，安全；但会改变 `.main` 高度，触发 webview resize。反例：不要对 `.grid` 或 `.cell` 用。 |
+| 高度 / flex-basis 收缩 | `body.logdock-collapsed .logdock{flex-basis:28px}`；`.logdock-body{display:none}` | 只藏日志内容，无 webview，安全；折叠后滚动位置可能丢。 |
+| absolute overlay 抽屉 | `.drawer{position:absolute; right:0; top:var(--header-h); bottom:0; width:380px; transform:translateX(100%)}`；`.drawer.open{transform:translateX(0)}` | 不占布局、网格不 resize；但遮挡网格，webview 层级可能压住抽屉。 |
+| grid 区域收缩 | `.main{display:flex; flex-direction:column}`；`.grid{flex:1; min-height:0}` | 尺寸变化触发 webview resize，但不卸载。反例：不要 `display:none` 整个 `.grid`。 |
+| 右栏宽度 collapse | `.side{flex:0 0 380px}`；`.side.collapsed{flex-basis:0; width:0; border:0; overflow:hidden}` | 若保留右栏，这个才能真正腾宽；但右栏无 webview，仍不如直接删。 |
+
+**硬规则**：  
+- 对 `.cell`、`.grid`、`<webview>` 父级，**绝不要 `display:none`**。  
+- 顶甲板、日志 body、extbox body 可 `display:none`，因为里面没有 webview。  
+- 只要网格尺寸变，webview 会 resize；**“折叠完全不触发 webview 重排”做不到**，只能避免卸载/重建。  
+- 统一机制：用 `body.topdeck-collapsed`、`body.logdock-collapsed`、`body.extbox-open`，不要再保留两套 `display:none` 内部折叠。
+
+---
+
+## Q5：主持人栏怎么处理？
+
+推荐：**主持人栏独立常驻顶栏第二行 `.globalbar`，不放进可折叠 `.topdeck`**。  
+原因：📢广播、📎发文件、⏸暂停、⏹停止是主持人操作，不是信息面板；尤其 running 时暂停/停止必须随时可达。
+
+结构：
+```html
+<header class="header">...</header>
+<nav class="globalbar" id="globalbar">
+  <button id="chair-broadcast">📢广播</button>
+  <button id="chair-file">📎发文件给所有人</button>
+  <button id="chair-pause" disabled>⏸暂停</button>
+  <button id="chair-stop" disabled>⏹停止</button>
+</nav>
+<section class="topdeck" id="topdeck">...</section>
+```
+状态：
+```css
+body.phase-idle #chair-pause,
+body.phase-idle #chair-stop{opacity:.4; pointer-events:none}
+body.phase-running #chair-pause,
+body.phase-running #chair-stop{opacity:1; pointer-events:auto}
+```
+语义：
+- `idle`：📢广播 = 直接发给网页/API；📎发文件可用；⏸⏹ 灰显禁用。
+- `running`：📢广播 = 加入下一轮提示；⏸⏹ 启用。
+
+成本：常驻多一行 36~44px；状态只需 `body.phase-idle/running`。  
+反例：如果屏幕高度极紧，可把 idle 时的主持人栏折成“主持人”按钮；但 running 时暂停/停止不可折叠。若不想常驻，最小替代是 idle 隐藏 `.globalbar`，header 保留“主持人”入口，running 自动展开。
+
+---
+
+## 总体推荐方案
+
+**对草案 v0：部分采纳。**  
+采纳：删 `.side`、顶部可折叠控制甲板、`.grid` 占满整宽、模式映射。  
+修改：  
+1）会议日志放底部 `.logdock`，不放顶甲板；  
+2）外部 AI 回答放 `.topdeck` 的 `.extbox`，默认折叠；  
+3）主持人栏独立为 `.globalbar`，常驻顶栏，只随 `idle/running` 变状态；  
+4）模式感知用 `mode + phase` 双键，不要只按模式显隐；  
+5）折叠统一：topdeck 可 `display:none`，logdock 用 `flex-basis`，grid/cell 绝不用 `display:none`。
+
+一句话：**删右栏 + 顶部可折叠控制甲板 + 底部日志 dock + 常驻主持人栏 + mode/phase 映射**，是最符合这个 Electron 会议测试台的方案。

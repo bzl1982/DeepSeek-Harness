@@ -14,10 +14,14 @@
  *   - reporter.js        ：落盘 MD
  *
  * 用法：
- *   const tm = new TransparentMeeting({ topic, participants, adapters, names, rounds, outBaseDir });
- *   await tm.run();
+ *   const tm = new TransparentMeeting({
+ *     topic, participants, adapters, names,
+ *     rounds, outBaseDir, completionOpts, perTurnTimeoutMs, materials,
+ *   });
+ *   const { outDir } = await tm.run();
  */
 
+const fs = require('fs');
 const path = require('path');
 const { Meeting } = require('./meeting-model');
 const { MeetingOrchestrator } = require('./orchestrator');
@@ -54,6 +58,9 @@ class TransparentMeeting {
     rules = DEFAULT_RULES,
     rounds = 2,
     outBaseDir = null,
+    completionOpts = { minSignals: 2, timeoutMs: 180000 },
+    perTurnTimeoutMs = 180000,
+    materials = [],
     logger = null,
   } = {}) {
     this.topic = topic;
@@ -62,10 +69,61 @@ class TransparentMeeting {
     this.names = names;
     this.rules = rules;
     this.rounds = rounds;
+    this.completionOpts = completionOpts;
+    this.perTurnTimeoutMs = perTurnTimeoutMs;
+    this.materials = materials || [];
     this.logger = logger || (() => {});
 
     this.meeting = new Meeting({ topic });
     this.outDir = this._initOutDir(outBaseDir);
+
+    /* ★ 暂停 / 停止（用户需求：AI 卡住时不能只能关软件重启）
+     *   pause()  ：闸门 —— 各轮/各席位发送前会在 _gate() 等待，直到 resume()
+     *   abort()  ：停止 —— _gate() 立刻抛 MEETING_ABORTED，已完成的发言照常落盘 */
+    this._paused = false;
+    this._aborted = false;
+  }
+
+  pause() { this._paused = true; }
+  resume() { this._paused = false; }
+  abort() { this._aborted = true; this._paused = false; }
+  get paused() { return this._paused; }
+  get aborted() { return this._aborted; }
+
+  /** 闸门：暂停时在此等待；停止时抛 MEETING_ABORTED（并发任务各自经过） */
+  async _gate() {
+    while (this._paused && !this._aborted) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (this._aborted) {
+      this._cancelAll();
+      const err = new Error('MEETING_ABORTED');
+      err.code = 'MEETING_ABORTED';
+      throw err;
+    }
+  }
+
+  /** 停止时尽量叫停已在路上的网页请求（尽力而为，不阻断流程） */
+  _cancelAll() {
+    for (const a of Object.values(this.adapters || {})) {
+      try { if (a && typeof a.cancel === 'function') a.cancel(); } catch (_) { /* 尽力而为 */ }
+    }
+  }
+
+  /** 主持人插话：作为一条 user 消息进会议记录，下一轮汇编进每个人的提示 */
+  pushChairMessage(text) {
+    const { createMessage } = require('./meeting-model');
+    const msg = createMessage({
+      meetingId: this.meeting.meetingId,
+      senderType: 'user',
+      senderId: 'chair',
+      content: String(text || ''),
+      round: this.meeting.round,
+      kind: 'chair',
+    });
+    this.meeting.pushMessage(msg);
+    return msg;
   }
 
   _initOutDir(outBaseDir) {
@@ -94,6 +152,16 @@ class TransparentMeeting {
     return L.join('\n');
   }
 
+  /** 主持人此前的发言（round < 当前轮），汇编成一段（让所有人看到主持人指示） */
+  _chairBlock(round) {
+    const msgs = this.meeting.messages
+      .filter((m) => m.senderType === 'user' && m.senderId === 'chair' && m.round < round && m.content);
+    if (!msgs.length) return '';
+    const L = ['【主持人发言】'];
+    for (const m of msgs) L.push(`\n### 主持人说：\n${String(m.content).trim()}`);
+    return L.join('\n');
+  }
+
   /** 组装发给某人的本轮提示：规则/提醒 + 议题 + （第 ≥2 轮）其他人发言汇编 */
   _buildPrompt(round, providerId) {
     const parts = [];
@@ -103,19 +171,42 @@ class TransparentMeeting {
     parts.push(`\n【本轮议题】\n${this.topic}`);
     const block = this._othersBlock(round, providerId);
     if (block) parts.push(`\n${block}`);
+    const chair = this._chairBlock(round);
+    if (chair) parts.push(`\n${chair}`);
     parts.push(round === 1
       ? '\n请给出你的初始观点。'
       : '\n请基于以上（他人的观点 + 议题），给出你本轮的观点（可补充、反驳或提出新角度）。不要重复你自己的上一轮发言。');
     return parts.join('\n');
   }
 
+  /** 把议题资料（用户提供的文件）拷进会议文件夹，便于归档与追溯 */
+  copyMaterials() {
+    if (!this.materials || !this.materials.length) return [];
+    const copied = [];
+    for (const src of this.materials) {
+      try {
+        if (!fs.existsSync(src)) { this.logger({ level: 'warn', msg: `[资料] 不存在，跳过：${src}` }); continue; }
+        const name = path.basename(src);
+        const dest = path.join(this.outDir, name);
+        fs.copyFileSync(src, dest);
+        copied.push(dest);
+        this.logger({ level: 'info', msg: `[资料] 已归档：${name}` });
+      } catch (e) {
+        this.logger({ level: 'error', msg: `[资料] 拷贝失败：${src} → ${e.message}` });
+      }
+    }
+    return copied;
+  }
+
   /** 跑一轮：并发发给所有人（各自拿到含「其他人发言」的提示），随后落盘 MD */
   async runRound(round) {
     this.meeting.round = round;
+    await this._gate();   // 暂停 / 停止闸门（整轮发送前）
     const settled = await Promise.allSettled(
-      this.participants.map((pid) =>
-        this.orch.speakTo(pid, { text: this._buildPrompt(round, pid), timeoutMs: 180000, kind: 'answer', round })
-      )
+      this.participants.map(async (pid) => {
+        await this._gate();   // 每个席位发送前再过一次闸门
+        return this.orch.speakTo(pid, { text: this._buildPrompt(round, pid), timeoutMs: this.perTurnTimeoutMs, kind: 'answer', round });
+      })
     );
 
     const roundFile = writeRoundMarkdown({ outDir: this.outDir, meeting: this.meeting, round, names: this.names, topic: this.topic });
@@ -129,14 +220,26 @@ class TransparentMeeting {
       meeting: this.meeting,
       adapters: this.adapters,
       strategy: STRATEGY.BROADCAST,
-      completionOpts: { minSignals: 2, timeoutMs: 120000 },
+      completionOpts: this.completionOpts,
       logger: this.logger,
     });
 
-    for (let r = 1; r <= this.rounds; r++) {
-      /* eslint-disable-next-line no-await-in-loop */
-      await this.runRound(r);
-      if (r < this.rounds) this.meeting.nextRound();
+    this.copyMaterials();
+
+    try {
+      for (let r = 1; r <= this.rounds; r++) {
+        /* eslint-disable-next-line no-await-in-loop */
+        await this.runRound(r);
+        if (r < this.rounds) this.meeting.nextRound();
+      }
+    } catch (e) {
+      // 停止：已完成的发言照常落盘（不丢已花掉的内容），异常继续抛给调用方
+      if (this.aborted) {
+        try {
+          writeMasterRecord({ outDir: this.outDir, meeting: this.meeting, names: this.names });
+        } catch (_) { /* 落盘失败不遮蔽原异常 */ }
+      }
+      throw e;
     }
     return { outDir: this.outDir, meeting: this.meeting };
   }

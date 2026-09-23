@@ -1,0 +1,208 @@
+# 会议测试台（通辽会议）UI重构方案
+
+> 
+> 背景：Electron原生JS+CSS，12席位网格（9个重`<webview>`不可卸载重建）；原固定380px右栏折叠仅隐藏内部DOM、不回收布局空间；目标：非窗口功能**真正折叠腾空间**，迁移布局，模式感知顶栏，保证400测试用例不破坏。严格按照文档§0的5个问题输出，每条附带**成本、反例（什么时候不该用）、字段级设计**。
+
+## Q1：非窗口功能组织，3套拓扑方案对比
+
+目标：12席位网格优先占有视口，控制面板不用时完全释放空间，不能仅内部display:none隐藏。
+
+| 方案 | 核心拓扑 | 成本 | 什么时候不该这么做（反例） | 字段级设计 |
+| --- | --- | --- | --- | --- |
+| 方案A【你的草案v0：顶部控制甲板 + 底部日志停靠】 | 删除固定`.side`右栏；所有配置、主持人、外部AI回答放入顶部可整体折叠`.topdeck`；会议日志/摘要放到底部全宽停靠`.logdock`；`.main`下`#grid`占满全部横向空间 | DOM新增2个顶层容器；新增2套全局状态class（`body.topdeck‑collapsed`、`body.logdock‑collapsed`）；**webview仅容器尺寸重排，不会卸载重建**；纵向空间争夺风险：甲板展开会吃掉网格高度；可复用现有`infocollapsed`实现逻辑 | 窗口高度很小（<720px）；同时展开顶部甲板+底部日志，网格可视高度被挤压过小；不适合保留传统侧边分栏习惯的老用户 | 容器：`.topdeck`（顶部甲板）、`.logdock`（底部停靠）；状态class：`body.topdeck‑collapsed`、`body.logdock‑collapsed`；触发按钮：`.topdeck‑toggle`、`.logdock‑toggle`；`.main {flex:1}`不再分左右子项 |
+| 方案B【侧边Overlay悬浮抽屉，保留网格全屏】 | 彻底删除永久右栏；控制面板全部做成绝对定位overlay抽屉，点击按钮滑出覆盖网格上层，**不参与flex布局流，不抢占布局尺寸**；网格永远占满视口；抽屉关闭时完全不占空间 | 成本高：DOM需要遮罩层；z‑index层级管理；需要处理点击外部关闭；抽屉内滚动；overlay会遮挡webview内容；不会触发webview尺寸重排 | 需要一边看网格席位一边持续阅读面板内容（开会盯日志同时看AI席位）；overlay盖住webview，必须关闭抽屉才能看网格；多面板同时打开时层级混乱 | 容器：`.overlay‑drawer`；class：`.drawer‑open`；CSS：`position:absolute; z‑index:100; top:0; right:0`；不放到flex流内；toggle按钮放在原生header；禁止display:none以外的布局占用 |
+| 方案C【底部停靠甲板，全部非窗口控件下沉到底部】 | 顶部只保留极简`.header`；全部控制、外部AI回答、日志全部放到底部可折叠大甲板；网格占有全部顶部视口；展开时向下占高度，折叠收成标题栏 | DOM改动中等；状态一套class；webview仅重排高度；开会操作需要视线移动到底部；顶部非常干净 | 配置操作频繁、需要高频切换参数；主持人广播、模式切换需要反复滚动视线向下，操作效率下降 | 容器`.bottom‑deck`；class `body.bottomdeck‑collapsed`；flex方向body纵向，header→main(grid)→bottom‑deck |
+
+> 
+> 小结：**优先选方案A（顶部甲板+底部日志停靠）**；方案B适合临时弹窗查看，不适合开会期间持续监控日志；方案C适合仅观察、极少配置的场景。
+
+## Q2：会议日志、外部AI回答落位建议
+
+### ①外部AI回答（`.extbox`：间歇录入表单，用户原话希望挪上方）
+
+- **落位：放入`.topdeck`顶部控制甲板内，做成可折叠面板**
+- 理由：
+  1. 使用节奏：间歇录入，不是持续滚动；属于配置/输入类表单，和模式设置、主持人操作属于同一组操作域；
+  2. 用户明确提出挪到上方；放在overlay抽屉会造成输入时遮挡webview网格；放底部需要视线下移，频繁输入效率低；
+  3. 可折叠，不用时收起不占用纵向空间。
+- **成本**：DOM移动，把`.extbox`从旧`.side`迁移入`.topdeck .modezone`；新增`.extbox‑collapsed`子状态；不会触发webview重排。
+- **什么时候不该这么做（反例）**：外部AI回答输出内容极长，几十行大文本，顶部狭小区域滚动体验差，此时应当放到overlay抽屉。
+- 字段级：容器`<div class="extbox panel‑collapsible">`；内部`.extbox‑head`点击切换`extbox‑open` class；`.extbox‑body {overflow‑y:auto; max‑height:240px}`限制最大高度，防止把顶栏撑爆。
+
+### ②会议日志（`#log`：开会中持续高速滚动文本流）
+
+- **落位：放到独立底部停靠`.logdock`，全宽面板**
+- 理由：
+  1. 桌面端工具惯例，实时滚动日志适合底部全宽区域，阅读时不遮挡上方网格席位；自动滚动跟随最新日志，底部天然适合流式追加输出；
+  2. 如果放到顶部甲板：日志持续大量输出会把顶栏撑得极高，严重挤压网格视口；
+  3. 全宽布局比侧边窄栏阅读日志体验更好；折叠后仅保留一行标题，网格完整拿回全部纵向空间。
+- **成本**：迁移`#log`、`.summary`到底部容器；新增`body.logdock‑collapsed`全局class；展开/收起会触发**网格高度重排（webview会重新计算尺寸，不会卸载，安全）**；需要实现日志“手动上滚暂停自动跟随，回到底部恢复自动滚动”逻辑，防止滚动被日志强拽到底部。
+- **什么时候不该这么做（反例）**：窗口高度极低，展开底部日志后网格剩余高度过小，此时需要默认折叠日志dock。
+- 字段级：容器`.logdock`；内部`.logdock‑header`切换`body.logdock‑collapsed`；日志本体`.log {overflow‑y:auto}`；折叠状态CSS：`body.logdock‑collapsed .logdock {flex‑basis:28px;}`；展开状态`flex‑basis:32%; min‑basis:120px; max‑basis:40vh`。
+
+> 
+> 针对你担心的冲突：和`dragCellHeight`单元格拖拽高度不会冲突，`.logdock`是main#grid的兄弟flex节点，cell拖拽仅修改网格内部单元格，不干涉兄弟容器。
+
+## Q3：模式感知顶栏实现（透明广播transparent /专家会诊panel /工程交付build）
+
+> 
+> 目标：避免臃肿；区分「开会前配置组」、「开会中监控组」，不要一次性把全部控件堆出来；基于原生JS，不要框架；复用现有`renderScene()`的设计思路。
+
+### 1. 模式‑控件组映射（JS常量`MODE_CONTROLS`）
+
+```
+const MODE_CONTROLS = {
+  transparent: { //透明广播模式
+    pre: ["tmbox"], //开会前配置组：透明广播设置
+    runtime: ["chairbar", "extbox", "logdock"] //开会运行期监控组
+  },
+  panel: { //专家会诊
+    pre: ["group"],
+    runtime: ["chairbar", "extbox", "logdock"]
+  },
+  build: { //工程交付
+    pre: ["buildlevel"],
+    runtime: ["logdock"]
+  }
+}
+```
+
+- `pre`：会议未启动（空闲状态）显示的配置控件；
+- `runtime`：会议running状态启用；> 
+> 逻辑：切换模式+切换会议运行状态双重条件，渲染`.topdeck .modezone`区域；不是简单按模式全部显示隐藏，而是分阶段。
+
+### 2. HTML字段级结构
+
+```
+<div class="topdeck">
+  <div class="seatbar"><!--常驻：参会芯片、重排、席位配置 --></div>
+  <div class="chairbar"><!--主持人栏，常驻，内部按钮受控disabled --></div>
+  <div class="modezone" data‑mode="transparent">
+    <!--JS动态增加/移除子panel，不destroy DOM节点，用class显隐，避免反复创建DOM -->
+    <div class="panel tmbox mode‑ctrl" data‑modes="transparent"></div>
+    <div class="panel buildlevel mode‑ctrl" data‑modes="build"></div>
+    <div class="panel group mode‑ctrl" data‑modes="panel"></div>
+    <div class="panel extbox mode‑ctrl" data‑modes="transparent,panel"></div>
+  </div>
+</div>
+```
+
+### 3. CSS显隐规则
+
+```
+/* pre组（空闲） */
+body.state‑idle .mode‑ctrl[data‑phase="pre"] { display:block; }
+body.state‑idle .mode‑ctrl[data‑phase="runtime"] { display:none; }
+/* runtime组（开会中running） */
+body.state‑running .mode‑ctrl[data‑phase="runtime"] { display:block; }
+body.state‑running .mode‑ctrl[data‑phase="pre"] { display:none; }
+/* 模式过滤：不匹配当前mode的全部隐藏 */
+.mode‑ctrl:not(.mode‑active) { display:none; }
+```
+
+- JS逻辑：`renderDeck()`函数，在模式切换`selMode.change`、会议状态（idle/running）变更触发；给匹配的`.mode‑ctrl`增加class `mode‑active`，其余移除。
+
+**成本**：新增全局状态class `body.state‑idle / body.state‑running`；DOM不销毁节点，仅操作class；增加少量JS分支；**不会触发webview重排，只是控件显隐**。
+**什么时候不该这么做（反例）**：模式数量爆炸>8种，维护映射表成本急剧上升，此时改用向导式分步弹窗，不要全部塞在顶栏。
+
+> 
+> 你的想法确认：区分「开会前配置组、开会中监控组」是正确的，可以避免空闲状态顶栏堆满运行期控件造成臃肿。
+
+## Q4：折叠真正腾空间的CSS/JS模式清单，webview风险说明
+
+> 
+> 核心红线：**永远不对`.cell`或者包裹webview的容器做`display:none`，会触发webview重建、丢失登录会话**；`.topdeck`、`.logdock`内部**没有webview**，可以安全使用display:none / flex尺寸收缩。
+
+| 折叠实现模式 | 用法场景 | CSS核心规则 | 坑点&风险 |
+| --- | --- | --- | --- |
+| 模式1：Flex容器整体收缩（优先，复刻现有infocollapsed） | 顶部`.topdeck`、底部`.logdock`；兄弟flex布局 | ```css |  |
+| body.topdeck‑collapsed .topdeck{ |  |  |  |
+| flex‑basis:0; min‑height:0; |  |  |  |
+| overflow:hidden; |  |  |  |
+| } |  |  |  |
+| ``` | 触发兄弟节点（#grid）尺寸重排；webview仅调整渲染大小，**不会卸载**；禁止写`height:0`代替min‑height，防止内容溢出；适合主纵向布局面板 |  |  |
+| 模式2：`display:none`整体隐藏容器 | `.topdeck`完全收起不需要保留标题栏场景；**仅限不含webview的容器** | `.topdeck{display:none}` | 完全脱离布局流，100%回收空间；注意：不能用在任何包含`<webview>`的容器上，会重建webview丢会话；折叠后没有切换按钮，需要放到header上的全局toggle入口 |
+| 模式3：Grid轨道收缩 | 如果后续改成grid整体骨架 | `grid‑template‑rows: auto 0fr 1fr 0fr;` | 0fr实现轨道收缩；旧版Electron内核webkit下0fr存在兼容性风险，优先flex；网格内cell不能用此方式隐藏 |
+| 模式4：absolute overlay抽屉（方案B） | 临时查看面板，不参与文档流 | `.drawer{position:absolute; z‑index:100}` | **完全不改变grid/webview尺寸，不会重排；但是会覆盖webview上层，遮挡席位内容；适合临时查阅，不适合开会持续监控** |
+
+### 关键注意点（文档G2风险）
+
+1. `.cell`、`#grid`容器：只允许修改flex/grid尺寸，**严禁`display:none`、`visibility:hidden`包裹cell，防止webview实例销毁重建**；
+2. `.topdeck`、`.logdock`内部没有webview，所以可以安全使用display:none。
+
+**成本**：复用现有全局body class机制，几乎不新增DOM；仅新增少量CSS规则；
+**什么时候不该这么做（反例）**：把webview所在cell用模式1/2折叠；会丢失网页登录态，卡顿闪退。
+
+## Q5：主持人栏`.chairbar`（广播、发文件、暂停、停止）与顶栏协调
+
+> 
+> 现状语义：空闲idle：⏸暂停/⏹停止按钮disabled；running开会中全部可用；广播按钮行为随状态变化。
+
+### 推荐方案：常驻在`.topdeck`内，不做整体显隐，只做按钮粒度disabled状态控制
+
+1. HTML字段级：直接放入`.topdeck`的一级子节点，和`.seatbar`同级；不放到`.modezone`模式区，**跨模式常驻**。
+
+```
+<div class="topdeck">
+  <div class="seatbar"></div>
+  <div class="chairbar">
+    <button class="btn‑broadcast">广播</button>
+    <button class="btn‑sendfile">发送文件</button>
+    <button class="btn‑pause" data‑runtime‑only>暂停</button>
+    <button class="btn‑stop" data‑runtime‑only>停止</button>
+  </div>
+  <div class="modezone"></div>
+</div>
+```
+
+2. CSS+JS控制：
+
+```
+body.state‑idle [data‑runtime‑only] {
+  pointer‑events:none; opacity:0.4;
+}
+```
+
+- idle空闲状态：暂停、停止按钮置灰禁用；广播按钮逻辑走空闲模式逻辑；
+- running开会中：全部按钮启用，广播切换为透明广播汇编消息逻辑。
+
+**成本**：DOM移动chairbar进入topdeck；新增属性选择器样式；维护两套状态（idle/running）；**不会触发webview重排**。
+
+**什么时候不该这么做（反例）**：窗口高度很小，希望最大程度压缩顶栏纵向空间；此时备选方案：**空闲时把chairbar整体移入下拉菜单，仅running时展开显示完整主持人栏**；代价是空闲状态操作广播、发文件要多点击一次下拉，操作成本上升。
+
+> 
+> 不推荐：空闲状态直接移除/隐藏整个`.chairbar`，用户空闲状态也会用到广播发送消息、发送文件。
+
+## 总体推荐方案
+
+> 
+> 对你草案v0：**部分采纳，小幅修正**，主体方向正确。
+
+1. ✅采纳：删除固定`.side`右栏；`.main`不再分左右，`#grid`占满全部横向空间；新增`.topdeck`顶部可折叠控制甲板，复用`body.*‑collapsed`全局class实现真正回收空间，**禁止仅隐藏内部DOM不收缩容器**。
+2. ✅采纳：`.extbox`外部AI回答迁移进`.topdeck .modezone`，间歇表单适合顶部操作域。
+3. ✅采纳：会议日志+摘要迁移到底部独立`.logdock`全宽停靠；**修正补充**：日志面板必须实现「手动向上滚动时暂停自动跟随底部，回到底部恢复自动滚动」，解决开会日志滚动交互痛点。
+4. ✅采纳模式感知：使用`MODE_CONTROLS`映射，**额外增加区分pre（空闲配置）/runtime（运行监控）分组**，不要一股脑全部渲染控件，解决顶栏臃肿。
+5. ✅采纳主持人栏`.chairbar`常驻`.topdeck`一级节点；**按钮粒度disabled置灰，而不是整体隐藏chairbar**。
+6. ⚠️红线约束：任何`<webview>`所在`.cell`、`#grid`容器**禁止display:none**，只能修改flex尺寸；`.topdeck`/`.logdock`不含webview，可以安全使用display:none。
+7. ⚠️风险点：窗口高度较低场景，同时展开`.topdeck`+`.logdock`会严重压缩网格可视区域；JS增加判断：窗口高度小于阈值，自动默认折叠其中一个面板，保障网格最小可视高度。
+
+### 最终骨架（修正版v1）
+
+```
+body (flex‑column, 100vh; overflow:hidden)
+├─ .header (原有不变：模式选择、议题、开始会议、全局折叠切换按钮)
+├─ .topdeck【新增，可整体折叠】
+│   ├─ .seatbar（常驻席位芯片、重排、席位数量下拉）
+│   ├─ .chairbar（常驻主持人栏；⏸⏹空闲disabled）
+│   └─ .modezone（模式控件组，区分pre/runtime阶段显隐：tmbox/buildlevel/group/extbox）
+├─ .main {flex:1}（删除原side右栏，不再分左右flex）
+│   └─ #grid（12个.cell网格，9webview+3API席位）
+└─ .logdock【新增底部停靠，可折叠】
+    ├─ .logdock‑header（切换按钮：▾日志｜摘要）
+    └─ .log‑inner（#log滚动日志 + .summary摘要，overflow‑y:auto）
+```
+
+> 
+> 重构完成后需要跑全量`node --test 400`用例；UI验证用CDP Runtime.evaluate读取DOM尺寸，确认折叠后`#grid`拿到全部释放出来的空间。
+
+如果你需要，我可以进一步输出：关键CSS片段，或者输出一份分步改造的执行顺序清单（从改骨架、迁移DOM、补状态、测试校验）。

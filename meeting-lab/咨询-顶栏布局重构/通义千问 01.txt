@@ -1,0 +1,82 @@
+先给结论：你的草案 v0 方向基本正确，我给部分采纳——「删掉固定右栏 + 顶部控制甲板 + 底部日志停靠」这套骨架是对的，但有两处要调整（外部 AI 回答别常驻顶甲板、模式感知要做「两阶段」而非一次全显）。下面按 §0 的 5 问逐条给方案，每条带成本与反例，字段级尽量落到 class / 折叠触发 / 模式键。
+
+Q1：非窗口功能怎么组织，才能「随时可用 + 不用时真腾空间」
+
+给你 3 个可落地的拓扑，按推荐度排：
+
+方案 A｜顶部控制甲板 + 底部日志停靠（你的草案，推荐主体）
+结构：body 纵向 flex = .header(固定高) → .topdeck(可折叠) → .main(flex:1，含 .grid) → .logdock(可折叠)。删掉 .side。
+成本：新增 2 个容器（.topdeck/.logdock）+ 2 个折叠态键；甲板内无 webview，折叠安全。网格 flex:1 拿回全部横向 380px。
+什么时候不该用：如果「配置控件 + 日志」在开会中需要同时展开，纵向会被吃掉一大截（header+甲板展开 160px + 日志展开 30vh，小屏 1080p 下网格只剩一半高）。反例场景：透明广播开会中，你要边看日志边盯 12 格 → 此时顶部甲板应已自动收起（靠 Q3 的阶段机解决）。
+
+方案 B｜侧边 overlay 抽屉（推荐作为「表单类」的补充，而非整体替代）
+结构：.drawer { position:absolute; right:0; top:0; height:100%; width:380px; transform:translateX(100%); }，点按钮 translateX(0) 滑出，覆盖在网格上不占布局流，收起即 width 视觉为 0、网格完全不受影响。
+成本：1 个绝对定位层 + 1 个遮罩可选；因为脱离文档流，永不触发网格 reflow，webview 零风险。
+什么时候不该用：抽屉会遮挡网格——不适合放「需要长期同屏参照」的内容（如开会中持续滚的日志，你不想被盖住）。适合放「录一条就走」的表单（正好是外部 AI 回答）。
+
+方案 C｜底部统一停靠坞 + Tab 切换（次选）
+结构：.dock 底部固定，内部 Tab 切「日志 / 外部回答 / 摘要」，默认收成一行。
+成本：需引入 Tab 状态机；把两类不同节奏的内容挤进一个 Tab，互相抢焦点（你正在滚日志，切去录外部回答，回来日志滚动位置丢了）。
+反例：需要「一边滚日志一边录外部回答」的会诊模式，C 明显别扭。
+
+我的取舍：A 作骨架，B 作为外部 AI 回答的落位（见 Q2），不要纯 C。
+
+Q2：会议日志 vs 外部 AI 回答各自的落位
+
+这两个使用节奏根本不同，不该同栏，这正是你 §3-G3 的直觉，是对的：
+内容   使用特征   推荐落位   字段级理由
+会议日志   开会时持续单向追加、只读、需要长时间同屏参照   底部全宽停靠 .logdock   ① 长文本滚动条横向全宽，一行装更多字，滚动更顺；② 底部是「输出/监控」心智区，与顶部「配置」区天然分层；③ 折叠成 flex:0 0 28px 标题行时，网格纵向补满，真腾空间。
+
+外部 AI 回答   间歇录入的表单、需要输入焦点、录完即走   右侧 overlay 抽屉 .ext-drawer（方案B）   ① 表单录入时视线本就要离开网格，抽屉盖住网格无所谓；② 录完 translateX(100%) 收起，0 永久占位，完美符合你「不用时完全腾空间」；③ 放顶部甲板的坏处：点输入框会让甲板被迫常驻展开，把纵向空间长期占住，与「甲板默认收起」冲突。
+
+成本：日志停靠 = 1 容器 + 1 折叠态；外部回答抽屉 = 1 绝对定位层 + 1 开关。
+反例提醒：若你的会诊模式里「外部回答」也需要长期挂屏对照（而不是录完就走），那它就该跟日志一样进底部停靠，别用抽屉——这一点你按实际工作流二选一。
+你担心的「底部停靠压住网格底边 / 和 dragCellHeight 冲突」：只要 .logdock 是 body flex 的子项、用 flex-basis 收缩而不是 position:absolute 覆盖，网格是被挤压而非遮挡，dragCellHeight 计算的是 cell 相对 .grid 的高度，不会与 dock 打架。真正要防的是别把 dock 做成 absolute 覆盖层——那样才会盖住 cell 底边拖拽手柄。
+
+Q3：模式感知顶栏怎么做才不臃肿
+
+你 §5-Q3 的 MODE_CONTROLS 映射思路对，但要补一个关键维度：阶段（phase），否则控件一次全堆出来。建议二维映射：
+
+MODE_PHASE_CONTROLS = {
+  transparent: { pre: ['seatbar','tmbox','chairbar-cfg'],  run: ['chairbar-live','log'] },
+  panel:       { pre: ['seatbar','group'],                 run: ['log','ext-btn'] },
+  build:       { pre: ['seatbar','buildlevel'],            run: ['log','buildlevel'] },
+}
+
+phase 由「开始会议/停止」事件翻转：currentPhase = 'pre' | 'run'，与 currentMode 一起决定 .modezone 渲染哪些子块。
+落位分工：pre（开会前配置组）进顶部甲板；run（开会中监控组，如日志/暂停/停止）里，日志进底部停靠、控制进常驻主持人栏。
+显隐实现：renderDeck() 在 selMode.change 和 phase 变更时重渲染；用「切换子块 display」而不是重建容器——甲板内无 webview，子块 display 切换安全。
+反例 / 成本：MODE_PHASE_CONTROLS 是一张表，新增模式要改表（维护成本可控）；别把它做成硬编码 if/else（你现状 G4 就是这么零散的）。反例：如果某模式 run 组是空的，记得 renderDeck() 要能渲染成「只剩主持人栏」而不是空白一条——给个空组兜底。
+
+Q4：折叠如何真正腾空间（不是 display:none 藏内部）
+
+三条实现，按作用对象分，核心红线：对含 webview 的容器永不 display:none：
+
+纵向真收（用于 .topdeck / .logdock）——复用你已验证有效的 body.infocollapsed 机制：
+   .topdeck { flex:0 0 auto; overflow:hidden; }，折叠态 body.deckcollapsed .topdeck { height:0; min-height:0; padding:0; }，配 transition:height .18s。
+   甲板内无 webview → 即便整段 display:none 也安全；但更推荐「高度收 0 + overflow:hidden」，可保留子 DOM 不被销毁，renderDeck 逻辑更简单、测试更稳。
+   .logdock 同理：展开 flex:0 0 32%，折叠 flex:0 0 28px（只留标题），网格 flex:1 自动补满。
+横向真腾（外部回答抽屉）——用方案 B 的 overlay，transform:translateX 滑进滑出，脱离文档流，网格宽度恒定满宽，从根源上不再有「380px 收不回」的问题。这是比「想办法把 .side 宽度改成 0」更干净的做法：干脆不让它进布局流。
+绝对禁止：对 .grid 或其 12 个 .cell 用 display:none 再显示——Electron webview 会重建、丢登录态（你 G2 已证）。网格尺寸变化只走 flex/grid 数值收缩。
+
+坑清单：① 折叠动画期间 webview 若参与重绘会掉帧——把 transition 只加在甲板/dock 上，别加在 .grid；② overflow:hidden 收高度时，内部若仍有 flex:1 子项会算出负高，记得折叠态把子项也 display:none（甲板内子项无 webview，安全）；③ --disable-gpu 下用 CDP Runtime.evaluate 读 getBoundingClientRect().height 验证是否真收 0，别用截图。
+
+Q5：主持人栏（广播/发文件/暂停/停止）怎么与顶栏协调
+
+建议：chairbar 常驻顶栏，但用状态机切「可用性 + 少量显隐」，而不是整栏显隐。
+
+广播、发文件：两种语义（开会中汇编进下一轮 / 空闲直发）都是主持人高频入口，应常驻可见，靠文案或图标态区分即可。
+⏸暂停 / ⏹停止：本质是「开会中才有意义」，空闲时 disabled。建议进一步——空闲态直接 display:none 这两个按钮（它们是「运行态控件」，属于 phase==='run' 组），开会时再出现，避免空闲时顶栏挂两个灰按钮显乱。这正好归入 Q3 的 run 组，和模式感知是同一套机制。
+反例 / 成本：若把整条 chairbar 做成「开会才出现」，会让「开始会议」这个动作本身失去紧邻的操作锚点（用户找不到广播入口）。所以是栏常驻、个别按钮随 phase 显隐，不是整栏显隐。
+位置：chairbar 放在 .topdeck 顶部第一行（或 .header 正下方），作为主持人「操作台」，与「配置组/信息面板」在视觉上分区。
+
+总体推荐方案（对草案 v0 的态度：部分采纳）
+
+采纳你 v0 的三根骨架：删固定右栏 .side → 网格满宽；.topdeck 顶部可折叠甲板；.logdock 底部停靠日志。两处修正：
+
+外部 AI 回答从「顶甲板常驻子块」改为「右侧 overlay 抽屉」（方案 B）：表单录完即走，overlay 才是「不用时 0 占位」的正解；常驻顶甲板会长期占纵向空间。
+模式感知升级为「模式 × 阶段」二维映射（MODE_PHASE_CONTROLS）：开会前显示配置组、开会中显示监控组，主持人栏常驻、⏸⏹随阶段显隐——一次解决 G4（零散 if）和 G5（chairbar 双态）。
+
+落地顺序建议：先做 Q4 的折叠机制（甲板高度收 0 + 抽屉 translateX，纯 CSS，400 测试最易保绿），验证网格真拿回 380px 且 webview 不闪退；再迁外部回答进抽屉、日志进 dock；最后接 Q3 的 MODE_PHASE_CONTROLS。甲板/dock 内均无 webview，全程不对 .grid/.cell 动 display，即可守住「不卸载 12 格」的红线。
+
+如果你希望，我可以把这套 MODE_PHASE_CONTROLS 映射、.topdeck/.logdock/.ext-drawer 的 HTML 结构与关键 CSS 规则整理成一份可直接对照 index.html 落地的改造清单文件。

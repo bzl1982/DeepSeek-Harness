@@ -1,0 +1,232 @@
+# 第 4 轮答辩：争议辩到底 + 双主力工作流深挖
+
+---
+
+## Q1：Q3 续辩——外部 AI 回答落位
+
+**我上轮立场：A（顶甲板+编辑锁+限高+默认归属 activeSeat）。本轮：坚持 A，不翻转。**
+
+### 正面回应 B 派两条未被回应的攻击
+
+**攻击一“纵向税”：回收全天高频时常驻顶甲板每天吃掉 96px。**
+
+这条攻击的数学前提是“顶甲板常驻展开”。但 A 派方案里顶甲板 `flex-basis` 是 `var(--h-deck-open)`，`body.topdeck-collapsed .topdeck{flex-basis:28px}`。回收时用户**只在粘贴瞬间展开**，粘贴完收起 28px。所谓“96px 纵向税”只在展开态成立，而展开态是用户主动触发的、有明确操作意图的瞬态，不是“每天每轮”的常驻成本。B 派把“用户主动展开”偷换成了“常驻”，这条攻击不成立。
+
+**攻击二“deck-summary 态冲突”：running 自动收起后突然要粘贴，展开动作与自动折叠序打架。**
+
+这条成立，但解法不是换落位，是加一条**编辑态覆盖自动折叠**的硬规则：
+
+```js
+// 自动折叠序在 data-editing=true 时让位
+const AUTO_COLLAPSE_ORDER = ['logdock', 'topdeck', 'globalbar'];
+function autoCollapse(){
+  if(document.body.dataset.editing === 'true') return; // 编辑中冻结
+  // ...原序
+}
+// 外部 AI 回答框 focus 时置 editing=true，blur+保存后置 false
+extboxBody.addEventListener('focusin', () => document.body.dataset.editing = 'true');
+extboxBody.addEventListener('focusout', () => document.body.dataset.editing = 'false');
+```
+
+编辑锁不是“锁折叠按钮”，而是**锁自动折叠序**。手动折叠按钮永远可用。这条规则同时解决 B 派“锁 or 丢”的选择题——不存在选择题，编辑中自动序让位，手动序仍可折叠。
+
+### 正面反驳 B 派“对照式操作”攻击
+
+**B 派隐含论点是：用户抄答案时不需要看被抽屉盖住的窗。**
+
+这个论点有一个致命前提——它假设 9 个窗口的答案可以**分批抄**。但 transparent 模式下 9 席一轮注入 153 份，用户回收时面对的是**交叉引用**：web3 的回答里引用了 web1 的论点，web7 的反驳又指向 web3。如果右侧抽屉盖住右列 3 个窗口，用户抄 web1 时看不到 web7 的完整上下文，回收质量直接掉。
+
+A 派顶甲板只压**顶部**，网格所有列全可见。回收时用户从上往下扫，9 席横向全在视野内。这不是“对照式操作”的小优势，是**透明广播 O(N²) 交叉引用场景下的结构刚需**。
+
+### B 派何时会出事（失效场景）
+
+B 派方案唯一成立的场景是：**回收时用户按“一席抄完再抄下一席”的串行流，且答案之间无交叉引用**。这在人工咨询的 broadcast 退化形态（一份稿发所有人，9 个独立答案）下成立。但 transparent 会议不是这个形态。B 派用人工咨询的退化形态论证 transparent 的高频形态，这是**模式偷换**。
+
+**新论点（本轮独有）：A 派顶甲板天然支持“多席答案并排比对”，B 派右侧抽屉天然支持“单席深读”。** 两种落位对应两种回收语义。transparent 是并排比对语义，所以 A 胜。如果未来加“单席深读”工作流，B 作为第二个入口补充，但主落位仍是 A。
+
+**成本：** 编辑锁状态 +1 `data-editing`；自动折叠序加一个 early return。  
+**反例：** 如果用户回收时用的是“抄完一席关一席”的串行流，B 更省空间；但这与 transparent 的交叉引用语义冲突，不应作为主落位。
+
+---
+
+## Q2：透明广播——15 条种子修复 + 5 条新增
+
+| # | 意外 | 概率 | 严重度 | 修复设计 | 归属 |
+|---|---|---|---|---|---|
+| 1 | 席位中途超时 180s | 高 | 中 | 汇编时该席块写 `【某某说·超时未答】` 占位，不跳过（跳过会破坏 O(N²) 计数）；重试由 DispatchJob 降级链处理，manual 兜底 | 引擎 |
+| 2 | 发送成功≠AI收到≠已回答 | 高 | 高 | 三态已在设计；引擎接三态后，发送态失败→重试1次→仍失败→降级 manual→挂 attention | 引擎+UI |
+| 3 | DeepSeek 判完成偏早 | 高 | 高 | per-provider 检测配置：`{deepseek:{minStableMs:3000, signals:['思考中'], exclude:'思考中'}}`；统一后验=连续 3 次采样增量稳定才判完成 | 引擎 |
+| 4 | 弹登录/验证码/升级弹窗 | 中 | 高 | 壳层定时采样 webview 标题+关键 DOM，命中关键词→`attention` 挂该席，本轮标记“不可用”，汇编跳过 | 引擎+UI |
+| 5 | 额度耗尽 | 中 | 中 | 同上检测“额度/limit”关键词；已完成轮次算数，后续轮次该席从 enabled 剔除并通知 | 引擎 |
+| 6 | 主持人广播时序（汇编瞬间） | 中 | 中 | 定案：`pushChairMessage` 带 `targetRound` 戳，汇编时读 `targetRound === currentRound+1` 才注入本轮，否则进下轮 | 引擎 |
+| 7 | abort 时在途发言 | 中 | 中 | 半截发言截断落盘到 `round-N.partial.md`，主 `round-N.md` 写 `【某某·中止】`；不丢数据 | 引擎 |
+| 8 | MD 落盘失败 | 中 | 高 | 重名时新目录 `meeting-<id>-r2/`；中文路径用 `path.resolve` + `encodeURI`；磁盘满挂 attention 并暂停派发 | 引擎 |
+| 9 | 20+ 席 O(N²) 爆炸 | 高 | 高 | 文心 L7 护栏：>12 席自动提示拆域；`globalbar` 显示 `注入 153 份/轮`，超 500 挂 attention | UI |
+| 10 | 网页 F5/强制刷新 | 低 | 中 | 该席历史发言**仍算数**（落盘已有），但当前轮标记“页面重载”，下轮重新 insertText；登录态 partition 保住 | 引擎 |
+| 11 | 重复点开始会议 | 中 | 高 | `body[data-phase="running"]` 时开始按钮 disabled；`startMeeting()` 首行 if running return | UI |
+| 12 | API vs 网页完成机制不同 | 高 | 中 | API 有明确响应结束，网页靠增量检测；轮次聚合用 `Promise.allSettled` + per-turn timeout，不统一机制只统一等待边界 | 引擎 |
+| 13 | 中途勾掉参会席位 | 中 | 低 | 勾掉时该席已发历史发言**保留在汇编**（否则 O(N²) 计数突变）；仅后续轮次剔除 | 引擎 |
+| 14 | 时间戳/时区/会议ID碰撞 | 低 | 中 | 会议文件夹 `meeting-YYYYMMDD-HHmmss-<mode>`；ID 用 `crypto.randomUUID()` 前 8 位 | 引擎 |
+| 15 | running 中改议题/资料 | 中 | 高 | 定案 17 冻结配置；透明广播议题在引擎外，shell 层加 `data-phase="running"` 时议题输入 `readonly` | UI |
+| **16** | **网页 AI 内容策略拒绝** | 中 | 中 | 检测“无法回答/违反政策”关键词→该席本轮标 `【拒绝】`，不阻断其他席 | 引擎 |
+| **17** | **多 webview 同时渲染崩溃** | 低 | 高 | `webview.on('crashed')`→该席标 `【崩溃】`，`--disable-gpu` 已缓解；不重建，等用户手动 reload | 引擎 |
+| **18** | **剪贴板被其他应用覆盖** | 中 | 低 | 人工兜底时“复制到剪贴板”按钮点击后立即写 `navigator.clipboard`，不做延迟；提示用户“请勿切换应用” | UI |
+| **19** | **网络断开多席同时超时** | 中 | 高 | 检测 `navigator.onLine` + 多席同时超时→挂全局 attention“网络异常”，暂停派发而非逐席重试 | 引擎+UI |
+| **20** | **用户误关 webview 窗口** | 低 | 中 | webview 是 DOM 节点不是独立窗口，无“关闭”概念；若指 `display:none`，红线已禁；若指 devtools 关闭，不影响 | — |
+| **21** | **轮间用户手改 round-N.md** | 低 | 低 | 落盘前读文件 hash，若被外部改过→新写 `round-N.override.md`，不覆盖 | 引擎 |
+
+---
+
+## Q3：人工咨询——自动回收 + R5 最终产物
+
+### 3.1 自动回收可靠方案
+
+9 家网页 DOM 结构各异，判定“新回答”且归属正确，三层策略：
+
+**第一层：壳层注入标记（最可靠）**  
+发送时在 insertText 末尾追加不可见标记 `\u200b<!--seat:web1:round:3-->`（零宽字符+HTML注释，网页 AI 不会回显，但壳层可读 DOM 时识别）。回收时扫描 DOM 文本节点，命中标记→归属该席该轮。
+
+**第二层：DOM 结构指纹（标记被吃时兜底）**  
+per-provider 配置回答容器选择器：
+
+```js
+const ANSWER_SELECTORS = {
+  chatgpt: '.markdown.prose:last-child',
+  deepseek: '.ds-markdown:last-child',
+  kimi: '.segment-content:last-child',
+  // ...
+};
+```
+
+扫描 `last-child` 与上轮快照比对，增量即新回答。
+
+**第三层：人工兜底（前两层都失败）**  
+每席卡片“标记已回答”按钮，用户手动勾选；回答内容从剪贴板粘贴。
+
+**归属正确性保障：** 标记优先，选择器次之，人工最后。三层的 `seatId` 与 `round` 必须一致才落盘，不一致挂 attention。
+
+### 3.2 部分回收（9 席只回 5 席）生成策略
+
+```js
+function generateR5(meeting){
+  const answered = meeting.seats.filter(s => s.manualState === 'answered');
+  const unanswered = meeting.seats.filter(s => s.manualState !== 'answered');
+  return {
+    partial: unanswered.length > 0,
+    answeredCount: answered.length,
+    totalCount: meeting.seats.length,
+    // 生成时显式标注缺失席位，不假装完整
+  };
+}
+```
+
+生成文件头部写 `回收 5/9，缺失：web6 web7 web8 api2`，让 WorkBuddy 侧知道这是部分结果。
+
+### 3.3 R5 最终产物定义 + 文件样例
+
+**产物目录：**
+```
+meeting-20260923-143022-transparent/
+├─ round-1.md
+├─ round-2.md
+├─ round-3.md
+├─ 会议记录.md
+├─ R5-共识提炼.md          ← 拖进 WorkBuddy 的主文件
+└─ R5-原始回答/
+   ├─ web1-03.txt
+   ├─ web2-03.txt
+   └─ ...
+```
+
+**R5-共识提炼.md 开头 20 行样例：**
+
+```markdown
+# R5 共识提炼 · 透明广播会议 · 20260923-143022
+
+## 元信息
+- 模式：transparent（透明广播）
+- 轮数：3/3
+- 席位：9（web1-9）+ 3 API（api1-3）
+- 回收：8/9（缺失：web7，原因：额度耗尽）
+- 议题：<议题原文>
+
+## 共识结论（AI 汇总）
+<3-5 条共识，每条带支持席位标注>
+
+## 分歧点
+| 分歧 | 支持方 | 反对方 | 关键论据 |
+|---|---|---|---|
+| ... | web1,web3 | web5,web8 | ... |
+
+## 原始回答索引
+- web1 第3轮：见 R5-原始回答/web1-03.txt
+- web2 第3轮：见 R5-原始回答/web2-03.txt
+...
+```
+
+**为什么这个格式让 WorkBuddy 高效消化：**  
+元信息给上下文，共识结论直接可用，分歧点表格化便于核对，原始回答索引按需展开。WorkBuddy 侧不需要读 9 个 txt 就能拿到 80% 价值。
+
+**成本：** 标记注入 +1 字段 `seatRoundTag`；选择器配置 +1 常量；R5 生成 +1 函数。  
+**反例：** 如果网页 AI 把零宽字符渲染成乱码，标记层失效，退回选择器层；选择器也失效则人工兜底。
+
+---
+
+## Q4：其余 9 种工作流——每条至少 1 条新意外因素
+
+| 模式 | 新意外因素 | 修复 |
+|---|---|---|
+| broadcast | 全员并行时某席回答超长（>10k 字），汇编时单席块撑爆上下文 | 单席块截断到 `maxSeatBlockChars=4000`，末尾标 `【截断】` |
+| review | 交叉质证阶段顺序发言，后者看到前者全部→若 20 席，第 20 席要读 19 席材料，上下文爆炸 | 质证阶段每席只读前 3 席+材料摘要，不读全部 |
+| assist | 用户是执行者，但用户不执行→AI 顾问团空转 | `assist` 模式 running 中若 3 轮无用户操作，挂 attention“等待用户执行” |
+| iterate | no-new-critique 终止判据文本规范化后仍可能永不停机（批评措辞变但语义同） | 加 `maxRounds=5` 硬上限，第 5 轮强制终止并标 `【未收敛】` |
+| debate | 每人只看别人论点不看自己→若 2 席辩论，彼此看不到自己上一轮，可能重复立论 | 2 席时降级为 panel 模式并提示用户 |
+| panel | 20 席依次发言，每席读前面全部→第 20 席读 19 席，总 token 量 O(N²/2) | 20 席时强制分组，组长接龙，组内 panel 组间 summarize |
+| chairman | 主席点名依赖 API 席位，API 席位若中途额度耗尽→主席无法点名 | READY Gate 检查 API 席位 ≥1；running 中 API 席位掉线→挂 attention 并暂停点名 |
+| divide | 收敛者拆得烂→子任务重叠或遗漏 | 拆分后 shell 层做 overlap 检测（子任务关键词交集），命中→提示重新拆分 |
+| tournament | Borda 均值算出 winner 但 AI 不认→改进阶段 AI 改标书不改 winner | 定标后 winner 锁定，改进阶段只改标书措辞不重算 winner；复评阶段 same-winner 才终止 |
+| build | 第三档真跑 `npm run build`，构建进程可能挂起不退出 | 构建子进程加 `timeout=120s`，超时 kill 并标 `【构建超时】` |
+
+---
+
+## Q5：小分歧快裁
+
+**① tournament kind 徽标：裁决——日志行和席位卡都打，但语义不同。**  
+日志行打 `[candidate]` `[ballot]` `[verdict]` `[revision]` `[review]` 用于**审计追溯**；席位卡只打当前轮 kind 徽标用于**实时状态**。理由：日志是事后审计，需要全量 kind；席位卡是实时监控，只需当前轮。Agnes 和 ChatGPT 各对一半，不冲突。
+
+**② 前置条件硬门槛分级：裁决——物理不可能=硬禁，仅缺失=软警告+attention。**  
+统一规则：`mode.needs` 里“结构性依赖”（chairman 的 API 席位、review 的材料）→硬禁；`mode.needs` 里“内容性依赖”（iterate 的草稿、transparent 的议题）→软警告+attention，允许先开始。理由：API 席位没有就是没有，无法“先开始再补”；草稿可以边跑边补。
+
+**③ 人工咨询入口形态：裁决——占 mode 下拉，但标“快捷”徽标。**  
+理由：独立按钮会让 header 多一个入口，且人工咨询本质是“全 manual 的 broadcast”，占 mode 下拉符合心智。标“快捷”让用户知道它特殊。
+
+**④ debate 自身历史 Toggle：裁决——v1 不做。**  
+理由：这是引擎层“防自我强化”约束的 UI 暴露，但引擎已强制“不看自己”，Toggle 会破坏约束。如果用户想看自己历史，去日志看，不进席位卡。
+
+---
+
+## Q6：pre-build checklist
+
+### 必须再辩一轮（L 级）
+
+- [ ] Q3 落位 A vs B 若 9 家仍未收敛，需第 5 轮；若本轮后 A 派 ≥7 家，可结案
+- [ ] R5 文件格式若 WorkBuddy 侧反馈“看不懂”，需再辩
+- [ ] 自动回收三层策略的标记注入是否被网页 AI 吃，需真机验证
+
+### 写代码时顺手解决（S 级）
+
+- [ ] per-provider 完成检测配置表
+- [ ] 编辑锁 `data-editing` 与自动折叠序的 early return
+- [ ] kind 徽标渲染
+- [ ] READY Gate 硬/软分级
+- [ ] 人工咨询快捷 mode 入口
+- [ ] R5 生成函数
+- [ ] 意外因素 #16-#21 的 attention 挂载
+
+**开工判据：** L 级全勾 + S 级无阻塞项。当前 L 级剩 Q3 落位待本轮后统计，若 A 派 ≥7 家则 L 级全勾，可开工。
+
+---
+
+## 结尾：还差几轮？
+
+**还差 0~1 轮。** Q3 落位本轮若 A 派 ≥7 家即结案；R5 格式需 WorkBuddy 侧真机验证一次。其余争议已收敛到“写代码时顺手解决”级别。**再辩一轮只为 Q3 和 R5 真机验证，不为其他。**

@@ -1,0 +1,143 @@
+这份咨询案写得很扎实（源码行号都核过了），我直接在它基础上按 Q1–Q5 回答。先给结论：**草案 v0 方向对，但有两处要修正**——顶部层数会失控，且日志放底部这个倾向是对的但可以论证得更硬。逐题展开：
+
+---
+
+## Q1 非窗口功能的拓扑方案
+
+| 方案 | 结构 | 成本 | 什么时候不该这么做 |
+|---|---|---|---|
+| **A. 顶部控制甲板 + 底部日志 dock**（草案 v0） | 删 `.side`；顶部 `.topdeck` 收控制/表单，底部 `.logdock` 收滚动日志 | 2 个新容器 + 2 套折叠态；无 webview 重排风险（甲板/dock 内全是表单和文本） | 屏幕纵向本来就矮（<800px）：顶部 header+topdeck 吃两层，底部 dock 展开再占 30%，网格净高可能 <400px |
+| **B. 侧边 overlay 抽屉**（平时 0 宽，点钮滑出盖在网格上） | 删 `.side` 的布局占位，改为 `position:absolute` 抽屉 | 折叠完全不触发重排（网格永不被挤压）；但要处理 9 个 webview 上盖层的合成问题，且用户投诉的恰恰是「侧边栏体验」——心理上留了个右栏的壳 | 唯一不该做的情况：你确实需要「日志开会时一直可见」。抽屉的本质是「不用时藏起来」，而日志是**开会时持续被消费的**，每次要看日志都得点一下，违反它的使用节奏 |
+| **C. 全部塞底部停靠栏**（日志+外部回答+设置都在底部，多 tab） | 单容器 `.dock` 内 tab 切换 | DOM 最少（1 容器 3 tab）；但底部 tab 栏开三个面板后，开会中「要同时看日志 + 填外部回答」就得来回切 tab | 外部回答和日志在开会中是**并发使用**的（边听边记边参考日志），tab 互斥等于制造操作断点 |
+
+**推荐 A，理由**：唯一一个把「持续消费的信息」（日志）和「间歇操作的表单」（外部回答）按使用节奏分到不同空间边界的方案。B 的 overlay 思路其实值得**借用一半**——见 Q4，dock 展开时用 absolute 覆盖而不是挤压网格。
+
+---
+
+## Q2 会议日志 vs 外部 AI 回答的落位
+
+**日志 → 底部 `.logdock`**（字段级）：
+
+- 滚动方向：`.log` 的追加在底部，放底部后**新条目出现在容器内部靠近用户输入/操作区的一侧**，视线不用从网格顶部跳到顶部甲板再回来。所有聊天类产品（消息靠下）、IDE 终端（靠下）都是这个方向。
+- 空间竞争：顶部如果放持续滚动的日志，它每一行新内容都在**逼用户看它**，视觉噪音是被动产生的；底部 dock 折叠后只剩一行 28px 标题，是「主动需要时才展开」的关系。
+- 冲突点（你担心的 `dragCellHeight`）：**不冲突，但要用 absolute 覆盖而非 flex 挤压**——见 Q4。格子底边拖拽调整的是 cell 高度，dock 用 `position:absolute; bottom:0` 盖上去时，grid 的 flex 布局完全不知道 dock 存在。
+
+**外部 AI 回答 → 顶部 `.topdeck` 内的 `.extbox`**：
+
+- 它是**间歇录入表单**（间歇到「可能整场会议只开 2 次」），不持续产生视觉内容，放顶部不造成噪音。
+- 表单通常较高（输出目录、轮数、议题资料 + 回答文本域），放底部会和大面积日志展开态打架。
+- 用户原话「这些功能都挪到上面」里，「外部 AI 回答」是明确被点名的；日志他只抱怨了折叠无效，没要求挪上——按原话执行，别过度对齐。
+
+**成本**：`.logdock` 约 40 行 DOM；`.extbox` 只是搬迁不是新建。反例：如果你们的会议模式是「主持人盯着日志做实时裁判」（而非透明广播的无人值守轮询），日志才是主工作区，该反过来：日志常驻顶部下方大区域，外部回答收进底部。
+
+---
+
+## Q3 模式感知顶栏（不臃肿的关键：加一层「阶段」维度）
+
+你的 `MODE_CONTROLS` 映射**方向对，但一个维度不够**。顶栏臃肿的根源不是模式多，而是「配置期控件」和「开会中控件」同时可见。加一个 phase 键：
+
+```js
+const DECK_LAYOUT = {
+  transparent: {
+    setup:   ['seatbar', 'modezone', 'extbox'],        // 开会前：选人+广播设置+外部回答预填
+    running: ['chairbar', 'log-dock-btn']              // 开会中：主持人栏+日志展开钮
+  },
+  panel: {
+    setup:   ['seatbar', 'group-select', 'extbox'],
+    running: ['chairbar', 'extbox', 'log-dock-btn']    // 会诊要边问边看日志+录回答
+  },
+  build: {
+    setup:   ['seatbar', 'buildlevel', 'extbox'],
+    running: ['chairbar', 'buildlevel', 'log-dock-btn']
+  }
+};
+// 渲染：renderDeck(mode, phase)，phase 从现有 running 状态变量推，不用新状态
+```
+
+**字段级 HTML**：
+
+```html
+<div class="topdeck" id="topdeck">
+  <div class="deckrow" data-group="seatbar">…</div>
+  <div class="deckrow" data-group="chairbar">…</div>
+  <div class="deckrow" data-group="modezone">…tmbox/buildlevel/group…</div>
+  <div class="deckrow" data-group="extbox">…</div>
+</div>
+```
+
+**显隐规则**：不用重渲染，每个 `.deckrow[data-group]` 是固定 DOM（一次写全），切换模式/阶段时只切 `hidden` 属性。成本：DOM 略多（所有模式的行都在，约 80–100 行额外 DOM），换来的是**无重渲染、无事件监听重绑**——对你「保持 400 测试全绿」是重大利好，测试断言节点存在性不会因为模式切换而抖动。
+
+反例：如果你的模式数会涨到 6+ 且每组控件差异极大（比如 build 模式是一套完全不同的表单），固定 DOM + hidden 会让顶栏源码里塞满永远隐藏的节点，此时才该用你草案里的 `renderDeck()` 重渲染。
+
+---
+
+## Q4 折叠如何真正腾空间
+
+三种模式，按容器内容区分：
+
+**① `display:none` 整段收——用于 `.topdeck`、`.flowwrap`、`.scene`**
+- 甲板内无 webview（你已确认），安全。
+- 比 `min-height:0;height:0` 干净：现有 `infocollapsed` 是混合机制（flow 压缝 + scene 消失），统一成整段 `display:none`，行为可测、CSS 规则少一半。
+- 坑：无。
+
+**② flex-basis 收缩到一行标题——用于 `.logdock` 的「半折叠」态**
+```css
+.logdock { flex: 0 0 32%; display:flex; flex-direction:column; }
+.logdock.collapsed { flex: 0 0 28px; }
+.logdock .log { flex:1; overflow-y:auto; }
+.logdock.collapsed .log { display:none; }  /* 内部可藏，28px 标题行保留 */
+```
+- 成本：1 个 `.collapsed` 类 + 2 条 CSS。`.main` 会自动补满——这正是你要的「真腾空间」，而且它用的是 flex 不是固定 380px，方向对了。
+- 坑：dock 折叠/展开时网格整体 resize，9 个 webview 会收到 resize 事件——**只重排不重载**，登录态不丢（webview 在 DOM 中且 display 非 none，Electron 不会销毁 guest）。你 400 个测试如果断言 grid 高度，会随 dock 状态变化，测试里要固定 dock 态再断言。
+
+**③ `display:none` 也用于 dock 的「全折叠」**（如果想要彻底不要那 28px）：一个容器两套折叠态，状态从 2 种变 3 种。
+- 反例：dock 和 topdeck 用三种不同折叠机制（flex 收缩 / height:0 / display:none）——G6 的一致性缺口就是这么来的。**全项目统一：有 webview 的容器只动 flex 尺寸，无 webview 的容器一律 `display:none`**。就这两条规则，写进 CONTRIBUTING 级别的注释。
+
+**webview 网格的底线**：12 个 `.cell` 永远 `display:flex`（或 whatever 现状），任何折叠逻辑只作用于 `.main` 的兄弟容器。**绝不对 `.cell` 或 `.grid` 用 `display:none` 再恢复**——那会触发 9 个 guest 重建，丢登录态（G2，你判断正确）。
+
+---
+
+## Q5 主持人栏：常驻，但拆成两组
+
+**采纳你「常驻」的倾向，但内部二分**：
+
+```html
+<div class="deckrow" data-group="chairbar">
+  <div class="chairctl-static">    <!-- 常驻、双语义 -->
+    <input id="chair-input">
+    <button id="btn-broadcast">📢</button>   <!-- 空闲=直接发；开会=汇编下一轮 -->
+    <button id="btn-file">📎</button>
+  </div>
+  <div class="chairctl-running">   <!-- 仅开会中 visible -->
+    <button id="btn-pause">⏸</button>
+    <button id="btn-stop">⏹</button>
+  </div>
+</div>
+```
+
+- 常驻组：广播在双态下语义不同（§2-9），既然都可用就该常驻——但**按钮文字要随态切换**（「📢 广播」空闲 / 「📢 加入下一轮」开会中），否则用户会把空闲的「直接发」当成「汇编」，这是当前 chairbar 最大的交互陷阱，顺手修掉。
+- 运行组：`⏸⏹` 用 `[hidden]` 控制而非 `disabled`——`disabled` 是「这按钮属于这但暂不可用」，语义错；「开会中才出现」才对。顶栏空闲时少两个钮，直接回应你「空闲时控件过多」的担忧。
+- 反例：如果你的会议模式里有「主持人不参与，纯旁听审计」的场景，整个 chairbar 该按模式隐藏——此时把 `chairbar` 也纳入 Q3 的 `DECK_LAYOUT` 映射，别硬常驻。
+
+---
+
+## 总体推荐方案
+
+**对草案 v0：部分采纳，修正两点。**
+
+1. **采纳**：删 `.side`、`.topdeck` + `.logdock` 的上下结构、日志底部、外部回答顶部、MODE_CONTROLS 映射、折叠不碰 12 个 cell。
+2. **修正一（重要）**：草案 v0 的骨架里 header、flowwrap、topdeck 是**三层顶**——header(模式/议题/开始) + flow + scene + topdeck(seatbar/chairbar/modezone/extbox)，开会前配置阶段纵向被吃掉 3~4 层。正确做法是：**`.flow` 和 `.scene` 降级为 `modezone` 的子成员**（它们本来就是模式说明），顶部任何时候最多两层：`.header`(一行) + `.topdeck`(可折叠)。折叠 topdeck 时只剩一行 header，网格在空闲态几乎全屏。
+3. **修正二（机制统一）**：折叠机制收敛为两条规则——「无 webview 容器一律 `display:none` 整段收」「含 grid 的 `.main` 只被动响应兄弟容器的 flex 尺寸变化」。放弃 `min-height:0;padding:2px` 那种压缝技巧，它视觉上留了条缝，且和 `display:none` 两种机制并存正是 G6 一致性缺口的来源。
+
+骨架终版：
+
+```
+body (flex column)
+├─ .header      一行：模式/角色组/议题/开始（常驻、不可折叠）
+├─ .topdeck     可整段 display:none 折叠；内部 deckrow 按 DECK_LAYOUT[mode][phase] 切 hidden
+│   ├─ seatbar / chairbar(拆静态+运行两组) / modezone(含 flow+scene+tmbox+buildlevel) / extbox
+├─ .main (flex:1)   只有 .grid，占满整宽
+└─ .logdock    flex 收缩到 28px 或 display:none；含 .log + .summary
+```
+
+要不要我把 `.topdeck` 折叠触发钮的位置（放 header 右侧还是做一条独立的 deck 把手条）也定下来？这个决策会影响 header 的 DOM，建议和你确认后再动 `index.html`。

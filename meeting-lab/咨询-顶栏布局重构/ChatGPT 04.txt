@@ -1,0 +1,1163 @@
+这一轮我把问题继续往“能不能真的跑”推进，而不是再讨论漂亮不漂亮。你本轮最有价值的新信息，是把**透明广播的真实故障面**和**人工咨询最终消费形态**都明确了：前者是一个高风险自动编排流程，后者最终要变成“自动回收 → 生成一个可直接拖给 WorkBuddy 的结果包”。同时，§4 的 11 个模式已经明确了各自不同的步骤、前置条件、循环和终止条件。
+
+---
+
+# Q1：外部 AI 回答落位——我上轮站 A，本轮继续站 A，不翻
+
+我上轮立场是 A。
+
+B 派本轮最强的新攻击是：
+
+> “人工咨询让回收从间歇变全天高频，A 常驻顶甲板=每天每轮交 96px 纵向税。”
+
+这个攻击我接受前半句：**人工咨询确实会让回收从低频变成高频操作。**
+
+但我不接受它由此推出“所以应该把回答面板放右侧”。
+
+关键原因是：**96px 是空间成本；遮挡正在被抄答案的 WebView 是功能成本。**
+
+你现在的真实人工流是：
+
+```text
+看第1个窗口
+↓
+复制答案
+↓
+粘贴/回收到壳层
+↓
+看第2个窗口
+↓
+复制
+...
+```
+
+这里“源窗口”和“回收目标”天然需要同时存在。
+
+如果 B 的右滑 Dock 正好盖住当前要抄的窗口：
+
+```text
+┌───────────────┬───────────────┬────────────────────┐
+│ Claude        │ GPT           │ Gemini             │
+│               │               │       被 Dock 盖住  │
+│               │               │                    │
+│               │               │ ┌────────────────┐ │
+│               │               │ │ 外部AI回答      │ │
+│               │               │ │                  │ │
+│               │               │ └────────────────┘ │
+└───────────────┴───────────────┴────────────────────┘
+```
+
+用户就得：
+
+> 开 Dock → 关 Dock → 抄答案 → 开 Dock → 粘贴……
+
+这不是“有点不方便”，而是**把人工咨询最核心的操作链变成来回切换**。
+
+反过来 A：
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│ Claude │ GPT │ Gemini │ Qwen │ ...                      │
+├─────────────────────────────────────────────────────────┤
+│ 外部 AI 回答                                             │
+│ [粘贴/编辑/保存]                                         │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│                   WebView 网格                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+源窗口完全无遮挡。
+
+所以我重新给这两个方案定义一个判断标准：
+
+> **人工回收的第一优先级不是“少占多少像素”，而是“能不能同时看到源答案和目标输入”。**
+
+这点 B 没有真正解决。
+
+---
+
+## B 派另一个攻击：“deck-summary 态冲突”
+
+你给出的攻击是：
+
+> “running 自动收起后突然要粘贴，展开动作与自动折叠序打架。”
+
+这个问题成立，但它其实可以用状态规则彻底消掉。
+
+以前的 A 是：
+
+```text
+running
+→ 自动折叠
+→ 用户突然打开
+→ 自动机制又把它折回去
+```
+
+我建议改成：
+
+```text
+extState
+
+idle
+drafting
+dirty
+capturing
+committed
+```
+
+自动折叠只允许：
+
+```text
+extState = idle
+```
+
+以下任一状态成立：
+
+```text
+drafting
+dirty
+capturing
+attachmentPending
+```
+
+**禁止自动折叠。**
+
+也就是说：
+
+```js
+if (
+  extState === 'idle' &&
+  !manualSession.pending &&
+  !externalDraft.dirty &&
+  document.activeElement !== externalInput
+) {
+    autoCollapse();
+}
+```
+
+于是不会再出现：
+
+```text
+用户刚粘贴
+↓
+系统突然收回去
+```
+
+---
+
+## 而且“96px 纵向税”可以进一步降到一个可控上限
+
+外部回答区域不是永远展开。
+
+设计为：
+
+```text
+collapsed = 32px
+expanded  = min(220px, 28vh)
+```
+
+因此正常运行：
+
+```text
+32px
+```
+
+只有用户实际回收答案时才：
+
+```text
+max 220px
+```
+
+而且用户一旦完成：
+
+```text
+保存/提交
+→ extState = idle
+→ 回到 32px
+```
+
+所以 A 的空间成本是：
+
+> **受控、短时、纵向、不会遮挡 WebView。**
+
+B 的成本是：
+
+> **只要打开，就存在横向遮挡风险。**
+
+对于这个产品，我认为前者更符合你现在的主力工作流。
+
+### Q1 裁决
+
+**继续 A。**
+
+不是因为“用户说挪到上面”，而是因为在真实人工回收场景中：
+
+> **“不遮挡答案源”比“少占几十像素”重要。**
+
+---
+
+# Q2：透明广播会议——把 15 条种子跑一遍，再补 6 条真机级意外
+
+透明广播目前是独立于 `modes.js` 的 shell 引擎，9 席一轮已经实测注入 153 份内容，而且网页完成检测存在 DeepSeek 提前判完成的问题；同时广播/发文件在真机上仍不可靠。
+
+下面我把它直接设计成**故障不拖死整场会议**的系统。
+
+## 15 条种子
+
+| #  | 意外              | 概率 | 严重度 | 修复设计                                                                                             | 归属    |
+| -- | --------------- | -- | --- | ------------------------------------------------------------------------------------------------ | ----- |
+| 1  | 单席超时 180s       | 高  | 高   | `timed_out`；本轮落 `[超时]` 占位，不无限等；默认允许其余席位进入下一轮；可单席重试，重试单独记录 attempt                                | 引擎    |
+| 2  | “发送成功≠收到≠回答”    | 高  | 高   | 三态彻底拆开：`pageAccepted / responseObserved / responseCommitted`；禁止用“点击发送成功”冒充回答                     | 引擎    |
+| 3  | DeepSeek 提前判完成  | 中  | 高   | provider adapter 不再接受单一“停止思考”信号；至少要求“助手候选节点 + 内容稳定 + 非思考态”，终端信号只能当辅助                             | 引擎    |
+| 4  | 登录/验证码/升级弹窗     | 中  | 高   | provider blocker detector → `attention=blocking`；席位标红；本轮标 `unavailable`，不拖住全场；提供 `[手动处理] [跳过本轮]` | UI+引擎 |
+| 5  | 额度耗尽            | 中  | 高   | 识别 quota/rate-limit 文案；当前轮记 `quota_exhausted`，后续轮自动停用；历史结果继续保留                                   | 引擎    |
+| 6  | 主持人广播时序冲突       | 中  | 中   | 开始 `round assembly` 后锁定本轮消息快照；此后新增广播统一进入 `nextRoundQueue`；UI 显示“已排入下一轮”                          | 引擎+UI |
+| 7  | abort 时有半截回答    | 中  | 高   | 不把半截直接当正式回答；保存 `round-N.partial.md` 供审计；正式 `round-N.md` 标记“中止”                                   | 引擎    |
+| 8  | Markdown 落盘失败   | 低  | 极高  | 先 `.tmp` 写完，再 atomic rename；每场会议独立 `sessionId` 目录，禁止覆盖旧会议                                        | 引擎    |
+| 9  | 20+ 席 O(N²) 爆炸  | 高  | 极高  | 开轮前计算 `fanoutCost`；超过阈值显示“上下文风险”；允许创建广播域/分组，不允许静默硬跑                                              | UI+引擎 |
+| 10 | WebView F5 刷新   | 中  | 高   | 席位进入 `reconnected`；本轮必须重新验证当前回答边界；未经验证不得自动算完成                                                    | 引擎    |
+| 11 | 重复点开始           | 中  | 极高  | `sessionState=starting/running` 时按钮锁；core 层 session mutex；双击只产生一个 session                        | UI+引擎 |
+| 12 | Web/API 完成机制不同  | 高  | 中   | 上层只认统一 `responseState`；API/Web 各自 adapter 自己解决底层完成判断                                             | 引擎    |
+| 13 | running 中取消席位   | 中  | 高   | 成员变更只在**轮边界生效**；已发生的回答保留在历史记录，但从后续广播域排除                                                          | 引擎+UI |
+| 14 | 时间戳/目录碰撞        | 低  | 中   | `YYYYMMDD-HHmmss-SSS + sessionId`；UI 显示本地时间，文件夹以唯一 ID 为真相源                                       | 引擎    |
+| 15 | running 中改议题/资料 | 中  | 极高  | `topic/material` 冻结；修改进入 `pendingChanges`；只能“下一轮生效”或结束后重新开始，不能直接改当前上下文                           | UI+引擎 |
+
+---
+
+## 再补 6 条
+
+| #  | 新意外                               | 概率 | 严重度 | 修复设计                                                                                     | 归属 |
+| -- | --------------------------------- | -- | --- | ---------------------------------------------------------------------------------------- | -- |
+| 16 | **网页 AI 中途换页面/跳到登录域名外**           | 中  | 高   | 每次发送前校验 URL/provider identity；发现页面跑到未知域 → `attention=seat-navigation-changed`，暂停该席位自动操作  | 引擎 |
+| 17 | **网页 DOM 因 A/B UI 改版突然换结构**       | 中  | 极高  | 每个 provider adapter 有 `selectorHealth`；解析不到候选节点时不猜、不提交，直接进入 attention；记录 DOM fingerprint | 引擎 |
+| 18 | **模型返回空答案/只有“我正在思考”但 UI 已显示完成**   | 中  | 高   | 最低内容阈值 + 稳定时间 + 终端态三条件；空内容只能 `suspect_complete`，不能 `completed`                           | 引擎 |
+| 19 | **网络断开后页面假装还在工作**                 | 中  | 高   | 记录 `lastMutationAt/lastNetworkSignalAt`；超过窗口没有任何有效变化就进入 `stalled`，不能无限等                  | 引擎 |
+| 20 | **电脑睡眠/唤醒导致 180s 定时器漂移**          | 中  | 中   | 不依赖 `setTimeout` 累加时间；用单调时间戳计算 deadline，resume 后重新计算剩余时间                                 | 引擎 |
+| 21 | **网页回答带“请忽略上一轮规则”之类内容，被透明广播原样传播** | 中  | 高   | 每个转发块必须带不可混淆的 `TRANSCRIPT` 包装；系统规则置于独立层级；AI 历史回答只能作为引用材料                                 | 引擎 |
+
+### 第 21 条我认为尤其值得注意
+
+透明广播的机制本身就是把“别人上一轮的话”传播给所有人，因此它天然存在：
+
+```text
+AI A 输出
+↓
+被系统转发
+↓
+AI B 把 A 的文本当成系统指令
+```
+
+的风险。
+
+所以广播格式不能只是：
+
+```text
+Claude说：
+xxxx
+```
+
+而要有明确的消息边界：
+
+```text
+<TRANSCRIPT speaker="Claude">
+xxxx
+</TRANSCRIPT>
+```
+
+UI 也应让用户看到：
+
+```text
+引用上一轮发言
+```
+
+而不是“系统命令”。
+
+---
+
+# Q3：人工咨询自动回收——这里才是下一版真正的核心
+
+你给出的最终验收：
+
+> “结果要自动回收生成，我直接拖到你对话框给你，这就是最终形态。”
+
+我会把它定义成：
+
+> **一键生成“送审包”，不是生成一堆零散 txt 让用户自己整理。**
+
+当前现状是逐席手动粘贴/上传，然后逐席复制回答；另外，已有外部 AI 回收面板能做粘贴回收，但分发辅助和自动回收还不完整。
+
+---
+
+## ① 自动回收怎么做到“知道这是新回答”？
+
+不能采用：
+
+```text
+页面最后一个文本
+```
+
+也不能采用：
+
+```text
+DOM 出现“回答完成”文字
+```
+
+因为你已经实测 DeepSeek 会提前出现假完成信号。
+
+我建议采用：
+
+# Provider Adapter + Capture Fence
+
+每个网页 AI 有一个轻量适配器：
+
+```js
+ProviderAdapter {
+    detectSeat()
+    snapshotConversation()
+    findAssistantCandidates()
+    detectGenerating()
+    normalizeAnswer()
+}
+```
+
+公共回收器不认识：
+
+```text
+Claude DOM
+Gemini DOM
+DeepSeek DOM
+...
+```
+
+它只认识统一协议。
+
+---
+
+## 发送前建立“回收围栏”
+
+例如：
+
+```text
+seat = Claude
+dispatchId = d_20260923_00127
+sentAt = 14:32:10
+promptHash = SHA256(...)
+beforeAssistantHashes = [...]
+```
+
+然后开始观察。
+
+### 候选回答必须同时满足
+
+```text
+① assistant 身份可信
+② 不在 beforeAssistantHashes 中
+③ 出现在 sentAt 之后
+④ 内容不是 thinking/loading/system 卡片
+⑤ 内容持续稳定
+⑥ 至少出现一个终止证据
+```
+
+其中：
+
+> **“终止证据”不能只有一个。**
+
+例如：
+
+```text
+✓ Stop 按钮消失
+✓ streaming 状态结束
+✓ 内容连续 2~3 秒没有变化
+✓ assistant bubble 已落地
+```
+
+至少组合两个。
+
+这正是针对 DeepSeek 那种“思考态信号提前”的修复。
+
+---
+
+## 回收不是一次检测，而是状态机
+
+```text
+WAITING
+   ↓
+CANDIDATE_FOUND
+   ↓
+STREAMING
+   ↓
+STABLE
+   ↓
+COMPLETED
+   ↓
+NORMALIZED
+   ↓
+COMMITTED
+```
+
+异常则：
+
+```text
+STALLED
+AMBIGUOUS
+FAILED
+```
+
+其中：
+
+```text
+AMBIGUOUS
+```
+
+绝对不能偷偷算成“已回答”。
+
+而是：
+
+```text
+Claude
+⚠ 检测到疑似新回答
+[查看] [确认回收]
+```
+
+这样自动化才不会“自信地收错”。
+
+---
+
+# 自动回收的可靠性要做到“宁可漏，不可错”
+
+特别是人工咨询。
+
+因为：
+
+```text
+旧答案误回收
+```
+
+比：
+
+```text
+新答案暂时没回收
+```
+
+严重得多。
+
+错回收会污染 WorkBuddy 最终分析。
+
+所以：
+
+```text
+高置信度 → 自动回收
+中置信度 → Attention
+低置信度 → 不提交
+```
+
+---
+
+# ② 只回收到 5/9 怎么生成？
+
+**马上生成，不等满 9。**
+
+例如：
+
+```text
+已回收 5 / 9
+
+Claude   ✓
+GPT      ✓
+Gemini   ✓
+Qwen     ✓
+Kimi     ✓
+
+DeepSeek ○
+通义     ○
+豆包     ○
+文心     ○
+```
+
+文件应该明确：
+
+```text
+状态：PARTIAL
+完整度：5 / 9
+```
+
+并把没收到的人写成：
+
+```text
+### DeepSeek
+> [未回收]
+```
+
+绝对不要：
+
+```text
+DeepSeek：无意见
+```
+
+因为：
+
+> **“没回答”和“回答为空”不是一个事实。**
+
+---
+
+# 部分答案回来后重新生成，但不要制造第二套真相
+
+建议：
+
+```text
+00_送给WorkBuddy.md
+```
+
+始终是当前最新版。
+
+每次有新席位回收：
+
+```text
+atomic rewrite
+```
+
+同时内部记录：
+
+```text
+version = 1
+version = 2
+version = 3
+```
+
+所以用户不用管理：
+
+```text
+最终版
+最终版2
+最终版真的最终
+最终版真的最终2
+```
+
+目录里可以有：
+
+```text
+00_送给WorkBuddy.md       ← 当前最新版
+raw/
+  Claude 01.txt
+  GPT 02.txt
+  Gemini 03.txt
+  ...
+events/
+  recovery-log.json
+```
+
+---
+
+# ③ R5 最终产品：我建议“一个主 Markdown + 原始附件”
+
+最终拖给 WorkBuddy 的文件：
+
+```text
+00_送给WorkBuddy.md
+```
+
+它包含：
+
+```text
+会议元数据
+↓
+原始咨询稿
+↓
+回收进度
+↓
+每席完整回答
+↓
+未回收名单
+↓
+附件清单
+↓
+机器结构化摘要
+```
+
+原始 `.txt` 继续保留，只负责审计。
+
+**不要让 WorkBuddy 需要先打开 9 个 txt 再自己组装上下文。**
+
+---
+
+## 文件开头我建议直接长这样
+
+下面就是一个实际可落地的前 20 行：
+
+```markdown
+# 通辽会议 · 人工咨询回收包
+
+> 状态：PARTIAL
+> 回收进度：7 / 9
+> 会议模式：人工咨询
+> 创建时间：2026-09-23 14:32:10
+> 最后更新：2026-09-23 14:47:26
+> Session ID：tm-20260923-143210-a81f
+
+## 给后续 AI 的任务
+
+请基于下面的“原始咨询稿”和“各席位回答”进行交叉分析。
+不要把“未回收”视为“无意见”。
+请重点输出：①共识；②关键分歧；③各方最强理由；④相互矛盾的结论；
+⑤仍缺少的证据；⑥需要人工确认的问题。不要擅自补齐缺失席位的观点。
+
+## 1. 原始咨询稿
+
+> 以下是本次咨询实际发出的原文：
+
+---
+
+```
+
+第 20 行以后继续：
+
+```markdown
+## 2. 回收状态
+
+| 席位 | 投递 | 文件 | 回答 | 回收状态 |
+|---|---|---|---|---|
+| Claude | ✓ | ✓ | ✓ | committed |
+| GPT | ✓ | ✓ | ✓ | committed |
+| Gemini | ✓ | ✓ | ✓ | committed |
+...
+```
+
+然后：
+
+```markdown
+## 3. 席位回答
+
+### 1. Claude
+...
+```
+
+这样 WorkBuddy 拖入后，不需要先理解你的目录结构。
+
+---
+
+# 还有一个我建议额外加的东西：原始回答不要“过度清洗”
+
+自动回收以后，只清掉：
+
+```text
+复制按钮
+重新生成
+赞/踩
+引用 UI
+折叠按钮
+系统时间
+```
+
+但要保留：
+
+```text
+Markdown
+代码块
+表格
+链接
+标题
+列表
+引用
+```
+
+否则 WorkBuddy 后面分析工程问题时，代码和结构信息会被破坏。
+
+---
+
+# Q4：其余模式快检
+
+这里先纠正一个数量问题：
+
+你 Q4 说“其余 9 种”，但列出的其实是 **10 个非 transparent 模式**：
+
+```text
+broadcast
+review
+assist
+iterate
+debate
+panel
+chairman
+divide
+tournament
+build
+```
+
+再加 transparent，正好 11 个。
+
+所以我按你列出的 10 个逐项检查；transparent 已经在 Q2 深检。
+
+| 模式         | 新意外因素                              | 修复                                                                                   |
+| ---------- | ---------------------------------- | ------------------------------------------------------------------------------------ |
+| broadcast  | **某席位输出包含恶意/错误的“规则指令”，下一席把它当命令**   | 转发采用 Transcript Envelope；历史发言始终是引用数据，不提升为系统指令                                        |
+| review     | **材料在独立审阅完成后被用户替换版本**              | 材料集合生成 `materialSetHash`；第一阶段开始后冻结；版本变更必须新开审阅                                        |
+| assist     | **用户作为执行者，但用户根本不执行**               | 增加 `WAITING_HUMAN`；会议可以停在该状态，不自动假定任务已执行；UI 明确“AI 已给方案，人尚未执行”                         |
+| iterate    | **草稿在 v2/v3 间振荡，批评虽然不同，但实际没有持续进步** | 除 `no-new-critique` 外增加 draft normalized fingerprint；出现重复/2-cycle → `cycle_detected` |
+| debate     | **论点越来越长，后者虽然只看他人观点，但上下文被长文本拖爆**   | 设置 argument/context budget；超限后压缩历史，但仍只保留“他人论点”，绝不引入自己的历史                             |
+| panel      | **20 席依次发言导致等待时间不可接受**             | 运行前显示 ETA：`预计 N × 平均席位耗时`；每席独立超时；超时可跳过进入归并，不改变依次语义                                   |
+| chairman   | **主席点名结果不是有效席位 ID，而是模型自由生成一个名字**   | 主席输出解析为 seat registry 中的枚举值；未知 ID 直接判无效，不能执行                                         |
+| divide     | **收敛者拆任务时出现遗漏或重叠**                 | 分头攻克前增加“拆分预览”：覆盖率/重叠度检查；未确认不进入并行阶段                                                   |
+| tournament | **匿名候选被作品内容或元数据暴露作者身份**            | 候选进入评标前做匿名化清洗；统一随机 ID；定序后只展示 candidate ID                                            |
+| build      | **真编译阶段遇到交互式命令，构建永远卡住**            | 构建环境使用 non-interactive；stdin 禁止等待；单独 build timeout；stdout/stderr 全量归档                |
+
+---
+
+## panel 的 20 席问题，不能假装“依次”没有成本
+
+例如平均每席 45 秒：
+
+```text
+20 × 45s = 900s
+≈ 15 分钟
+```
+
+如果平均 90 秒：
+
+```text
+30 分钟
+```
+
+所以 UI 在 READY Gate 就应该告诉用户：
+
+```text
+预计会诊时间
+约 15～30 分钟
+
+原因：
+20 席 · 依次发言
+```
+
+这不是“给用户一个预计时间”这么简单。
+
+它实际上在帮助用户决定：
+
+```text
+继续 20 席
+还是减少席位
+```
+
+但**不能为了提速把 panel 偷偷改成并行**，因为那就改变了这个模式的真实语义：后发言者必须看到前面全部会诊内容。
+
+---
+
+# Q5：四个小分歧，我直接裁决
+
+## ① tournament 的 `kind` 徽标
+
+### 裁决：**席位卡 + 日志都必须有，但职责不同。**
+
+不是折中，而是因为两者解决不同问题。
+
+席位卡：
+
+```text
+Claude
+✓ 已完成
+[candidate]
+```
+
+解决：
+
+> **“我眼前这个东西是什么？”**
+
+日志：
+
+```text
+14:32 Claude → candidate
+14:33 System → ballot
+14:35 System → verdict
+```
+
+解决：
+
+> **“这个东西是怎么产生的？”**
+
+如果必须二选一：
+
+> **席位卡优先。**
+
+因为用户在操作时最容易犯的是“把 candidate 当 verdict”。
+
+而日志属于审计层。
+
+你已经明确 `tournament` 不同 `kind` 是硬产出契约，因此 UI 不能继续把所有结果都叫“回答”。
+
+---
+
+## ② chairman 没 API：物理禁点，不能软启动
+
+### 裁决：**物理禁点。**
+
+规则：
+
+```text
+hard prerequisite
+→ Start disabled
+```
+
+只有：
+
+```text
+recoverable warning
+→ Start allowed + Attention
+```
+
+`chairman` 的 API 主席不是“建议”。
+
+它是模式定义中的：
+
+> **硬约束：主席必须走真实 API。**
+
+因此：
+
+```text
+chairman + 0 API
+```
+
+不是：
+
+```text
+⚠ 可以先开
+```
+
+而是：
+
+```text
+✕ 无法开始
+
+原因：
+主席点名模式需要至少 1 个 API 主席席位
+```
+
+这也可以抽象成：
+
+```js
+requires: [
+  {
+    key: "chairman.apiSeat",
+    severity: "hard"
+  }
+]
+```
+
+---
+
+## ③ “人工咨询”入口
+
+### 裁决：**独立入口，但不是 mode。**
+
+首页：
+
+```text
+┌───────────────────────────────┐
+│         新建工作               │
+│                               │
+│ [开始会议]   [人工咨询]       │
+└───────────────────────────────┘
+```
+
+用户点“人工咨询”：
+
+内部：
+
+```js
+deliveryPolicy = {
+    default: "manual"
+}
+```
+
+而不是：
+
+```js
+mode = manual
+```
+
+所以：
+
+> **用户看到它是一项独立能力；系统内部它仍然是 delivery channel。**
+
+这同时保住了前面确定的架构。
+
+---
+
+## ④ debate 自身历史摘要 Toggle
+
+### 裁决：**V1 不做。**
+
+因为 `debate` 的真实硬约束就是：
+
+> 每人只看别人的论点，不看自己的。
+
+如果加入：
+
+```text
+[✓ 携带自身历史摘要]
+```
+
+这个 Toggle 一开，就改变了：
+
+```text
+debate
+```
+
+本身的防自我强化约束。
+
+所以不是“高级用户可能需要”。
+
+而是：
+
+> **一旦做出来，就会让模式定义和 UI 行为互相打架。**
+
+V1 直接不放。
+
+未来真要做，应该先另立一个新的实验语义，而不是偷偷塞 Toggle。
+
+---
+
+# Q6：什么时候真的可以写代码？
+
+这一轮之后，我认为已经不需要再开一个“重新设计 UI”的大辩论。
+
+但有 **2 个问题必须在开工前以验收条件冻结**，否则写到中途还会返工。
+
+---
+
+# A 类：必须先解决，否则不要写
+
+## 1. 自动回收的 Provider Adapter 契约
+
+必须冻结：
+
+```text
+snapshot
+candidate extraction
+generation detection
+completion detection
+normalization
+confidence
+commit
+```
+
+9 个 WebView 至少各做一次真实验证：
+
+```text
+正常回答
+流式回答
+提前信号
+空回答
+重新生成
+页面刷新
+登录弹窗
+DOM 改变
+```
+
+这一项如果没冻结，人工咨询最终目标“自动回收”就还是口号。
+
+---
+
+## 2. ToolDock / WebView 层级实机验证
+
+不是讨论 UI。
+
+直接验证：
+
+```text
+9 WebView
++
+HTML ToolDock
++
+鼠标点击
++
+滚动
++
+焦点
+```
+
+确保 ToolDock：
+
+```text
+不误点下面 WebView
+不被 WebView 盖住
+打开/关闭不重建 WebView
+```
+
+你们技术栈明确是 9 个重 WebView、无框架，而且要求保持 400 个测试全绿，因此这个是工程闸门，不是美术细节。
+
+---
+
+# B 类：已经足够确定，可以边写边收紧
+
+这些不值得再开一轮 AI 辩论：
+
+```text
+✅ Header / TopDeck / Grid / LogDock 骨架
+✅ A 外部 AI 回答落位
+✅ 四相生命周期
+✅ step / round 分离
+✅ attention 正交
+✅ 人工 = delivery channel
+✅ READY Gate hard/soft
+✅ tournament kind
+✅ API/Web 同构 SeatCard
+✅ ToolDock 单实例 + activeSeat
+✅ 50→200 API 原生滚动
+✅ 密度档
+✅ 角色组去固定人数
+✅ 日志自动跟随暂停
+✅ 搜索只定位不筛掉 WebView
+```
+
+这些其实已经形成了比较完整的规则。你前面 23 条定案里也已经锁定了这些骨架，包括删除 380px、纵向折叠、Web/API 不对称、READY Gate、工具闭环、配置冻结等。
+
+---
+
+# Pre-build Checklist
+
+这份可以直接给开发 AI：
+
+### 工作流模型
+
+```text
+[ ] phase = setup/running/paused/done
+[ ] readiness = blocked/ready
+[ ] step 与 phase 分离
+[ ] round 与 step 分离
+[ ] attention 与 phase 分离
+[ ] deliveryChannel = auto/manual
+[ ] artifact.kind 独立建模
+```
+
+### 11 模式
+
+```text
+[ ] 11 个真实模式全部来自 MODE_REGISTRY
+[ ] 每模式 requires 已声明
+[ ] requires 支持 hard / warning
+[ ] 每模式 steps 已声明
+[ ] 每模式 termination 已声明
+[ ] loop 模式都有 maxLoop
+[ ] build 不再伪装成“第 N 轮”
+```
+
+### READY Gate
+
+```text
+[ ] review 无材料无法开始
+[ ] iterate 无草稿无法开始
+[ ] chairman 无 API 无法开始
+[ ] transparent 无议题/资料无法开始
+[ ] build 的验证等级在开始前明确
+[ ] 其它 warning 不阻塞
+```
+
+### 人工咨询
+
+```text
+[ ] 文本 DispatchJob
+[ ] 文件 DispatchJob
+[ ] dispatch / file / reply 三态独立
+[ ] auto → failed → manual 自动降级
+[ ] 每席都有 sent / pending / failed
+[ ] 每席都有 answered / waiting
+[ ] 每席都有 file state
+[ ] 5/9 可以生成 PARTIAL
+[ ] 未回答绝不写成“无意见”
+```
+
+### 自动回收
+
+```text
+[ ] Capture Fence
+[ ] before snapshot
+[ ] candidate extraction
+[ ] assistant-role 判定
+[ ] incremental diff
+[ ] stable-content 判定
+[ ] terminal signal 不能单独决定完成
+[ ] ambiguous 不自动提交
+[ ] normalized answer
+[ ] dedup hash
+[ ] atomic commit
+[ ] 迟到答案可重新生成送审包
+```
+
+### 透明广播
+
+```text
+[ ] timeout 不拖死全场
+[ ] send / received / answered 分离
+[ ] round assembly 有消息快照
+[ ] late host message → nextRoundQueue
+[ ] F5 → reconnected
+[ ] quota → seat unavailable
+[ ] O(N²) 有护栏
+[ ] topic/material running 中冻结
+[ ] 文件写入 atomic
+[ ] sessionId 不碰旧目录
+```
+
+### UI/性能
+
+```text
+[ ] .side 删除
+[ ] .grid 永不 display:none
+[ ] .webview 永不重建
+[ ] 横向折叠禁用
+[ ] topdeck 真正缩高
+[ ] logdock 真正缩高
+[ ] 50 API 原生滚动
+[ ] 100 API 原生滚动
+[ ] 200 API 原生滚动压测
+[ ] 50+ micro density 可用
+[ ] 搜索不 display:none Seat
+[ ] ToolDock 不触发 Grid 横向 resize
+```
+
+### 回归
+
+```text
+[ ] node --test 400 用例全绿
+[ ] 9 WebView 至少逐 provider 验证自动回收
+[ ] 广播正常轮次
+[ ] 单席超时
+[ ] 单席验证码
+[ ] 单席 quota
+[ ] F5
+[ ] 暂停/继续
+[ ] 结束/强制中止
+[ ] 人工 5/9 部分回收
+[ ] 9/9 完整回收
+[ ] 拖 00_送给WorkBuddy.md 实测可直接消费
+```
+
+---
+
+# 最后的“是否还能再辩一轮”判断
+
+我的判断是：
+
+> **不需要再开一轮“大方向争论”；剩下两个必须冻结的问题已经从产品争议降级成工程验收：9 家 WebView 自动回收适配器、ToolDock 与 WebView 的实际层级行为。**
+
+也就是说，现在已经到了：
+
+```text
+产品模型
+████████████████████  基本冻结
+
+工作流
+███████████████████░  只剩工程契约
+
+UI
+███████████████████░  可以开始实现
+
+代码
+                    ↓
+             小范围 Spike
+                    ↓
+              通过验收
+                    ↓
+              正式开发
+```
+
+这一轮之后，我**没有推翻 §2 的 23 条定案**；唯一需要正式写进《UI/工作流规范 V1》的增强项是：**`phase / readiness / step / round / attention / deliveryChannel / artifact.kind` 七维模型 + `hard prerequisite` 规则 + 自动回收 `Capture Fence` 规则**。

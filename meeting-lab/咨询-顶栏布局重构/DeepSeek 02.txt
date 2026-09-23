@@ -1,0 +1,291 @@
+下面按第 2 轮要求交设计稿。先给总态度：**§2 共识基线不推翻，但第 5 条“固定 DOM + hidden”必须限定范围；第 3 条外部 AI 回答放顶甲板可保留，但工具时代要增加右侧 overlay 工具抽屉；第 4 条主持人栏常驻可保留，但 idle 应压缩成图标条。**  
+本轮核心补充：工作流必须从 `idle/running` 扩成 `idle → ready → running → paused → ended`，否则 8 模式 × 50+ 席位 × 200+ 工具会失控。
+
+---
+
+## Q1：完整 UI 设计方案（线框 + 尺寸 + 折叠优先级 + 为什么）
+
+### 1.1 工作流阶段定义
+
+建议状态键：`body[data-phase="idle|ready|running|paused|ended"]`。
+
+| 阶段 | 含义 | 主要 UI |
+|---|---|---|
+| `idle` | 未配置/刚启动 | 模式选择、角色组、议题、工具权限、外部 AI 回答 |
+| `ready` | 配置完成，未开始 | 摘要确认、开始会议、预检工具权限 |
+| `running` | 开会中 | 主持人栏、轮次进度、工具总线、日志 |
+| `paused` | 暂停 | 冻结计时、工具调用排队、日志标记暂停 |
+| `ended` | 结束 | 摘要、导出、复盘 |
+
+为什么：第 1 轮只有 `idle/running`，但 8 模式下“配置期”和“监控期”控件差异很大。不拆阶段，顶甲板会同时堆配置和监控，50+ 席位时必然臃肿。
+
+### 1.2 整体展开态线框
+
+```text
+┌─ .header 48px ─────────────────────────────────────────────────────┐
+│ [模式▾ 透明广播] [角色组▾ 专家组 12席] [议题____] [开始会议] [清空] │
+│ 阶段: 空闲 | 席位: 57 | 工具: 200+ 可用                             │
+├─ .globalbar 36px ──────────────────────────────────────────────────┤
+│ 📢广播  📎发文件  ⏸暂停  ⏹停止  | 工具总线: 3运行 1等待 [展开]     │
+├─ .topdeck 可折叠 ──────────────────────────────────────────────────┤
+│ ▴ 控制甲板  [配置] [权限] [外部AI] [流程]                           │
+│ ┌───────────────┬───────────────┬───────────────┐                  │
+│ │ 模式参数      │ 角色/席位分配 │ 工具权限矩阵  │                  │
+│ │ tmbox/轮数    │ 组/席/搜索    │ 只读/写/确认  │                  │
+│ ├───────────────┼───────────────┼───────────────┤                  │
+│ │ 外部 AI 回答  │ 流程说明      │ 场景卡        │                  │
+│ └───────────────┴───────────────┴───────────────┘                  │
+├─ .main > .grid flex:1 ─────────────────────────────────────────────┤
+│ ┌ web1 ─┐ ┌ web2 ─┐ ┌ api1 ─┐ ┌ api2 ─┐ ┌ api3 ─┐                │
+│ │[WEB]  │ │[WEB]  │ │[API]  │ │[API]  │ │[API]  │                │
+│ │工具条 │ │工具条 │ │工具条 │ │工具条 │ │工具条 │                │
+│ └───────┘ └───────┘ └───────┘ └───────┘ └───────┘                │
+│  页签: [全部] [专家组] [工程组] [观察员]  分页 < 1 2 3 >           │
+├─ .logdock 32% 或 28px ─────────────────────────────────────────────┤
+│ ▾ 会议日志 | 摘要 | 工具时间线                                     │
+│ ┌──────────────────────────────┬──────────────┬──────────────┐     │
+│ │ 日志滚动                     │ 摘要         │ 工具调用     │     │
+│ └──────────────────────────────┴──────────────┴──────────────┘     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.3 整体收起态线框
+
+```text
+┌─ .header 48px ─────────────────────────────────────────────┐
+│ [模式▾] [角色组▾] [议题] [开始会议] 阶段:开会中 轮次3        │
+├─ .globalbar 36px ──────────────────────────────────────────┤
+│ 📢  📎  ⏸  ⏹  | 工具:3运行 1等待 [展开]                   │
+├─ .topdeck ▸ 控制甲板 [透明广播|开会中|轮次3|工具3] 28px    │
+├─ .main > .grid flex:1 ─────────────────────────────────────┤
+│ 12/50+ 席位网格，占满整宽                                  │
+├─ .logdock ▸ 会议日志 最近: web2 调用 read_file(ok) 28px    │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 1.4 区域尺寸与折叠优先级
+
+```css
+:root{
+  --h-header:48px;
+  --h-globalbar:36px;
+  --h-deck-open:max(180px, 28vh);
+  --h-deck-summary:28px;
+  --h-log-open:32%;
+  --h-log-summary:28px;
+  --w-tooldrawer:380px;
+  --seat-min-w:220px;
+}
+```
+
+折叠优先级：屏幕矮时，**先收 logdock 到 28px，再收 topdeck 到 28px，再收 globalbar 到图标模式，header 永不变**。  
+为什么：日志是开会中持续参考，但高度最贵；控制甲板是配置期高频、运行期低频；header 是模式/开始按钮，不可收。
+
+### 1.5 关键 HTML/CSS 片段
+
+```html
+<header class="header">...</header>
+<nav class="globalbar">
+  <button id="chair-broadcast">📢广播</button>
+  <button id="chair-file">📎发文件</button>
+  <button id="chair-pause" disabled>⏸暂停</button>
+  <button id="chair-stop" disabled>⏹停止</button>
+  <button id="toolbus-toggle">工具总线 <span id="toolbus-count">0</span></button>
+</nav>
+
+<section class="topdeck" id="topdeck">
+  <button class="deck-summary" id="topdeck-toggle">控制甲板</button>
+  <div class="deck-body">
+    <div class="modezone" data-group="mode-params">...</div>
+    <div class="modezone" data-group="role-seats">...</div>
+    <div class="modezone" data-group="tool-matrix">...</div>
+    <div class="modezone" data-group="extbox">...</div>
+  </div>
+</section>
+
+<main class="main">
+  <div class="grid" id="grid"></div>
+</main>
+
+<footer class="logdock" id="logdock">
+  <button class="logdock-summary" id="logdock-toggle">会议日志</button>
+  <div class="logdock-body">
+    <div class="log" id="log"></div>
+    <aside class="summary"></aside>
+    <aside class="tool-timeline"></aside>
+  </div>
+</footer>
+```
+
+```css
+body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.header{flex:0 0 var(--h-header)}
+.globalbar{flex:0 0 var(--h-globalbar)}
+.topdeck{flex:0 0 auto;min-height:0;overflow:hidden}
+body.topdeck-collapsed .topdeck{flex-basis:var(--h-deck-summary)}
+body.topdeck-collapsed .deck-body{display:none}
+.main{flex:1;min-height:0;display:flex}
+.grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(var(--cols),minmax(0,1fr));gap:8px;overflow:auto}
+.logdock{flex:0 0 var(--h-log-open);min-height:0;display:flex;flex-direction:column}
+body.logdock-collapsed .logdock{flex-basis:var(--h-log-summary)}
+body.logdock-collapsed .logdock-body{display:none}
+```
+
+**成本**：新增 `.globalbar`、`.topdeck`、`.logdock`、`.deck-summary`、`.logdock-summary`；状态键 `data-phase`、`topdeck-collapsed`、`logdock-collapsed`、`data-density`。  
+**重排**：topdeck/logdock 折叠会改变 `.grid` 高度，触发 webview resize，但不会卸载 9 个 `<webview>`。  
+**反例**：如果屏幕高度 < 700px，不要默认展开 topdeck + logdock，否则网格只剩 1 行；此时应自动 `body.topdeck-collapsed.logdock-collapsed`。
+
+---
+
+## Q2：席位规模化：12 → 50+，无上限
+
+### 2.1 核心判断
+
+50+ 的主力是 **API 席位轻 div**，网页席位封顶 9 个重 `<webview>`。所以设计必须利用不对称：  
+- 9 个 webview：**永远常驻 DOM，不卸载，不 `display:none`**。  
+- N 个 API div：可以分页、过滤、密度档、离屏保留。  
+- 50+ 不靠“全部塞进一个网格”，靠“分组页签 + 分页 + 搜索 + 密度档”。
+
+### 2.2 线框：规模化网格
+
+```text
+┌─ .seatbar ───────────────────────────────────────────────────────┐
+│ 组:[全部] [专家组] [工程组] [观察员]  搜索:[____]  密度:[紧凑▾] │
+│ 每排:[自动▾]  分页:< 1 2 3 >  总计 57 席（9 web + 48 API）      │
+├─ .grid data-cols="auto" data-density="compact" ─────────────────┤
+│ ┌ web1 ┐┌ web2 ┐┌ web3 ┐┌ api1 ┐┌ api2 ┐┌ api3 ┐              │
+│ │[WEB] ││[WEB] ││[WEB] ││[API] ││[API] ││[API] │              │
+│ └──────┘└──────┘└──────┘└──────┘└──────┘└──────┘              │
+│ ... 当前页最多 pageSize 席，9 个 webview 始终保留在 DOM         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 2.3 字段级方案
+
+| 项 | 设计 | 成本 | 反例 |
+|---|---|---|---|
+| 分组页签 | `.seat-tabs[data-group]`，组来自角色组/自定义组 | 状态 +1：`currentSeatGroup` | 如果用户经常全览，别默认分页，默认“全部” |
+| 分页 | `.seat-pager`，`pageSize = cols * rows`，默认 24 | DOM 只渲染当前页 API；webview 常驻 | 400 测试若断言所有 API 节点存在，分页删 DOM 会破；改用 `hidden`/离屏保留 |
+| 搜索 | `#seat-search`，过滤 `data-name/data-role` | 状态 +1，无重排风险 | 搜索时若隐藏 webview 容器，不要 `display:none`，用 `visibility:hidden + position:absolute` 离屏保留 |
+| 密度档 | `body[data-density="compact|normal|present"]`，调 `--seat-min-w` 和字号 | CSS 变量 +1 | 紧凑档别把 webview 压到 < 320px，网页会错位 |
+| 每排 N 升级 | `data-cols="auto|3|4|5|6|8|10"`，自动算 `floor(viewportW / --seat-min-w)` | JS 一个 `relayout()` | 自动列数在窄屏可能只出 2 列，需 clamp 最小值 |
+| 角色组去固定 | 角色模板 + 席位数动态：核心角色优先，超编合并为“专家组/观察员/轮值”，组长按权重/轮值 | 状态 +2：`roleMode`、`seatQuota` | 50 人不要人人独立角色，否则角色库爆炸；超编必须合并 |
+
+### 2.4 推荐默认
+
+- 9 web 永远在主网格前 9 格，不参与分页。  
+- API 席位按 `currentSeatGroup` + 搜索 + 分页显示。  
+- 分页只对 API div 做 DOM 替换/隐藏；若测试依赖节点存在，用 `.api-seat.offscreen{position:absolute;left:-9999px;width:220px;height:160px}` 保留。  
+- 角色组下拉文案改成 `${label}（${actualSeats} 席 / 模板 ${templateSeats}）`，支持任意 N。
+
+**为什么**：9 个 webview 是重资产，不能为了分页卸载；API div 是轻资产，分页/搜索/密度可以救 50+。  
+**反例**：如果未来网页席位也超过 9 个，必须改成多窗口/独立进程池，不能继续全塞 DOM。
+
+---
+
+## Q3：网页席位获得工具能力：UI 统一方案
+
+### 3.1 席位卡片统一信息架构
+
+```text
+┌─ .seat-card.web ──────────────────────────────────────────────┐
+│ ● web1  [WEB]  DeepSeek/网页  工具:文件读/检索/生成  [⧉] [⚙] │
+│ ┌───────────────────────────────────────────────────────────┐ │
+│ │ <webview> 网页本体                                        │ │
+│ └───────────────────────────────────────────────────────────┘ │
+│ ▸ 工具活动 3 | 最近: read_file(ok)  [展开]                    │
+│ 轮次:3 耗时:12s 状态:等待下一轮                               │
+└───────────────────────────────────────────────────────────────┘
+
+┌─ .seat-card.api ──────────────────────────────────────────────┐
+│ ● api1  [API]  OpenAI-compatible  工具:全开/白名单  [⧉] [⚙] │
+│ ┌───────────────────────────────────────────────────────────┐ │
+│ │ 消息流 / 工具调用卡片                                     │ │
+│ └───────────────────────────────────────────────────────────┘ │
+│ ▸ 工具活动 5 | 最近: shell(ok)  [展开]                        │
+└───────────────────────────────────────────────────────────────┘
+```
+
+统一标识：不强调 `-API` 后缀，改用徽标 `[WEB]` / `[API]` / `[SHELL]`，能力对齐后名称统一为“席位名 + 来源徽标”。  
+为什么：用户目标是能力对齐，不是来源歧视；但调试时仍需知道底层通道。
+
+### 3.2 工具面板放哪
+
+推荐三层：
+
+1. **席位卡片内 `.seat-toolstrip`**：只显示最近 3 条工具调用和状态，默认折叠。  
+2. **右侧 overlay `.tooldrawer`**：点 `[⧉]` 打开，不占布局宽度，含 `[对话][工具][权限][日志]`。  
+3. **全局 `.toolbus`**：在 `.globalbar` 下方显示并发调用计数，点开过滤到 `.tooldrawer`。
+
+为什么：12 个 webview 是网页本体，工具 UI 只能壳层做；右侧 overlay 不挤压网格，不触发 webview 宽度重排。  
+**成本**：overlay 状态 +1：`body.tooldrawer-open`；z-index 要高于 webview，但 Electron webview 原生层可能盖住，需实测；若被盖，改用独立 BrowserWindow 或把抽屉放在 webview 容器外且用 `webview.style.zIndex` 不可靠。  
+**反例**：工具调用极频繁时，全局 toolbus 会刷屏，默认只显示计数，不要默认展开时间线。
+
+### 3.3 工具调用交互流
+
+```text
+网页 AI 输出 “我要查文件 X”
+  → 壳层解析/确认（若权限需确认）
+  → .toolbus 新增待确认/运行中
+  → Harness 执行工具
+  → 结果写入 .seat-toolstrip + 全局日志
+  → 自动回注到该席位下一轮（默认）
+  → 高风险工具（shell/文件写）需用户点“允许”再回注
+```
+
+权限：会前 `.tool-matrix` 放 topdeck，按角色组/席位配置白名单。默认：  
+- WEB 席位：只读检索、文件读、生成类；shell/写文件需确认。  
+- API 席位：同白名单，不默认全开。  
+- 高风险管理：`.tool-risk-high` 强制人工确认。
+
+**成本**：权限矩阵状态 +1：`seatToolPolicy`；工具总线动态 DOM；日志量增大。  
+**反例**：如果 50+ 席位并发工具调用，全局 toolbus 不要平铺所有事件，必须按席位聚合，否则 UI 刷屏。
+
+---
+
+## Q4：模式 × 阶段映射表（8 模式）
+
+维护策略：用 `MODE_PHASE_MAP` 常量，只存组名；控件组用 `data-group`，CSS 按 `body[data-mode][data-phase]` 显隐。新增模式只加一行。超过 12 模式时改成外部 JSON + 校验。
+
+```js
+const MODE_PHASE_MAP = {
+  transparent: { idle:['tmbox','extbox','flow','scene','toolmatrix'], running:['broadcastQueue','roundProgress','toolbus','log'] },
+  panel:       { idle:['group','extbox','toolmatrix','flow'],        running:['expertStatus','roundProgress','toolbus','log'] },
+  build:       { idle:['buildlevel','toolmatrix','extbox'],          running:['artifactVerify','toolbus','log'] },
+  relay:       { idle:['relayOrder','extbox'],                       running:['currentSpeaker','nextSeat','log'] },
+  debate:      { idle:['debateSides','rules','extbox'],              running:['timer','speakQueue','log'] },
+  crossexam:   { idle:['evidence','extbox'],                         running:['evidenceChain','questionQueue','log'] },
+  group:       { idle:['groupConfig','extbox'],                      running:['groupStatus','toolbus','log'] },
+  open:        { idle:['topic','extbox'],                            running:['speakQueue','log'] }
+};
+```
+
+| 模式 | idle 会前配置组 | running 开会中控件组 | 默认顶甲板 | 默认日志 | 特殊规则 |
+|---|---|---|---|---|---|
+| transparent 透明广播 | tmbox、extbox、flow、scene、toolmatrix | 广播队列、轮次进度、工具总线、日志 | 展开 | 展开 | tmbox 仅 idle |
+| panel 专家会诊 | group、extbox、toolmatrix、flow | 专家状态、轮次进度、工具总线、日志 | 展开 | 展开 | 角色组任意 N |
+| build 工程交付 | buildlevel、toolmatrix、extbox | 产物验证、工具总线、日志 | 展开 | 展开 | buildlevel 仅 build |
+| relay 顺序接龙 | relayOrder、extbox | 当前发言、下一席、日志 | 展开 | 展开 | 顺序可拖拽 |
+| debate 辩论 | debateSides、rules、extbox | 计时、发言队列、日志 | 展开 | 展开 | 计时器常驻 globalbar |
+| crossexam 质证 | evidence、extbox | 证据链、提问队列、日志 | 展开 | 展开 | 证据只读锁定 |
+| group 分组会诊 | groupConfig、extbox | 各组状态、工具总线、日志 | 展开 | 展开 | 组内独立轮次 |
+| open 开放讨论 | topic、extbox | 发言队列、日志 | 折叠 | 展开 | 无强制轮次 |
+
+**成本**：一个映射常量 + 若干 `data-group` 容器；状态不增，CSS 显隐。  
+**反例**：如果某模式 running 还需要配置项，不要硬塞 running，放 `paused` 或 `ready` 阶段。
+
+---
+
+## Q5：推翻窗口
+
+**无完全推翻，但有三条修正：**
+
+1. **修正 §2 第 5 条**：“固定 DOM + hidden”只适用于控制面板和 9 个 webview；**50+ API 席位不能全固定 DOM**，否则 DOM 爆炸。API 席位用分页/搜索/离屏保留，测试若断言节点存在则用 `hidden` 而非删除。
+2. **修正 §2 第 3 条**：外部 AI 回答放顶甲板仍成立，但工具详情必须放右侧 overlay `.tooldrawer`，否则顶甲板会被权限矩阵 + 工具时间线撑爆。
+3. **修正 §2 第 4 条**：主持人栏常驻成立，但 `idle` 时建议压缩成图标条；`running/paused` 展开完整按钮，⏸/⏹ 可用。
+
+---
+
+## 总体推荐一句话
+
+**采纳 §2 骨架，但把 phase 扩成 `idle/ready/running/paused/ended`，席位规模化用“9 webview 常驻 + API 分页/搜索/密度 + 角色组动态化”，工具能力用“席位卡工具条 + 右侧 overlay 工具抽屉 + 全局工具总线 + 会前权限矩阵”，模式感知用 `MODE_PHASE_MAP` 双键驱动，折叠统一为 topdeck/logdock 真收缩、grid/cell 永不 `display:none`。**

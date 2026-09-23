@@ -16,8 +16,12 @@
     .header button.ghost { background: #2a3a4a; color: #cde; }
 
     .main { flex: 1; display: flex; overflow: hidden; }
-    .grid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 6px; }
-    .cell { position: relative; background: #121820; border: 1px solid #2a3a4a; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+    /* ★ 格子永远跟随窗口大小平分内部空间：
+     *   行高 = minmax(220px, 1fr) —— 窗口放大行跟着变大，全屏时平分全部空间；
+     *   内容超出时每行保底 220px 出滚动条；不做底部预留（最后一排不满时右边空位，
+     *   左边第一个永不空 —— grid 自动从左上开始摆放）。 */
+    .grid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: minmax(220px, 1fr); gap: 4px; padding: 6px; overflow-y: auto; }
+    .cell { position: relative; background: #121820; border: 1px solid #2a3a4a; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
     .cell webview { flex: 1; width: 100%; border: none; min-height: 0; }
     .cell .bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px; background: #0d1118; border-top: 1px solid #2a3a4a; font-size: 11px; }
     .cell .name { color: #8fc7ff; }
@@ -26,9 +30,72 @@
     .s-READY, .s-OFFLINE { color: #667; }
     .s-SENDING, .s-THINKING, .s-STREAMING, .s-UPLOADING { color: #ffd479; }
     .s-TIMEOUT, .s-CAPTCHA_REQUIRED, .s-UPLOAD_FAILED, .s-RATE_LIMIT, .s-UNKNOWN_ERROR, .s-DOM_CHANGED, .s-LOGIN_EXPIRED, .s-NETWORK_ERROR { color: #ff8080; }
+    .s-OFF { color: #445; text-decoration: line-through; }
+    .cell .pow { color: #9ab; font-size: 10px; display: inline-flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; }
+    .cell .pow input { margin: 0; }
+
+    /* ★ 接入点勾选栏：勾了才显示窗口，不勾不占屏幕 */
+    .seatbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #0d1118; border-bottom: 1px solid #2a3a4a; flex-wrap: wrap; }
+    /* ★ 参会人员与角色组放在一起：左边勾参会名单，右边角色组/重排/每排窗口数 */
+    .seatbar .chips { flex: 1; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .seatbar .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #8aa; background: #121820; border: 1px solid #2a3a4a; border-radius: 12px; padding: 2px 9px; cursor: pointer; user-select: none; }
+    .seatbar .chip input { margin: 0; cursor: pointer; }
+    .seatbar .chip:hover { border-color: #4da3ff; }
+    .seatbar .chip.api span { color: #9cf; }
+    .seatctl { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .seatctl label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #8aa; white-space: nowrap; }
+    .seatctl select { padding: 4px 6px; background: #0b0e14; color: #e6e6e6; border: 1px solid #2a3a4a; border-radius: 5px; font-size: 11px; outline: none; }
+    .seatctl select:focus { border-color: #4da3ff; }
+    .seatctl button { padding: 4px 10px; background: #2a3a4a; color: #cde; border: none; border-radius: 5px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .seatctl button:hover { background: #36506b; color: #fff; }
+
+    /* ★ 主持人栏：用户输入 → 广播给所有人；文件 → 发给所有人；暂停 / 停止 */
+    .chairbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: #101822; border-bottom: 1px solid #2a3a4a; flex-wrap: wrap; }
+    .chairbar .t { color: #ffd479; font-size: 12px; font-weight: 600; white-space: nowrap; }
+    .chairbar input[type="text"], .chairbar input:not([type]) { flex: 1; min-width: 200px; padding: 6px 10px; background: #0b0e14; color: #e6e6e6; border: 1px solid #2a3a4a; border-radius: 6px; font-size: 12px; outline: none; }
+    .chairbar input:focus { border-color: #4da3ff; }
+    .chairbar button { padding: 5px 12px; background: #4da3ff; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .chairbar button:hover { background: #6cb6ff; }
+    .chairbar button:disabled { background: #2a3a4a; color: #667; cursor: not-allowed; }
+    .chairbar button.ghost { background: #2a3a4a; color: #cde; font-weight: 400; }
+    .chairbar button.ghost:hover { background: #36506b; }
+    .chairbar button.danger { background: #b0433f; }
+    .chairbar button.danger:hover { background: #d05a55; }
+    .chairbar label.filepick { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #8aa; cursor: pointer; white-space: nowrap; }
+    .chairbar label.filepick input { max-width: 210px; font-size: 11px; color: #8aa; }
+    .chairbar .flexsp { flex: 0.6; }
+    .chairbar label.ck { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: #8aa; white-space: nowrap; cursor: pointer; }
+
+    /* ★ 顶部信息（流程条 + 场景卡）一键折叠 */
+    .flowwrap { position: relative; }
+    .flowwrap .fbtn { position: absolute; right: 6px; top: 4px; z-index: 3; padding: 1px 8px; background: #1d2836; color: #8aa; border: 1px solid #2a3a4a; border-radius: 4px; font-size: 10px; cursor: pointer; }
+    .flowwrap .fbtn:hover { color: #4da3ff; border-color: #4da3ff; }
+    body.infocollapsed .flow .ph, body.infocollapsed .flow .warn { display: none; }
+    body.infocollapsed .flow { min-height: 0; padding: 2px 12px; }
+    body.infocollapsed .scene { display: none !important; }
+    /* ★ bar 上的操作按钮 + API 标注 */
+    .cell .bar { gap: 6px; }
+    .cell .bar .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell .btns { display: inline-flex; gap: 6px; }
+    .cell .btns .b { cursor: pointer; color: #8aa; padding: 0 5px; border-radius: 3px; user-select: none; font-size: 12px; }
+    .cell .btns .b:hover { color: #4da3ff; background: #1d2836; }
+    .cell .apitag { color: #0b0e14; background: #4da3ff; font-size: 9px; font-weight: 700; border-radius: 3px; padding: 1px 4px; flex-shrink: 0; }
+    /* ★ API 席位对话框（在宫格里，与网页格子同款） */
+    .cell .txt { flex: 1; overflow-y: auto; padding: 8px 10px; font-size: 12px; line-height: 1.7; color: #bcd; white-space: pre-wrap; word-break: break-word; }
+    /* ★ 窗内放大：置顶 + 独占横向一整行 + 占两行高度（跟随窗口伸缩）；
+       底边拖拽柄常驻（每格都可调高度，按行数调整）。 */
+    .cell.zoomed { grid-column: 1 / -1; grid-row: span 2; }
+    .cell .rz { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; cursor: ns-resize; z-index: 5; background: rgba(77, 163, 255, .12); }
+    .cell .rz:hover { background: rgba(77, 163, 255, .45); }
+    /* ★ 已弹出独立窗口的格子：显示占位提示 */
+    .cell .popnote { display: none; flex: 1; align-items: center; justify-content: center; color: #667; font-size: 12px; padding: 0 16px; text-align: center; }
+    .cell.popped webview { display: none !important; }
+    .cell.popped .txt { display: none !important; }
+    .cell.popped .popnote { display: flex; }
 
     .side { width: 380px; background: #0f141c; border-left: 1px solid #2a3a4a; display: flex; flex-direction: column; }
-    .side h2 { padding: 9px 12px; font-size: 12px; color: #4da3ff; border-bottom: 1px solid #2a3a4a; }
+    .side h2 { padding: 9px 12px; font-size: 12px; color: #4da3ff; border-bottom: 1px solid #2a3a4a; cursor: pointer; user-select: none; }
+    .side h2:hover { background: #121a26; }
     .log { flex: 1; overflow-y: auto; padding: 8px 12px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.6; color: #9ab; }
     .log .ok { color: #4ade80; }
     .log .bad { color: #ff8080; }
@@ -56,13 +123,6 @@
 
     /* 左列：webview 格子 + API 席位行 */
     .left { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
-    .apirow { display: none; gap: 4px; padding: 6px; border-top: 1px solid #2a3a4a; background: #0d1118; }
-    .apirow.on { display: flex; }
-    .apicell { flex: 1; min-width: 0; background: #121820; border: 1px solid #2a3a4a; border-radius: 6px; display: flex; flex-direction: column; max-height: 168px; }
-    .apicell .bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px; background: #0d1118; border-bottom: 1px solid #2a3a4a; font-size: 11px; }
-    .apicell .txt { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 11px; line-height: 1.6; color: #9ab; white-space: pre-wrap; word-break: break-word; }
-    .apicell .role { color: #ffd479; font-size: 10px; }
-    .apirow .picker { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #8aa; white-space: nowrap; padding: 0 6px; }
 
     /* ── 外部 AI 回答面板 ──
        把「在浏览器里问完 → 复制 → 粘贴回来」这个动作变成一等公民。
@@ -104,19 +164,46 @@
       <option value="static" selected>语法 + 引用完整性</option>
       <option value="build">★ 再跑 npm run build（会执行代码）</option>
     </select></label>
-    <button id="btn-recast" class="ghost" title="用新的随机种子按模型能力重新选角">重排角色</button>
     <input id="topic" value="请评审「通辽会议接入微软多智能体框架」的可行路径。" />
     <button id="btn-run">开始会议</button>
     <button id="btn-clear" class="ghost">清空日志</button>
   </div>
 
-  <div class="flow" id="flow"></div>
+  <div class="flowwrap">
+    <div class="flow" id="flow"></div>
+    <button class="fbtn" id="flow-toggle" title="折叠/展开顶部的流程与模式说明信息">▴ 收起</button>
+  </div>
   <div class="scene" id="scene"></div>
 
   <div class="main">
     <div class="left">
+      <!-- ★ 参会人员 + 角色组放在一起：先勾参会名单，角色组才知道该给谁定角色 -->
+      <div class="seatbar">
+        <div class="chips" id="seat-chips"></div>
+        <div class="seatctl">
+          <label>角色组<select id="sel-set"></select></label>
+          <button id="btn-recast2" title="用新的随机种子按模型能力重新选角">重排角色</button>
+          <label title="每一排显示几个窗口（3/4/5/6）">每排<select id="sel-cols">
+            <option value="3" selected>3 个</option>
+            <option value="4">4 个</option>
+            <option value="5">5 个</option>
+            <option value="6">6 个</option>
+          </select></label>
+        </div>
+      </div>
+      <!-- ★ 主持人栏：用户输入广播给所有人 / 发文件给所有人 / 暂停 / 停止 -->
+      <div class="chairbar">
+        <span class="t">主持人</span>
+        <input id="chair-text" placeholder="输入要发给所有参会者的信息…（会议进行中将汇编进下一轮；空闲时立即直发）" />
+        <label class="ck" title="勾上后消息自动带「【主持人】」标注"><input type="checkbox" id="chair-tag" checked>主持人标注</label>
+        <button id="chair-send">📢 广播</button>
+        <label class="filepick">📎 文件<input id="chair-files" type="file" multiple /></label>
+        <button id="chair-files-send" class="ghost" title="把所选文件通过 CDP 投给每个网页席位；API 席位以文字告知文件名">发文件给所有人</button>
+        <span class="flexsp"></span>
+        <button id="btn-pause" class="ghost" disabled title="暂停会议：所有席位在当前轮次边界停下等待（仅透明广播会议支持）">⏸ 暂停</button>
+        <button id="btn-stop" class="danger" disabled title="停止会议：立即叫停，已完成的发言照常落盘。AI 卡住不用再关软件重启">⏹ 停止会议</button>
+      </div>
       <div class="grid" id="grid"></div>
-      <div class="apirow" id="apirow"></div>
     </div>
     <div class="side">
       <!-- 外部 AI 回答：用户"复制回来"的那一步。折叠面板，不抢日志空间。 -->
@@ -140,7 +227,22 @@
           <div class="note">贴进来后会成为一条会议消息，<b>参与后续所有阶段的上下文切片</b>——系统内的 AI 就能看到"外面的人怎么说"。评标时按内容匿名，不暴露是哪家给的。</div>
         </div>
       </div>
-      <h2>会议日志</h2>
+      <div id="tmbox" style="border:1px solid #2a3f55;border-radius:8px;margin-bottom:10px;background:#0f1620">
+        <div style="padding:8px 12px;font-weight:600;color:#9ec">透明广播会议设置（仅「透明广播会议」模式生效）</div>
+        <div style="padding:0 12px 10px">
+          <label class="row" style="display:flex;gap:8px;align-items:center;margin:6px 0">输出目录
+            <input id="out-dir" style="flex:1;min-width:0" />
+          </label>
+          <label class="row" style="display:flex;gap:8px;align-items:center;margin:6px 0">轮数
+            <input id="rounds" type="number" min="1" max="10" value="3" style="width:64px" />
+          </label>
+          <label class="row" style="display:flex;gap:8px;align-items:center;margin:6px 0">议题资料
+            <input id="materials" type="file" multiple style="flex:1;min-width:0" />
+          </label>
+          <div class="note" style="color:#7a8;font-size:12px;line-height:1.5">输出目录默认为 meeting-lab/meetings/，可改成任意路径。每场会议在该目录下建「议题-会议ID」子目录，含每轮 round-N.md 与会议记录.md；所选议题资料会一并拷入该文件夹归档。</div>
+        </div>
+      </div>
+      <h2 id="log-head" title="点击折叠/展开会议日志">▾ 会议日志</h2>
       <div class="log" id="log"></div>
       <div class="summary" id="summary">等待开始…</div>
     </div>
@@ -177,6 +279,9 @@ const { getModel } = require('../core/models');
 const { createApiAdapter } = require('../adapters/api-adapter');
 const { getRedacted } = require('../adapters/dsh-config');
 const { createWebAdapter } = require('../adapters/web-adapter');
+/* ★ 本轮新增：用户的「透明广播会议」引擎 —— 带标签互评 + 首条规则 + 每轮MD。
+ *   与 modes/phase-runner 那套阶段式模式并列，互不影响（各自独立适配器）。 */
+const { TransparentMeeting } = require('../core/transparent-meeting');
 /* ★ 本轮新增：阶段编排器 —— 把 planPhases 的契约（接龙 / 组边界 / 归并约束）真正执行。
  *   此前每个阶段都是 orch.runTurn()（**广播**：同一段 text 发给人人），
  *   于是"顺序接龙"名不副实、组边界没人管、归并照样读全部明细（分组白做）。 */
@@ -202,7 +307,7 @@ const genericWeb = require('../adapters/generic-web');
  *   由 tools/verify-build-ui.js 跟磁盘对一遍 —— 只读文件算 hash，不改变任何行为。 */
 window.__coreStamp = (() => {
   const out = {};
-  const list = ['artifact-bus', 'build-verify', 'build-loop', 'phase-runner', 'modes', 'orchestrator'];
+  const list = ['artifact-bus', 'build-verify', 'build-loop', 'phase-runner', 'modes', 'orchestrator', 'transparent-meeting', 'reporter'];
   try {
     const crypto = require('crypto');
     for (const rel of list) {
@@ -213,23 +318,44 @@ window.__coreStamp = (() => {
   return out;
 })();
 
-// 先用 3 个 AI 验证链路（减少登录负担）；跑通后加满 9 个
+// 与客户端（desktop/agent/meeting.html）完全一致的 9 个网页 AI：partition 名一一对齐，
+// 这样用 --reuse-login 启动测试台时，能直接复用客户端里已登录的 9 个账号（无需逐个重登）。
+// 注：google-search 是搜索引擎而非对话 AI，在"透明广播会议"里发聊天可能无回应 ——
+//     如不需要可在该席位取消「启用」勾选框。
 const PROVIDERS = [
   { id: 'deepseek-web', name: '深度求索-DeepSeek', url: 'https://chat.deepseek.com/', part: 'persist:agent-deepseek-web', profile: dsWeb.profile },
   { id: 'chatgpt-web', name: 'OpenAI-ChatGPT', url: 'https://chatgpt.com/', part: 'persist:agent-chatgpt-web', profile: genericWeb.profile },
+  { id: 'kimi-web', name: '月之暗面-Kimi', url: 'https://kimi.moonshot.cn/', part: 'persist:agent-kimi-web', profile: genericWeb.profile },
+  { id: 'doubao-web', name: '字节跳动-豆包', url: 'https://www.doubao.com/chat/', part: 'persist:agent-doubao-web', profile: genericWeb.profile },
+  { id: 'tongyi-web', name: '阿里巴巴-通义千问', url: 'https://tongyi.aliyun.com/qianwen/', part: 'persist:agent-tongyi-web', profile: genericWeb.profile },
+  { id: 'yuanbao-web', name: '腾讯-元宝', url: 'https://yuanbao.tencent.com/chat', part: 'persist:agent-yuanbao-web', profile: genericWeb.profile },
   { id: 'gemini-web', name: '谷歌-Gemini', url: 'https://gemini.google.com/app', part: 'persist:agent-gemini-web', profile: genericWeb.profile },
+  { id: 'google-search', name: '谷歌-搜索', url: 'https://www.google.com/search?q=', part: 'persist:agent-google-search', profile: genericWeb.profile },
+  { id: 'wenxin-web', name: '百度-文心', url: 'https://yiyan.baidu.com/', part: 'persist:agent-wenxin-web', profile: genericWeb.profile },
 ];
 
 /* ★ 双管齐下：API 通道席位。
- *   网页版占格子看着爽但慢；API 快但无联网。两条路同场开会。
- *   状态来自 2026-09-22 的实测（node tools/check-api.js --live）：
- *     deepseek ✔ 1.2s   google ✔ 11.9s   agne ✘ 余额为 0
- *   所以默认只勾前两家；agne 留开关但默认关，避免会议里平白掉一个席位。 */
-const API_CANDIDATES = [
-  { key: 'deepseek', label: 'DeepSeek API', on: true, note: '实测 1.2s 可用 · 适合主席/判停' },
-  { key: 'google', label: 'Google API', on: true, note: '实测 11.9s 可用 · 长文压缩' },
-  { key: 'agne', label: 'Agne API', on: false, note: '实测 403：账户余额为 0' },
-];
+ *   列表**实时来自客户端设置**（D:\Users\Admin\.dsh\settings.yaml + 密钥）：
+ *   用户在客户端里新加一个 API 模型 → 这里自动多出一个可勾选的席位（用户需求）。
+ *   命名规则：名牌 = 所属公司 + 接入的模型名 + 「-API」，
+ *   例如 deepseek 接入 deepseek-chat → 「深度求索-deepseek-chat-API」。 */
+const COMPANY_CN = { deepseek: '深度求索', google: '谷歌', agne: 'Agne', openai: 'OpenAI', moonshot: '月之暗面', qwen: '阿里', tencent: '腾讯', baidu: '百度' };
+function apiSeatName(key, model) {
+  const co = COMPANY_CN[key] || key;
+  return `${co}-${model}-API`;
+}
+const API_CANDIDATES = (() => {
+  const cfg = getRedacted({});
+  return cfg.providers
+    .filter((p) => p.hasKey && p.models && p.models.length)
+    .map((p) => ({
+      key: p.key,
+      model: p.models[0],
+      label: apiSeatName(p.key, p.models[0]),
+      on: true,
+      note: `${p.host} · 默认模型 ${p.models[0]}`,
+    }));
+})();
 
 /* ---------- 模式 & 角色 状态 ---------- */
 let currentMode = 'broadcast';
@@ -247,18 +373,29 @@ let castLedger = [];       // ★ 每个席位的候选排名（点徽章可看"
  *   而这个异常发生在脚本顶层 → 整个 renderer 一行都不执行，
  *   表现是「下拉为空、场景卡空白、日志无输出」——看着像没接线，其实是崩了。 */
 const grid = document.getElementById('grid');
-const apirow = document.getElementById('apirow');
+const seatbarEl = document.getElementById('seat-chips');   // ★ 参会名单勾选区（seatbar 右半是角色组控件）
 const logEl = document.getElementById('log');
+const logHead = document.getElementById('log-head');
 const summaryEl = document.getElementById('summary');
 const topicEl = document.getElementById('topic');
 const sceneEl = document.getElementById('scene');
 const flowEl = document.getElementById('flow');
+const flowToggle = document.getElementById('flow-toggle');
 const selMode = document.getElementById('sel-mode');
 const selSet = document.getElementById('sel-set');
 const selGroup = document.getElementById('sel-group');
 const selBuildLevel = document.getElementById('sel-buildlevel');
 const lblBuildLevel = document.getElementById('lbl-buildlevel');
 const btnRun = document.getElementById('btn-run');
+const btnRecast = document.getElementById('btn-recast2');  // ★ 重排角色移到参会名单旁
+const btnPause = document.getElementById('btn-pause');
+const btnStop = document.getElementById('btn-stop');
+const chairTextEl = document.getElementById('chair-text');
+const chairTagEl = document.getElementById('chair-tag');
+const chairSendEl = document.getElementById('chair-send');
+const chairFilesEl = document.getElementById('chair-files');
+const chairFilesSendEl = document.getElementById('chair-files-send');
+const selCols = document.getElementById('sel-cols');
 const extbox = document.getElementById('extbox');
 const extHead = document.getElementById('ext-head');
 const extToggle = document.getElementById('ext-toggle');
@@ -269,6 +406,11 @@ const extText = document.getElementById('ext-text');
 const extQuestion = document.getElementById('ext-question');
 const extAdd = document.getElementById('ext-add');
 const extList = document.getElementById('ext-list');
+// ★ 透明广播会议配置控件（仅在「透明广播会议」模式下生效）
+const outDirEl = document.getElementById('out-dir');
+const roundsEl = document.getElementById('rounds');
+const materialsEl = document.getElementById('materials');
+const tmboxEl = document.getElementById('tmbox');
 
 /** 上下文切片 → 中文人话（流程条与场景卡共用） */
 const SLICE_CN = {
@@ -304,7 +446,14 @@ function bindStateLamp(id, cell) {
   };
 }
 
-/* ---------- 建 3 宫格 ---------- */
+/* ---------- 建 9 宫格（网页 AI 席位）----------
+ * ★ 用户需求落地：
+ *   - 每格去掉「启用」勾选，是否显示/参会改由顶部「接入点勾选栏」控制；
+ *   - ⤢ = 在窗口内放大（占满横向一整行），底边手柄可拖拽调高度；
+ *   - ⧉ = 弹出为独立窗口（可全屏、自由调大小；同 partition 免重登，关窗自动收回）；
+ *   - 按住任意格子标题栏拖动即可换位排序。 */
+const { ipcRenderer } = require('electron');
+
 for (const p of PROVIDERS) {
   const cell = document.createElement('div');
   cell.className = 'cell';
@@ -313,28 +462,171 @@ for (const p of PROVIDERS) {
       <span class="name">${p.name}</span>
       <span class="role" data-role></span>
       <span class="state s-OFFLINE" data-state>OFFLINE</span>
-    </div>`;
+      <span class="btns">
+        <span class="b" data-zoom title="放大/还原：置顶独占一整行，跟随窗口伸缩">⤢</span>
+        <span class="b" data-pop title="弹出为独立窗口：可全屏、自由调大小；关闭后自动回到这里（登录态同 partition，无需重登）">⧉</span>
+      </span>
+    </div>
+    <div class="popnote">已弹出为独立窗口 —— 关闭那个窗口后自动回到这里</div>`;
   const wv = document.createElement('webview');
   wv.setAttribute('partition', p.part);
   wv.setAttribute('src', p.url);
   wv.setAttribute('allowpopups', 'true');
   cell.prepend(wv);
   grid.appendChild(cell);
-  cells.set(p.id, { wv, stateEl: cell.querySelector('[data-state]'), roleEl: cell.querySelector('[data-role]'), provider: p });
+  const stateEl = cell.querySelector('[data-state]');
+  const entry = { wv, cellEl: cell, stateEl, roleEl: cell.querySelector('[data-role]'), provider: p, enabled: true, popped: false };
+  cells.set(p.id, entry);
+
+  /* ⤢ 窗内放大：置顶 + 独占一整行（占两行高，跟随窗口伸缩）；还原时回到原位 */
+  cell.querySelector('[data-zoom]').addEventListener('click', () => {
+    toggleZoom(cell);
+  });
+
+  /* 底边拖拽调高度（按「行数」调整，与自适应网格相容） */
+  const rz = document.createElement('div');
+  rz.className = 'rz';
+  rz.title = '拖拽调整高度';
+  cell.appendChild(rz);
+  rz.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragCellHeight(cell, e);
+  });
+
+  /* ⧉ 弹出独立窗口：原格子 webview 先停（同 partition 不双开），关窗自动恢复 */
+  cell.querySelector('[data-pop]').addEventListener('click', async () => {
+    if (entry.popped) return;
+    entry.popped = true;
+    wv.setAttribute('src', 'about:blank');
+    cell.classList.add('popped');
+    try {
+      await ipcRenderer.invoke('seat-popup-open', { id: p.id, name: p.name, url: p.url, partition: p.part });
+      log(`[弹出] ${p.name} 已弹为独立窗口（登录态同 partition，无需重登）`, 'ok');
+    } catch (err) {
+      entry.popped = false;
+      cell.classList.remove('popped');
+      wv.setAttribute('src', p.url);
+      log(`[弹出失败] ${p.name}: ${err && err.message}`, 'bad');
+    }
+  });
 
   wv.addEventListener('dom-ready', () => {
     log(`[页面就绪] ${p.name}`, 'hd');
   });
 }
 
+/* 弹出窗口关闭 → 自动恢复对应格子（网页席位恢复 webview；API 席位只是收起占位） */
+ipcRenderer.on('seat-popup-closed', (e, id) => {
+  const en = cells.get(id) || apiCells.get(id);
+  if (!en || !en.popped) return;
+  en.popped = false;
+  en.cellEl.classList.remove('popped');
+  if (en.wv && en.provider && en.provider.url) en.wv.setAttribute('src', en.provider.url);
+  log(`[收回] ${en.provider ? en.provider.name : en.label} 独立窗口已关闭，格子已恢复`, 'ok');
+});
+
+/* ---------- 拖拽排序：按住任意格子的标题栏拖动即可换位 ----------
+ * ★ 2026-09-23 修复「拖拽复制卡死」（三处防御，全部实测依据）：
+ *   ① 鬼影拖拽图：HTML5 拖拽默认会对被拖元素（含内嵌 webview！）做跨进程快照
+ *      当拖拽影像 → 软件渲染下这一步能挂死整个窗口。setDragImage 换成
+ *      一个离屏小色块，快照永远不碰 webview。
+ *   ② dragover 只在"我们自己的换位拖拽"时 preventDefault：此前无条件
+ *      preventDefault 让每个格子成了万能落点——用户在 Gemini 里拖选文字
+ *      一出 webview 边界，宿主就接手这个跨进程拖拽（Electron 经典挂死）。
+ *      收紧后外部拖拽不被接受，Windows 干净取消，不再挂死。
+ *   ③ cell.draggable 在 mouseup 也复位：此前只在 dragend 复位，"点一下
+ *      标题栏没拖"会让标志永远武装，之后任何拖拽都可能误触发①的快照。 */
+let dragSrcCell = null;
+
+function makeCellDraggable(cell) {
+  const bar = cell.querySelector('.bar');
+  bar.addEventListener('mousedown', () => { cell.draggable = true; });
+  /* ③ 点击（没拖成）也要复位：click 不触发 dragend */
+  bar.addEventListener('mouseup', () => { cell.draggable = false; });
+  cell.addEventListener('dragstart', (e) => {
+    dragSrcCell = cell;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', 'x'); } catch (err) { /* IE 老行为，忽略 */ }
+    /* ① 用离屏色块当拖拽影像，避免对含 webview 的格子做跨进程快照 */
+    try { e.dataTransfer.setDragImage(dragGhost, 12, 12); } catch (err) { /* 老内核没有就算了 */ }
+  });
+  cell.addEventListener('dragover', (e) => {
+    /* ② 只接受自己的换位拖拽；外部拖进来的（比如从网页席位拖选文字）不接 */
+    if (!dragSrcCell || dragSrcCell === cell) return;
+    e.preventDefault();
+  });
+  cell.addEventListener('drop', (e) => {
+    if (!dragSrcCell || dragSrcCell === cell) return;  /* ② 外部拖拽不接、不吞 */
+    e.preventDefault();
+    const arr = [...grid.children];
+    const from = arr.indexOf(dragSrcCell);
+    const to = arr.indexOf(cell);
+    if (from < 0 || to < 0) return;
+    grid.insertBefore(dragSrcCell, from < to ? cell.nextSibling : cell);
+    dragSrcCell = null;
+  });
+  cell.addEventListener('dragend', () => { cell.draggable = false; dragSrcCell = null; });
+}
+
+/* ① 拖拽影像用的离屏色块（永远不出现在可视区） */
+const dragGhost = document.createElement('div');
+dragGhost.style.cssText = 'position:fixed;top:-200px;left:-200px;width:140px;height:26px;'
+  + 'background:#16324a;border:1px solid #4da3ff;border-radius:4px;color:#bcd;'
+  + 'font-size:12px;line-height:24px;text-align:center;';
+dragGhost.textContent = '移动席位…';
+document.body.appendChild(dragGhost);
+
+/* ★ 格子当前占几行（grid-row: span N） */
+function rowSpanOf(cell) {
+  const m = /span\s+(\d+)/.exec(cell.style.gridRow || '');
+  if (m) return Number(m[1]);
+  return cell.classList.contains('zoomed') ? 2 : 1;
+}
+
+/* ★ ⤢ 放大/还原：放大 = 置顶 + 独占横向一整行（占两行高，跟随窗口伸缩）；
+ *   还原 = 回到放大前的位置。 */
+function toggleZoom(cell) {
+  const on = !cell.classList.contains('zoomed');
+  if (on) {
+    cell._posNext = cell.nextSibling;
+    cell.style.gridRow = '';
+    cell.classList.add('zoomed');
+    grid.prepend(cell);
+  } else {
+    cell.classList.remove('zoomed');
+    cell.style.gridRow = '';
+    if (cell._posNext && cell._posNext.parentNode === grid) grid.insertBefore(cell, cell._posNext);
+    else grid.appendChild(cell);
+  }
+}
+
+/* ★ 底边拖拽调高度：以「行数」为步进（与 1fr 自适应网格相容，
+ *   不会出现撑破行或底部留白） */
+function dragCellHeight(cell, e) {
+  const startY = e.clientY;
+  const baseSpan = rowSpanOf(cell);
+  const rowH = cell.getBoundingClientRect().height / baseSpan;
+  const move = (ev) => {
+    const span = Math.max(1, Math.round(baseSpan + (ev.clientY - startY) / Math.max(80, rowH)));
+    cell.style.gridRow = `span ${span}`;
+  };
+  const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+for (const [, c] of cells) makeCellDraggable(c.cellEl);
+
 /* ══════════════════════════════════════════════════════════════
    API 席位（双管齐下）
    —— 网页版走 webview，API 走 HTTP，两者同一契约，同场开会。
-   —— API 席位没有网页可看，所以卡片里显示「最后一条回复」。
+   ★ 用户需求落地：API 席位与网页席位【完全同构】——
+     同样的格子高度、同样的 ⤢ 放大 / ⧉ 弹窗 / 底边拖高 / 拖动排序；
+     牌子上加蓝色「API」标注区分通道；名牌 = 公司 + 接入模型名 + -API。
    ══════════════════════════════════════════════════════════════ */
 function renderApiSeats() {
-  // 清掉旧格子（保留最左边的勾选器）
-  apirow.querySelectorAll('.apicell').forEach((e) => e.remove());
+  // 清掉旧 API 格子（顶部勾选变化 → 重建）
+  for (const [, h] of apiCells) { if (h.cellEl && h.cellEl.parentNode) h.cellEl.remove(); }
   apiCells.clear();
   for (const k of Object.keys(apiAdapters)) delete apiAdapters[k];
 
@@ -357,93 +649,259 @@ function renderApiSeats() {
     });
     const id = adapter.id;
 
+    // ★ 与网页席位完全同构的格子（同一 .cell 类 → 同一高度 / 同一套交互）
     const cell = document.createElement('div');
-    cell.className = 'apicell';
+    cell.className = 'cell';
     cell.innerHTML = `
       <div class="bar">
         <span class="name">${cand.label}</span>
+        <span class="apitag" title="API 通道：流结束 = 答完，无假完成风险">API</span>
         <span class="role" data-role></span>
         <span class="state s-READY" data-state>READY</span>
+        <span class="btns">
+          <span class="b" data-zoom title="放大/还原：置顶独占一整行，跟随窗口伸缩">⤢</span>
+          <span class="b" data-pop title="弹出为独立窗口：可全屏、自由调大小；关闭后自动回到这里">⧉</span>
+        </span>
       </div>
-      <div class="txt" data-txt>${adapter.describe().host} · ${adapter.describe().model}\n（API 通道：流结束 = 答完，无假完成风险）</div>`;
-    apirow.appendChild(cell);
+      <div class="popnote">已弹出为独立窗口 —— 关闭那个窗口后自动回到这里</div>
+      <div class="txt" data-txt>（等待会议下发第一条消息）</div>`;
+    grid.appendChild(cell);
 
     const txtEl = cell.querySelector('[data-txt]');
-    const holder = { txtEl, stateEl: cell.querySelector('[data-state]'), roleEl: cell.querySelector('[data-role]'), label: cand.label };
+    const entry = {
+      cellEl: cell, wv: null, txtEl, stateEl: cell.querySelector('[data-state]'),
+      roleEl: cell.querySelector('[data-role]'), label: cand.label, provider: { name: cand.label }, popped: false,
+      rawAdapter: adapter,   // ★ 主持人直发用（不带角色前缀的原始适配器）
+    };
 
-    // ★ 与网页版同一套装饰：角色前缀注入 + 回复文本回显
+    /* ⤢ 放大（置顶独占一行，与网页格子同一套） */
+    cell.querySelector('[data-zoom]').addEventListener('click', () => {
+      toggleZoom(cell);
+    });
+
+    /* ⧉ 弹出独立窗口（API 无网页，弹出的是「对话记录」窗口，可全屏/自由调大小） */
+    cell.querySelector('[data-pop]').addEventListener('click', async () => {
+      if (entry.popped) return;
+      entry.popped = true;
+      cell.classList.add('popped');
+      try {
+        await ipcRenderer.invoke('seat-popup-open', { id, name: cand.label, api: true });
+        log(`[弹出] ${cand.label} 已弹为独立窗口（对话记录，可全屏/自由调大小）`, 'ok');
+      } catch (err) {
+        entry.popped = false;
+        cell.classList.remove('popped');
+        log(`[弹出失败] ${cand.label}: ${err && err.message}`, 'bad');
+      }
+    });
+
+    /* 底边拖高手柄（常驻，按行数调整，与网页格子同一套） */
+    const rz = document.createElement('div');
+    rz.className = 'rz';
+    rz.title = '拖拽调整高度';
+    cell.appendChild(rz);
+    rz.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      dragCellHeight(cell, e);
+    });
+
+    /* 拖动排序（与网页格子同一套） */
+    makeCellDraggable(cell);
+
+    // ★ 与网页版同一套装饰：角色前缀注入 + 对话框回显（发出什么 / 回答什么）
     apiAdapters[id] = {
       ...adapter,
       async sendText(text) {
-        holder.stateEl.textContent = 'SENDING';
-        holder.stateEl.className = 'state s-SENDING';
-        holder.txtEl.textContent = `▸ ${cand.label} 正在生成…`;
+        entry.stateEl.textContent = 'SENDING';
+        entry.stateEl.className = 'state s-SENDING';
         const role = roleMap[id];
         const composed = role ? composePrompt({ task: text, role, providerId: id }) : text;
+        entry._lastPrompt = composed;
+        holderPush(entry, 'SENDING', `【发出】\n${composed}\n\n【回复】生成中…`);
         return adapter.sendText(composed);
       },
       async waitForResponse(opts) {
         const r = await adapter.waitForResponse(opts);
-        holder.stateEl.textContent = r.completion.done ? 'COMPLETED' : 'FAILED';
-        holder.stateEl.className = `state s-${r.completion.done ? 'COMPLETED' : 'UNKNOWN_ERROR'}`;
-        holder.txtEl.textContent = r.completion.done
-          ? `${String(r.text || '').trim() || '(空回复)'}\n\n— ${r.completion.elapsedMs}ms · ${r.completion.reason}`
-          : `✘ ${r.completion.reason}`;
+        holderPush(entry, r.completion.done ? 'COMPLETED' : 'FAILED', `【发出】\n${entry._lastPrompt || ''}\n\n【回复】\n`
+          + (r.completion.done
+            ? `${String(r.text || '').trim() || '(空回复)'}\n\n— ${r.completion.elapsedMs}ms · ${r.completion.reason}`
+            : `✘ ${r.completion.reason}`));
+        entry.stateEl.textContent = r.completion.done ? 'COMPLETED' : 'FAILED';
+        entry.stateEl.className = `state s-${r.completion.done ? 'COMPLETED' : 'UNKNOWN_ERROR'}`;
         return r;
       },
     };
 
-    apiCells.set(id, holder);
-    bindStateLamp(id, holder);
+    apiCells.set(id, entry);
+    bindStateLamp(id, entry);
     built += 1;
   }
 
   log(built
     ? `[API 席位] 已挂 ${built} 个：${[...apiCells.keys()].join(', ')}`
-    : '[API 席位] 本轮没有启用任何 API 通道席位', built ? 'ok' : 'warn');
-
-  /* ★ 显隐（2026-09-22 修的第二个 bug）：
-   *   本行 CSS 是 .apirow{display:none} / .apirow.on{display:flex}，
-   *   但之前没有任何代码加过 'on' → API 席位明明挂上了却永远看不见。
-   *   判据用「有可勾选的提供方」而不是「已挂几个」：
-   *   否则用户把两个勾都取消后整行消失，就再也勾不回来了（死锁）。 */
-  const anyUsable = API_CANDIDATES.some((c) => {
-    const p = cfg.providers.find((x) => x.key === c.key);
-    return !!(p && p.hasKey);
-  });
-  apirow.classList.toggle('on', anyUsable);
-  if (!anyUsable) log('[API 席位] 配置里没有任何可用提供方，已隐藏该行', 'warn');
+    : '[API 席位] 顶部没有勾选任何 API 通道席位', built ? 'ok' : 'warn');
 
   applyRoles();
   renderFlow();
 }
 
-/* 勾选器（只建一次；改变勾选就重建席位） */
-(() => {
-  const box = document.createElement('div');
-  box.className = 'picker';
-  box.innerHTML = '<span>API 席位</span>';
+/* 同时更新 API 格子的对话框文本 + 已弹出的独立窗口（保持两处同步） */
+function holderPush(entry, state, text) {
+  if (!entry) return;
+  if (entry.txtEl) { entry.txtEl.textContent = text; entry.txtEl.scrollTop = entry.txtEl.scrollHeight; }
+  if (entry.popped) { try { ipcRenderer.send('seat-popup-update', { id: apiIdByEntry(entry), text }); } catch (_) { /* 弹出窗口未就绪 */ } }
+}
+function apiIdByEntry(entry) {
+  for (const [id, e] of apiCells) if (e === entry) return id;
+  return null;
+}
+
+/* ---------- 顶部「接入点勾选栏」----------
+ * ★ 用户需求：所有接入点（9 个网页版 + API）的名字都可勾选，
+ *   勾选了才在下面出对话框（不勾不占屏幕），取消即隐藏且本场不参会。
+ *   （原来每格的「启用」勾选已删，由这里统一控制。）
+ *   ★ 名单**实时同步设置**：API 席位直接从客户端 settings 读，新加一个模型这边就多一个勾选。 */
+function renderSeatbar() {
+  seatbarEl.innerHTML = '';
+  for (const p of PROVIDERS) {
+    const c = cells.get(p.id);
+    const lab = document.createElement('label');
+    lab.className = 'chip';
+    lab.innerHTML = `<input type="checkbox" data-seat="${p.id}"${c.enabled ? ' checked' : ''}><span>${p.name}</span>`;
+    lab.querySelector('input').addEventListener('change', (e) => {
+      c.enabled = e.target.checked;
+      c.cellEl.style.display = c.enabled ? '' : 'none';
+      applyRoles(); renderFlow(); relayout();
+      log(`[席位] ${p.name} ${c.enabled ? '显示并参会' : '已隐藏（本场不参会）'}`, c.enabled ? 'ok' : 'warn');
+    });
+    seatbarEl.appendChild(lab);
+  }
   const cfg = getRedacted({});
   for (const cand of API_CANDIDATES) {
     const prov = cfg.providers.find((x) => x.key === cand.key);
     const ok = !!(prov && prov.hasKey);
     const lab = document.createElement('label');
-    lab.style.display = 'flex';
-    lab.style.alignItems = 'center';
-    lab.style.gap = '3px';
+    lab.className = 'chip api';
     lab.title = ok ? cand.note : '未取到密钥，无法启用';
-    lab.innerHTML = `<input type="checkbox" data-api="${cand.key}"${cand.on && ok ? ' checked' : ''}${ok ? '' : ' disabled'}>`
-      + `<span style="color:${ok ? '#8aa' : '#667'}">${cand.label.replace(' API', '')}</span>`;
+    lab.innerHTML = `<input type="checkbox" data-api="${cand.key}"${cand.on && ok ? ' checked' : ''}${ok ? '' : ' disabled'}><span>${cand.label}</span>`;
     lab.querySelector('input').addEventListener('change', (e) => {
       cand.on = e.target.checked;
-      renderApiSeats();
+      renderApiSeats(); relayout();
+      log(`[席位] ${cand.label} ${e.target.checked ? '已加入会议' : '已移出会议'}`, e.target.checked ? 'ok' : 'warn');
     });
-    box.appendChild(lab);
+    seatbarEl.appendChild(lab);
   }
-  apirow.appendChild(box);
-})();
+  relayout();
+}
 
+/* ★ 底部网格列数：由「每排 N 个」下拉控制（3/4/5/6），默认 3。
+ *   行高由 grid-auto-rows: minmax(220px,1fr) 自适应 —— 窗口多大格子就分多大，
+ *   不做底部预留；最后一排不满时右边空位、左边第一个不空（grid 从左上自动摆放）。 */
+let colsPerRow = 3;
+function relayout() {
+  grid.style.gridTemplateColumns = `repeat(${colsPerRow}, 1fr)`;
+}
+selCols.addEventListener('change', () => {
+  colsPerRow = Number(selCols.value) || 3;
+  relayout();
+  log(`[布局] 每排 ${colsPerRow} 个窗口`, '');
+});
+renderSeatbar();
 renderApiSeats();
+
+/* ══════════════════════════════════════════════════════════════
+   主持人栏：用户发言广播 / 文件发给所有人 / 暂停 / 停止
+   ══════════════════════════════════════════════════════════════ */
+let runningTM = null;        // 正在运行的透明广播会议实例（暂停/停止的作用对象）
+let meetingBusy = false;     // 任一模式会议进行中（停止按钮的作用对象）
+let meetingStopFlag = false; // 阶段式模式的停止标记（在阶段边界生效）
+
+/* 主持人发言：
+ *  - 会议进行中（透明广播）→ 记入会议，下一轮自动汇编进每个人的提示；
+ *  - 空闲 → 直接发给每个参会席位（只发送不等回复）。 */
+async function chairBroadcast() {
+  const text = chairTextEl.value.trim();
+  if (!text) return;
+  const full = (chairTagEl && chairTagEl.checked ? '【主持人】' : '') + text;
+  log(`[主持人→全体] ${text}`, 'hd');
+  if (runningTM && !runningTM.aborted) {
+    runningTM.pushChairMessage(full);
+    log('  （会议进行中：本条将在下一轮汇编进每个人的提示里）', 'warn');
+    chairTextEl.value = '';
+    return;
+  }
+  const targets = [];
+  for (const [id, c] of cells) {
+    if (c.enabled !== false) targets.push({ id, name: c.provider.name, send: (t) => makeWebviewDriver(c.wv, id).sendText(t) });
+  }
+  for (const [id, ac] of apiCells) {
+    if (ac.rawAdapter) targets.push({ id, name: ac.label, send: (t) => ac.rawAdapter.sendText(t) });
+  }
+  log(`  → 空闲直发 ${targets.length} 个席位（只发送，不等回复）`, targets.length ? 'ok' : 'warn');
+  await Promise.allSettled(targets.map((t) => t.send(full).catch(() => {})));
+  chairTextEl.value = '';
+}
+chairSendEl.addEventListener('click', () => { chairBroadcast(); });
+chairTextEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) chairBroadcast(); });
+
+/* 主持人发文件：网页席位走 CDP setFileInputFiles；API 席位以文字告知文件名 */
+async function chairSendFiles() {
+  const files = [...chairFilesEl.files].map((f) => f.path).filter(Boolean);
+  if (!files.length) { log('[主持人] 请先在「📎 文件」里选择要发送的文件', 'warn'); return; }
+  const names = files.map((p) => osPath.basename(p));
+  log(`[主持人→全体] 发送 ${files.length} 个文件：${names.join('、')}`, 'hd');
+  let okN = 0;
+  for (const [id, c] of cells) {
+    if (c.enabled === false) continue;
+    let ok = false;
+    try { ok = await makeWebviewDriver(c.wv, id).setFiles(files); } catch (_) { ok = false; }
+    if (ok) okN += 1;
+    log(`   ${ok ? '✔' : '✗'} ${c.provider.name}${ok ? '' : '（CDP 上传失败）'}`, ok ? 'ok' : 'bad');
+  }
+  for (const [, ac] of apiCells) {
+    if (!ac.rawAdapter) continue;
+    try {
+      await ac.rawAdapter.sendText(`【主持人发送了文件】${names.join('、')}（API 通道无法直接接收本地文件，仅以文件名告知）`);
+    } catch (_) { /* 尽力而为 */ }
+  }
+  log(`  → 文件已投递 ${okN} 个网页席位；API 席位以文字告知文件名`, okN ? 'ok' : 'warn');
+}
+chairFilesSendEl.addEventListener('click', () => { chairSendFiles(); });
+
+/* ⏸ 暂停 / ▶ 继续（仅透明广播会议；在轮次/席位发送边界生效） */
+btnPause.addEventListener('click', () => {
+  if (!runningTM) return;
+  if (runningTM.paused) {
+    runningTM.resume();
+    btnPause.textContent = '⏸ 暂停';
+    log('[暂停] 已继续会议', 'ok');
+  } else {
+    runningTM.pause();
+    btnPause.textContent = '▶ 继续';
+    log('[暂停] 会议已暂停 —— 各席位在当前轮次边界停下等待；点「继续」恢复', 'warn');
+  }
+});
+
+/* ⏹ 停止：透明广播 → 引擎级 abort（尽力叫停在途请求，已完成的发言照常落盘）；
+ *   阶段式模式 → 在阶段边界停止。AI 卡住不用再关软件重启。 */
+btnStop.addEventListener('click', () => {
+  if (runningTM) { runningTM.abort(); log('[停止] 正在停止会议…（已完成的发言照常写入会议记录）', 'warn'); return; }
+  if (meetingBusy) { meetingStopFlag = true; log('[停止] 将在当前阶段结束后停止', 'warn'); return; }
+  log('[停止] 当前没有进行中的会议', 'warn');
+});
+
+/* ══════════════════════════════════════════════════════════════
+   折叠：顶部流程/模式说明 一键收起；侧栏会议日志 点标题收起
+   ══════════════════════════════════════════════════════════════ */
+flowToggle.addEventListener('click', () => {
+  const on = document.body.classList.toggle('infocollapsed');
+  flowToggle.textContent = on ? '▾ 展开' : '▴ 收起';
+});
+logHead.addEventListener('click', () => {
+  const show = logEl.style.display === 'none';
+  logEl.style.display = show ? '' : 'none';
+  summaryEl.style.display = show ? '' : 'none';
+  logHead.textContent = show ? '▾ 会议日志' : '▸ 会议日志（已折叠）';
+});
 
 /* ---------- 发送可靠性辅助（2026-09-22 第四轮：修 Quill 类编辑器卡输入框）----------
    ★ 背景（实测铁证）：Gemini 的输入框是 Quill（div.ql-editor textarea new-input-ui）。
@@ -631,7 +1089,9 @@ function applyRoles() {
     if (c.roleEl) { c.roleEl.textContent = ''; c.roleEl.title = ''; }
   }
 
-  const ids = [...cells.keys(), ...apiCells.keys()];
+  const ids = [];
+  for (const [id, c] of cells) if (c.enabled !== false) ids.push(id);
+  for (const [id] of apiCells) ids.push(id);
   const r = castRoles(ids, { set: currentSet, seed: castSeed });
   assignment = r.assignment;
   castLedger = r.ledger;
@@ -728,6 +1188,80 @@ meetingRef = meeting;
 pendingLamps.splice(0).forEach(([id, c]) => bindStateLamp(id, c));
 
 /* ══════════════════════════════════════════════════════════════
+   透明广播会议：用户指定的形态（带标签互评 + 首条规则 + 每轮MD）
+   —— 复用现有 webview 驱动，建立独立适配器，不碰 modes/phase-runner 那套。
+   ══════════════════════════════════════════════════════════════ */
+async function runTransparent(task) {
+  const outDir = (outDirEl && outDirEl.value.trim()) || osPath.join(__dirname, '..', 'meetings');
+  const rounds = Math.max(1, Math.min(10, parseInt((roundsEl && roundsEl.value) || '3', 10) || 3));
+
+  // 议题资料（用户选的文件 → 拷进议题文件夹归档）
+  const materials = [];
+  if (materialsEl && materialsEl.files) {
+    for (const f of materialsEl.files) { if (f && f.path) materials.push(f.path); }
+  }
+
+  // 独立适配器（干净的 webview 驱动，不带角色注入）
+  const tmAdapters = {};
+  for (const [id, c] of cells) {
+    tmAdapters[id] = createWebAdapter({
+      id,
+      name: c.provider.name,
+      profile: c.provider.profile,
+      driver: makeWebviewDriver(c.wv, id),
+      pollMs: 500,
+    });
+  }
+  Object.assign(tmAdapters, apiAdapters);
+
+  const names = {};
+  for (const [id, c] of cells) names[id] = c.provider.name;
+  for (const [id, ac] of apiCells) names[id] = ac.label || id;
+  const participants = allSeatIds();
+
+  log(`══ 透明广播会议（${participants.length} 席 · ${rounds} 轮）══`, 'hd');
+  log(`[议题] ${task}`);
+  log(`[输出] ${outDir}（每场建「议题-会议ID」子目录，每轮 MD 自动生成）`);
+  if (materials.length) log(`[资料] ${materials.length} 个文件将拷入议题文件夹`, 'ok');
+
+  const tm = new TransparentMeeting({
+    topic: task,
+    participants,
+    adapters: tmAdapters,
+    names,
+    rounds,
+    outBaseDir: outDir,
+    materials,
+    logger: ({ level, msg }) => log(msg, level === 'error' ? 'bad' : (level === 'warn' ? 'warn' : '')),
+  });
+
+  // ★ 挂到全局：暂停/停止/主持人插话都以它为作用对象
+  runningTM = tm;
+  btnPause.disabled = false;
+  btnPause.textContent = '⏸ 暂停';
+  btnStop.disabled = false;
+
+  try {
+    const { outDir: doneDir } = await tm.run();
+    log(`▣ 会议结束，记录已生成：${doneDir}`, 'hd');
+    log('   可在左侧「透明广播会议设置」里改输出目录，或文件管理器打开该文件夹查看。', 'ok');
+    try { require('child_process').spawn('explorer', [doneDir]); } catch (e) { /* 打开失败不阻断 */ }
+  } catch (e) {
+    if (e && e.code === 'MEETING_ABORTED') {
+      log('■ 会议已停止 —— 已完成的发言照常写入了会议记录文件夹', 'warn');
+      summaryEl.textContent = '会议已手动停止（部分记录已落盘）';
+    } else {
+      log(`[透明会议异常] ${e && e.message}`, 'bad');
+    }
+  } finally {
+    runningTM = null;
+    btnPause.disabled = true;
+    btnPause.textContent = '⏸ 暂停';
+    btnStop.disabled = true;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
    按「会议模式」跑一场：模式 = 阶段序列 + 上下文切片 + 终止判据
    ══════════════════════════════════════════════════════════════ */
 /* 成本档位的中文名（给用户看的，不是内部枚举） */
@@ -739,6 +1273,21 @@ btnRun.addEventListener('click', async () => {
   btnRun.disabled = true;
   btnRun.textContent = '会议进行中…';
   logEl.innerHTML = '';
+  meetingBusy = true;
+  meetingStopFlag = false;
+  btnStop.disabled = false;
+
+  // ★ 本轮新增：透明广播会议走独立入口
+  if (currentMode === 'transparent') {
+    try { await runTransparent(task); }
+    catch (e) { log(`[入口异常] ${e && e.message}`, 'bad'); }
+    finally {
+      btnRun.disabled = false; btnRun.textContent = '开始会议';
+      meetingBusy = false; meetingStopFlag = false;
+      btnStop.disabled = true;
+    }
+    return;
+  }
 
   const mode = getMode(currentMode);
   log(`══ 开始会议「${mode.label}」（角色组：${currentSet}）══`, 'hd');
@@ -817,6 +1366,7 @@ btnRun.addEventListener('click', async () => {
 
   try {
     while (true) {
+      if (meetingStopFlag) { log('■ 已停止：不再开始新的轮次', 'warn'); break; }
       iteration += 1;
       meeting.round = iteration;  // 让本轮消息带上轮次（CANDIDATES 必须按轮筛候选）
       const plan = planPhases(currentMode, { participants: ids, assignment, panelGroupSize });
@@ -836,6 +1386,7 @@ btnRun.addEventListener('click', async () => {
       buildReport = '';
       buildFailText = '';
       for (const stage of plan) {
+        if (meetingStopFlag) { log('■ 已停止：本轮剩余阶段不再执行', 'warn'); break; }
         if (!stage.speakers.length) {
           log(`▶ 阶段「${stage.name}」无人发言，跳过（${stage.reason}）`, 'warn');
           continue;
@@ -1094,6 +1645,7 @@ btnRun.addEventListener('click', async () => {
         }
       }
 
+      if (meetingStopFlag) break;
       const verdict = shouldStop(currentMode, {
         iteration, critiques, prevCritiques, winnerId, prevWinnerId, buildPass,
       });
@@ -1123,6 +1675,9 @@ btnRun.addEventListener('click', async () => {
   } finally {
     btnRun.disabled = false;
     btnRun.textContent = '开始会议';
+    meetingBusy = false;
+    meetingStopFlag = false;
+    btnStop.disabled = true;
   }
 });
 
@@ -1137,6 +1692,13 @@ for (const m of listModes()) {
   const o = document.createElement('option');
   o.value = m.id;
   o.textContent = m.label + (m.loop ? ' ↻' : '');
+  selMode.appendChild(o);
+}
+// ★ 本轮新增：透明广播会议（独立于 modes 阶段式体系）
+{
+  const o = document.createElement('option');
+  o.value = 'transparent';
+  o.textContent = '透明广播会议（带标签互评 + 每轮MD）';
   selMode.appendChild(o);
 }
 for (const s of listRoleSets()) {
@@ -1160,10 +1722,26 @@ for (const [v, label] of [
 }
 selGroup.value = String(panelGroupSize);
 
-/** 全部参会席位（网页版 + API） */
-function allSeatIds() { return [...cells.keys(), ...apiCells.keys()]; }
+// ★ 本轮新增：透明广播会议设置默认值 + 仅该模式显示设置框
+if (outDirEl) outDirEl.value = osPath.join(__dirname, '..', 'meetings');
+if (tmboxEl) tmboxEl.style.display = (currentMode === 'transparent') ? '' : 'none';
+
+/** 全部参会席位（网页版 + API）—— 已停用的网页席位不计入 */
+function allSeatIds() {
+  const ids = [];
+  for (const [id, c] of cells) if (c.enabled !== false) ids.push(id);
+  for (const [id] of apiCells) ids.push(id);
+  return ids;
+}
 
 function renderFlow() {
+  if (currentMode === 'transparent') {
+    flowEl.innerHTML = '<span style="color:#8aa">流程：</span>'
+      + '<span class="ph"><span class="n">1</span><span class="sp">首条写规则</span></span>'
+      + '<span class="ph"><span class="n">2+</span><span class="sp">逐轮把「除自己外」他人发言汇编成带标签的一条消息</span></span>'
+      + '<span class="ph"><span class="n">✓</span><span class="sp">每轮落盘 MD</span></span>';
+    return;
+  }
   const ids = allSeatIds();
   const plan = planPhases(currentMode, { participants: ids, assignment, panelGroupSize });
   const mode = getMode(currentMode);
@@ -1196,6 +1774,13 @@ function renderFlow() {
    —— 选一个模式，立刻把「什么时候用 / 例子 / 什么时候别用 / 产出」摊开
    ══════════════════════════════════════════════════════════════ */
 function renderScene() {
+  if (currentMode === 'transparent') {
+    sceneEl.className = 'scene on';
+    sceneEl.innerHTML = '<b>「透明广播会议」</b> 所有人都能听到别人：每轮把除自己外所有参会者的发言汇编成带说话人标签'
+      + '（如「谷歌-Gemini 说：…」）的一条消息发给每个人；首条消息写明全部会议规则；每轮结束自动在该议题文件夹下生成'
+      + ' round-N.md 与 会议记录.md。这是你指定的「互相能评」形态——接受锚定风险，换取可互相质证。';
+    return;
+  }
   const m = getMode(currentMode);
   if (!m || !m.scene) { sceneEl.classList.remove('on'); return; }
   const need = Object.entries(m.modelFit.need)
@@ -1221,8 +1806,10 @@ function syncBuildLevelUI() {
 
 selMode.addEventListener('change', () => {
   currentMode = selMode.value;
+  if (tmboxEl) tmboxEl.style.display = (currentMode === 'transparent') ? '' : 'none';
   renderScene();
   renderFlow();
+  if (currentMode === 'transparent') { log('[模式] 切换为「透明广播会议」—— 所有人互相能听到（带标签汇编）+ 每轮落盘 MD', 'hd'); return; }
   const m = getMode(currentMode);
   log(`[模式] 切换为「${m.label}」—— ${m.desc}`, 'hd');
   // 模式的推荐角色组 → 主动提示（不强行改，尊重用户选择）
@@ -1280,8 +1867,8 @@ selBuildLevel.addEventListener('change', () => {
   }
 });
 
-/* 重排角色：换一个随机种子，在「够格的人」里重抽一套编制 */
-document.getElementById('btn-recast').addEventListener('click', () => {
+/* 重排角色：换一个随机种子，在「够格的人」里重抽一套编制（按钮在参会名单旁） */
+btnRecast.addEventListener('click', () => {
   castSeed = `s${Date.now()}`;
   applyRoles();
   renderFlow();

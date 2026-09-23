@@ -1,0 +1,132 @@
+这份重构需求非常清晰，基于不触碰/不重新挂载 9 个 `<webview>` 的硬性约束，且追求原生无框架的轻量实现，以下是针对 5 个核心问题的设计建议。
+
+### Q1：非窗口功能的拓扑方案对比
+
+为了让 12 个重 webview 随时可用且能完全腾出空间，提供以下 3 种拓扑方案：
+
+| 方案 | 适用边界与机制 | 成本 | 反例（什么时候不该用） |
+| --- | --- | --- | --- |
+| **方案 A：顶部甲板 + 底部停靠（推荐，接近你的 v0）** | 顶部放间歇操作（表单/控制），底部放持续信息（日志）。利用 Flex 列布局，折叠时 `height: 0; overflow: hidden`。
+
+ | **低**。仅需新增 `.topdeck` 和 `.logdock` 容器，利用现有 flex 架构，无需改动 `.grid`。
+
+ | 当用户使用的是 16:9 且垂直空间极度匮乏的小屏幕（如 13 寸轻薄本），且需要经常同时看控制栏和全阵列网格时。 |
+| **方案 B：侧边 Overlay 抽屉** | 平时完全隐藏，点击触发绝对定位 (`position: absolute; right: 0; z-index: 100`) 的侧边栏盖在网格上方。 | **中**。需处理 z-index，管理「点击外部关闭」的全局事件，以及可能的蒙层动画。 | 需要一边看着外部 AI 回答，一边高频对比 12 个网格里 AI 的输出时。抽屉会遮挡右侧的 3-4 个 webview 席位。 |
+| **方案 C：网格内嵌悬浮窗 (Floating Widgets)** | 将非窗口功能拆散，变成可拖拽的独立小浮窗悬浮在网格区域内。 | **极高**。需要手动实现边界碰撞、拖拽 (Drag & Drop) API、层级管理，极易引发原生 JS 内存泄漏。 | 追求极简和稳定性的桌面工具不应采用，且悬浮窗无论放在哪都会不可避免地挡住某个 webview 的内容。 |
+
+---
+
+### Q2：会议日志与外部 AI 回答的落位
+
+支持你草案中的落位建议，两者形态与节奏完全不同，不应挤在一起。
+
+* **外部 AI 回答（落位：顶部甲板 `.topdeck .extbox`）**
+* **理由**：作为间歇录入的表单，它属于「控制与输入」类动作，与顶部的「议题/模式设置」在行为逻辑上同源。置于顶部符合用户视觉从上到下的操作流。
+
+
+
+
+* **会议日志（落位：底部全宽停靠条 `.logdock`）**
+* **理由**：会议日志是开会时持续滚动的参考文本。底部全宽可以提供最长的单行阅读字符数，避免频繁换行。
+
+
+* **折叠机制**：展开时 `flex: 0 0 30%`，折叠时 `flex: 0 0 28px`（仅保留 `#log-head`）。
+
+
+* **成本**：低，调整 DOM 顺序即可。
+* **反例**：绝对不要将持续滚动的日志放进顶部甲板，因为日志滚动的跳跃感会严重干扰用户对顶部其他表单（如外部 AI 录入）的视觉焦点。
+
+---
+
+### Q3：模式感知顶栏的「显隐分组」方案
+
+不要用繁杂的 JS 去频繁增删 DOM，使用 **HTML 数据属性 (Data Attributes) 配合 CSS 显隐** 的方式最干净。
+
+* **HTML 结构**：在 `.topdeck` 或 `.modezone` 上挂载当前模式。
+```html
+<div class="topdeck" data-mode="transparent">
+  <!-- 公共控件 -->
+  <div class="chairbar">...</div>
+  <!-- 模式专属控件组 -->
+  <div class="mode-group mode-transparent">
+    <div id="tmbox">透明广播设置...</div>
+  </div>
+  <div class="mode-group mode-build">
+    <div id="buildlevel">产物验证...</div>
+  </div>
+</div>
+
+```
+
+
+* **CSS 规则**：
+```css
+/* 默认隐藏所有专属组 */
+.mode-group { display: none; }
+/* 模式命中时显隐 */
+.topdeck[data-mode="transparent"] .mode-group.mode-transparent { display: flex; }
+.topdeck[data-mode="build"] .mode-group.mode-build { display: flex; }
+
+```
+
+
+* **成本**：极低。JS 切换模式时只需一行代码 `topdeckEl.dataset.mode = currentMode`，零重排计算负担。
+* **反例**：如果在「会议中」还需要动态切换模式，不应使用此方案（但由于测试台特性，通常是开会前定好模式）。不要使用基于步骤的向导（Wizard），会增加测试台的高级用户操作层级。
+
+
+
+---
+
+### Q4：折叠如何真正腾空间的实现模式
+
+为了确保网格收回空间，且绝对不触发 webview 重建，推荐 **Flex 容器整体收缩法**。
+
+* **实现机制**：针对非 webview 容器（如 `.topdeck`），折叠时清空其在 Flex 主轴上的尺寸。
+```css
+body.deck-collapsed .topdeck {
+  flex: 0 0 0;          /* 彻底释放高度空间 */
+  min-height: 0;
+  height: 0;
+  padding: 0;
+  border: none;
+  overflow: hidden;     /* 确保内部文字不溢出 */
+}
+body.deck-collapsed .main {
+  flex: 1;              /* 剩下的空间全给包含网格的 .main */
+}
+
+```
+
+
+* **成本**：低。纯 CSS 控制，复用了目前 `#flow-toggle` 的优秀思路。
+
+
+* **避坑指南**：**绝对不要**给 `.main`、`.grid` 及其任何父级/祖先元素添加 `display: none`。`.topdeck` 内部没有 webview，所以对 `.topdeck` 整体 `display: none` 也是安全的，但 `height: 0` 配合 `overflow: hidden` 能保留未来加过渡动画的可能性。
+
+
+
+---
+
+### Q5：主持人栏（Chairbar）的协调
+
+赞同常驻顶栏的思路。它既有开会时的管理功能，也有空闲时的操作功能（如广播/发文件），不应该随状态彻底消失，应采用**状态降级 (State Degradation)** 策略。
+
+* **方案**：位置固定在 `.topdeck` 中的公共区域 `.seatbar` 旁边。
+* **显隐与可用性规则**：
+* 通过 `body` 上的类名控制：`body.is-meeting` 和 `body.is-idle`。
+* ⏸暂停 / ⏹停止按钮：常驻显示，但通过 CSS 视觉置灰 (`opacity: 0.4`)，并通过 JS 赋予 `disabled` 属性。
+
+
+
+
+* **成本**：低。无需编写新的挂载逻辑。
+* **反例**：不要在开会和空闲时将 Chairbar 在顶部和底部之间来回瞬移，会导致用户建立肌肉记忆失败，操作发生误触。
+
+---
+
+### 总体推荐结论
+
+**坚决采纳你的草案 v0。**
+你设计的 `.topdeck` 和 `.logdock` 的拆分非常精准地解决了空间浪费问题（去掉了恒定 380px 的右栏），同时规避了 webview 被销毁的致命风险。
+
+建议直接按你的 v0 推进，只需在实现时应用 Q3 提到的 `data-mode` 驱动 CSS 显隐，以及确保 Q4 中使用的折叠样式是 `height: 0; overflow: hidden` 而非去动网格区的 CSS 即可保证 400 个用例全绿。

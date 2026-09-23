@@ -1,0 +1,277 @@
+我先查看一下您上传的文件，了解当前通辽会议UI的具体情况，再给您针对性的设计建议。
+
+我已经完整阅读了你的咨询案。这是一个非常典型的「重内容区 + 多控制面」的桌面工具布局重构问题。下面我按你 §0 的 5 个问题逐一给出字段级建议。
+
+Q1：非窗口功能拓扑方案（2+1 个
+表格
+方案	拓扑结构	成本	什么时候不该这么做（反例）
+A. 顶部控制甲板 + 底部日志停靠‌（推荐）	顶部一块可整体折叠的 topdeck（所有配置/表单类控件；底部一块 logdock 放实时滚动日志；中间网格占满	中高：需删 .side、新增两个容器、重写 flex 纵向布局	反例：**如果单模式控件超过 15 个可交互控件且全部要常驻可见」，顶部甲板展开后高度会超 120px，挤压网格纵向空间——此时不该全堆顶部
+B. 左右双侧 Overlay 抽屉‌	左/右各一条 position:fixed 抽屉，默认 transform:translateX(±100%)，点按钮滑出覆盖在网格上，‌**不占布局宽高	中：绝对定位 + transform 动画；不触发 webview 重排	反例：**‌如果会议日志需要「一直盯着看」（如透明广播模式要实时对照 AI 输出和日志），overlay 一滑走就看不了——持续参考类信息不该用 overlay
+C. 模式标签页式顶栏‌	顶栏只有一行 Tab 切换，控件全藏在各 Tab 面板里（类似浏览器 DevTools 风格）	低：一套 Tab 容器 + display 切换	反例：**如果需要跨模式对比参数（如开着 transparent 模式要同时看席位状态+会议设置），Tab 切来切去效率极低——多组控件需同时可见时不该用 Tab
+
+我的判断‌：你的草案 v0 方向**采纳 A 方案最适配——顶部甲板 + 底部日志停靠」是对的。原因有三：
+
+你用户原话要求「挪到上面」；
+9 个 webview 最怕横向尺寸变化（网格列数固定 3/4/5/6 可调，纵向伸缩比横向稳）；
+配置类（间歇用）和监控类（持续用）天然分上下两层，语义清晰。
+Q2：会议日志 vs 外部 AI 回答落位建议
+会议日志 → 底部全宽停靠条 .logdock
+
+落位理由（字段级）‌：
+
+text
+body (flex column)
+└─ .logdock (flex:0 0 auto; 默认 height:28px / 展开 height:35%)
+   ├─ .logdock-head (28px, 点击切换展开/收起)
+   │  ├─ .logdock-title ("会议日志" + 未读条数徽章
+   │  └─ .logdock-actions (清空 / 复制 / 摘要切换)
+   └─ .logdock-body (overflow-y:auto; flex:1)
+      ├─ .log (实时滚动文本)
+      └─ .summary (摘要，可折叠在日志内或做 Tab)
+
+
+为什么放底部‌：
+
+使用节奏‌：日志是「被动接收型」——用户原话「开会时持续滚动、偶尔瞟一眼」，底部不挡操作路径上操作路径干扰顶部操作动线
+真腾空间逻辑‌：折叠成 1 行（28px）几乎不占有效空间，展开时从下往上"涨"，网格从上往下"退，符合阅读习惯
+字段级理由‌：.log 是 flex:1; overflow-y:auto 的滚动容器，放在底部天然占满整宽时，长文本行宽更长、换行更少、信息密度更高
+和 dragCellHeight 的冲突‌：dragCellHeight 是 cell 内部高度拖拽，logdock 是外层容器，二者不冲突——logdock 撑高时 grid 容器高度减小，grid 内部用 grid-template-rows: repeat(auto-fill, minmax(0, 1fr)) 自动适配，cell 内部 webview 只是高度变小、不卸载
+
+成本‌：低。新增 1 个 flex item，CSS 约 15 行，JS 折叠逻辑复用现有 body.infocollapsed 思路（加 body.logcollapsed）。
+反例‌：如果你的用户习惯「边看日志边调外部 AI 回答」（两个都要同时看），日志在底、外部 AI 在顶，上下扫视距离远——此时该把外部 AI 也挪到底部和日志并排或做 Tab。
+
+外部 AI 回答 → 顶部甲板 `.topdeck .extbox（折叠表单）
+
+落位理由（字段级）‌：
+
+text
+.topdeck
+└─ .extbox (border-radius: 0 0 0 0 0 0 0 0 0 0 0 0 0
+   ├─ .extbox-head (点击切换 .open 类)
+   │  └─ "外部 AI 回答" + 状态指示
+   └─ .extbox-body (display:none; .open 时 display:block)
+      └─ 表单内容（粘贴区
+
+
+为什么放顶部‌：
+
+使用节奏‌：「间歇录入、主动操作」——用户主动粘贴/录入，属于主动操作行为，和 seatbar/chairbar 同属「操作区」
+折叠语义‌：折叠后只留一条标题栏（~28px），不占多少高度；需要时点开就是表单
+字段级理由‌：extbox 是表单性质（输入框 + 按钮），高度固定、不滚动，放顶部操作路径短
+符合用户原话‌：「挪到上面」
+
+成本‌：极低。就是把 .extbox 从 .side搬到.topdeck` 里，DOM 结构几乎不变。
+反例‌：如果外部 AI 回答内容很长（> 500 字以上、需要滚动阅读），放在顶部甲板里会把顶栏撑得很高——此时该放底部 logdock 里做「日志 / 外部回答」双 Tab 切换。
+
+Q3：模式感知顶栏怎么做不臃肿
+
+推荐方案：分组显隐 + 两阶段（配置期 / 运行期）‌
+
+字段级设计：
+html
+<!-- 模式键：data-mode="transparent|panel|build|..." -->
+<!-- 阶段键：data-phase="config|running" -->
+<body data-mode="transparent" data-phase="config">
+  <div class="topdeck">
+    <div class="seatbar group-global">  <!-- 全局组：所有模式都有 -->
+    <div class="chairbar group-global">
+    <div class="modezone">
+      <div class="ctrl-group group-transparent">  <!-- transparent 模式专属 -->
+        <!-- tmbox 内容：输出目录/轮数/议题资料 -->
+      </div>
+      <div class="ctrl-group group-build">         <!-- build 模式专属 -->
+        <!-- 产物验证档位等 -->
+      </div>
+      <div class="ctrl-group group-panel">         <!-- panel 模式专属 -->
+        <!-- 专家会诊设置 -->
+      </div>
+      <div class="ctrl-group phase-config">       <!-- 仅配置期显示 -->
+        <!-- 开会前才需要的：角色组/重排/每排窗口数等 -->
+      </div>
+      <div class="ctrl-group phase-running">      <!-- 仅运行期显示 -->
+        <!-- 开会中才需要的：轮次进度、暂停原因等 -->
+      </div>
+    </div>
+    <div class="extbox group-global">            <!-- 外部 AI 回答 -->
+  </div>
+</body>
+
+
+CSS 显隐规则（核心 6 行）‌：
+
+css
+/* 默认全藏 */
+.ctrl-group { display: none; }
+
+/* 按模式显 */
+body[data-mode="transparent"] .group-transparent { display: block; }
+body[data-mode="build"] .group-build { display: block; }
+body[data-mode="panel"] .group-panel { display: block; }
+
+/* 按阶段显 */
+body[data-phase="config"] .phase-config { display: block; }
+body[data-phase="running"] .phase-running { display: block; }
+
+/* 全局组恒显 */
+.group-global { display: block; }
+
+
+JS 切换逻辑‌：
+
+js
+const MODE_CONTROLS = {
+  transparent: ['seatbar', 'chairbar', 'tmbox', 'extbox', 'log'],
+  panel:       ['seatbar', 'chairbar', 'group', 'extbox', 'log'],
+  build:       ['seatbar', 'chairbar', 'buildlevel', 'log'],
+};
+// 切换模式时：
+document.body.dataset.mode = currentMode;
+// 切换阶段时（开始会议 = running，停止 = config：
+document.body.dataset.phase = isRunning ? 'running' : 'config';
+
+为什么用「data- 属性 + CSS」而非 JS 逐个 if」
+声明式‌：CSS 管显隐，JS 只改一个属性值，状态源单一
+易扩展‌：加新模式 = 加一组 class + 一条 CSS 规则
+测试友好‌：CDP 读 body.dataset.mode 就能断言模式状态
+不臃肿‌：同屏最多显示「全局组 + 1 个模式组 + 1 个阶段组」，控件数量可控
+
+成本‌：中。需要把现有零散的 if (mode === 'transparent') 逻辑统一改成 data-attribute 驱动。
+反例‌：如果模式数量超过 8 种、且每种模式控件组之间差异极大（> 80% 控件都不一样），用 CSS class 拼起来会很碎——此时该拆成多个独立 deck 组件、按模式整个替换 render，而不是在同一个 deck 里显隐。
+
+Q4：折叠如何真正腾空间
+三种可落地实现模式
+表格
+模式	实现方式	适用场景	坑
+1. Flex 容器整体 collapse（推荐用于 topdeck）‌	.topdeck.collapsed { height:0; min-height:0; overflow:hidden; border:none }	顶部/底部停靠面板，内部无 webview	坑：如果内部有 position:sticky 或 float 元素，collapse 后可能还占空间；需确保子元素 overflow:hidden 配合
+2. Grid 区域收缩（推荐用于 logdock）‌	body { grid-template-rows: auto 1fr 0; → 折叠时改成 auto 1fr 28px	底部日志条，展开/收起高度变化	坑：grid 行高从 0 变到 auto 没有过渡动画（grid 行高不支持 transition）；要动画得用 max-height hack
+3. Absolute overlay 抽屉（备选）‌	position:fixed; right:0; top:0; bottom:0; width:380px; transform:translateX(100%)	不常用的设置面板	坑：overlay 覆盖在网格上，挡住内容，不腾布局空间但挡视觉空间——但完全不触发 webview 重排（因为网格尺寸没变）
+针对你的场景的推荐组合
+
+顶部甲板 .topdeck：Flex Collapse‌
+
+css
+.topdeck {
+  flex: 0 0 auto;
+  overflow: hidden;
+  transition: height 0.2s ease;
+}
+body.topdeck-collapsed .topdeck {
+  height: 0 !important;
+  min-height: 0;
+  border: none;
+  padding: 0;
+}
+/* 折叠后只留一条触发条（可选）
+body.topdeck-collapsed .topdeck-handle {
+  display: flex;
+  height: 24px;
+}
+
+成本‌：低。2 条 CSS 规则 + 1 个 body class 切换。
+为什么安全‌：.topdeck 内部全是表单/文本，‌没有 webview‌，`height:0 + overflow:hidden 完全没问题，不会触发任何 webview 重排。
+
+底部日志 .logdock：Flex 高度收缩‌
+
+css
+.logdock {
+  flex: 0 0 32%;     /* 默认展开占 32% */
+  min-height: 28px;
+  transition: flex-basis 0.25s ease;
+  display: flex;
+  flex-direction: column;
+}
+body.logcollapsed .logdock {
+  flex-basis: 28px;  /* 折叠成标题行高度 */
+}
+.logdock-body {
+  flex: 1;
+  overflow: hidden;  /* 折叠时内容被裁掉 */
+}
+body.logcollapsed .logdock-body {
+  display: none;    /* 折叠时彻底隐藏 body，避免滚动条残留 */
+}
+
+成本‌：低。3-4 条 CSS。
+为什么安全‌：logdock 收缩时，.main（grid 容器）的 flex:1 自动补满高度——‌grid 容器只是高度变小，12 个 cell 还在，webview 不卸载、只是高度变矮‌。Electron webview 对高度变化非常稳定（不像宽度变化那样会触发列数重排）。
+
+⚠️ 绝对不能做的‌：
+
+❌ 对 .grid 或 .cell 用 display:none → webview 卸载重建，丢登录态
+❌ 对 .grid 用 visibility:hidden → 空间还占着，白折了
+❌ 折叠右栏用 width:0 但 overflow:visible → 内容还露着
+
+成本总计‌：CSS 约 15-20 行，JS 约 10 行（两个折叠按钮的 click handler）。
+反例‌：如果折叠需要「折叠后 webview 尺寸变化导致某些网页 AI 内部布局错乱（如某些网页对可视区域变化触发重排开销大），此时不该用纵向折叠、改用 overlay 抽屉——但 9 个 webview 高度变化的开销远小于宽度变化，纵向是安全的。
+
+Q5：主持人栏的显隐/位置方案
+推荐：常驻顶栏 + 阶段驱动可用性
+html
+<div class="chairbar group-global">
+  <input class="chair-input" placeholder="主持人输入...">
+  <button class="btn-broadcast" data-phase-active="both">📢 广播</button>
+  <button class="btn-file" data-phase-active="both">📎 文件</button>
+  <button class="btn-pause" data-phase-active="running">⏸ 暂停</button>
+  <button class="btn-stop" data-phase-active="running">⏹ 停止</button>
+</div>
+
+
+CSS 规则‌：
+
+css
+/* 默认所有按钮都显示，只是可用性不同 */
+.chairbar button { opacity: 1; }
+.chairbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 配置期：暂停/停止按钮灰掉但可见 */
+body[data-phase="config"] .chairbar button[data-phase-active="running"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+
+为什么常驻理由‌：
+
+语义一致性‌：chairbar 是「主持人操作入口」，不管开不开会都在那儿，用户知道去哪儿找
+肌肉记忆‌：按钮位置固定，不用找，效率高
+实现成本低‌：只是改 disabled 状态，不用动 DOM 结构
+空闲时广播/发文件也有用‌：用户原话里空闲时广播=直接发给网页/API，不是没用
+
+两阶段的视觉差异‌：
+
+配置期（空闲）‌：⏸⏹ 按钮半透明（opacity:0.5），视觉上「不可用但可见」，用户知道这是开会后才会激活
+运行期（开会中）‌：全部按钮高亮，⏸⏹ 全可用
+
+成本‌：极低。加 data-phase-active 属性 + 2 条 CSS。
+反例‌：如果 chairbar 控件超过 8 个按钮、且空闲时大部分都没用，常驻会让顶栏显得拥挤——此时该把「运行期专属」按钮在配置期 display:none 彻底隐藏，开会时才出现（用 phase-running 组）。
+
+总体推荐方案
+
+对草案 v0 的态度：部分采纳，微调优化‌
+
+你的大方向（删右栏 + 顶部甲板 + 底部日志）是对的，我给 85 分。主要调整三点：
+
+模式感知体系化‌：从零散 if 改成 body[data-mode] + CSS 组显隐，加 data-phase 区分配置期/运行期
+折叠机制统一‌：顶部甲板用 flex height collapse，底部日志用 flex-basis 收缩，都走 body class 驱动，和现有 body.infocollapsed 机制一致
+主持人栏常驻 + 阶段可用性‌：不隐藏、只灰掉，保持位置稳定
+
+最终骨架（v1‌：
+
+text
+body (flex column, 100vh, data-mode / data-phase)
+├─ .header              （不变：模式/议题/开始）
+├─ .topdeck             【可整体折叠】
+│  ├─ .seatbar          全局组：席位芯片 + 角色组/重排/列数
+│  ├─ .chairbar         全局组：广播/文件/暂停/停止
+│  ├─ .modezone         模式专属组（tmbox/buildlevel/...）
+│  └─ .extbox           全局组：外部 AI 回答（折叠表单）
+├─ .main (flex:1)
+│  └─ .grid             12 cell，占满整宽
+└─ .logdock             【底部，可折叠成 1 行】
+   ├─ .logdock-head   标题行 + 折叠按钮
+   └─ .logdock-body   日志 + 摘要
+
+
+删 .side，网格占满整宽，所有非窗口功能都能真正折叠腾空间，符合用户原话的全部 6 条意图。

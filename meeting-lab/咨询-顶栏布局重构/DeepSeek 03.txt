@@ -1,0 +1,265 @@
+下面按第 3 轮 §0 六问逐题作答。先给总态度：**§2 已定案 23 条无推翻**，但 Q1 我要把四相加一个硬约束；Q3 我选 A 但必须补“编辑锁”；Q4 我给可测分界线；Q5 我选**建模三**；Q6 我基于 §4 真表重做映射，并挑出 4 条工作流漏洞。
+
+---
+
+## Q1：phase 几态？——四相 + 一个硬约束
+
+**结论：`setup / running ⇄ paused / done` 四相 + `attention` 正交，但 phase 不表达“轮次”，轮次必须是独立计数。**
+
+逐模式检验（§4 真表）：
+
+| 模式 | setup | running | paused | done | 关键点 |
+|---|---|---|---|---|---|
+| broadcast | ✓ 配置议题/席位 | ✓ 全员并行 | ✓ 可暂停派发 | ✓ 单次结束 | 无 loop，paused 只在派发中途有意义 |
+| review | ✓ 传材料 + READY Gate | ✓ 独立审阅→交叉质证→归并 | ✓ | ✓ | 三阶段是 running 内部子阶段，不是 phase |
+| assist | ✓ | ✓ | ✓ | ✓ | 用户是执行者，paused 常用于“等我操作” |
+| iterate | ✓ 必须有草稿 | ✓ 挑错→修订循环 | ✓ 关键 | ✓ | loop ≤5，paused 防止“跑飞” |
+| debate | ✓ | ✓ 立论→对辩 | ✓ | ✓ | 防自我强化是引擎约束，UI 不管 |
+| panel | ✓ 角色组 | ✓ 依次发言 | ✓ | ✓ | 可分组降本，UI 要显示组长接龙 |
+| chairman | ✓ 必须有 API 席位 | ✓ 主席点名循环 | ✓ 关键 | ✓ | loop ≤4，硬依赖 API 席位 |
+| divide | ✓ 拆分配置 | ✓ 拆分→攻克→汇总 | ✓ | ✓ | 无 loop |
+| tournament | ✓ | ✓ 出标→评标→定标→改进→复评 | ✓ | ✓ | loop ≤3，same-winner 终止 |
+| build | ✓ 构建档位 | ✓ 产出→落盘→编译→验证 | ✓ 关键 | ✓ | 第三档真跑构建，paused 要冻结子进程 |
+| transparent | ✓ 议题+资料 | ✓ 固定轮数 | ✓ | ✓ | O(N²) 已知代价 |
+
+**为什么四相装得下全部 11 模式：**  
+- 所有 loop 型（iterate/chairman/tournament/build/transparent）的“第 N 轮”是 running 内部计数器，不是 phase。把轮次塞进 phase 会出现 `running-round3` 这种组合爆炸。  
+- paused 必须存在，因为 build 第三档会真跑 `npm run build`，chairman 会调 API 席位，这些都不能“暂停=全部停”。paused 只停**派发**，不停已启动的工具/构建。  
+- done 是终态，但需要 `⏵续会` 从 done 回到 running（Kimi 的第三相）；这作为 done 上的动作，不是 phase。
+
+**反例：** 如果你的状态机只有 `idle/running`，build 第三档真跑构建时用户点“暂停”，你只能二选一——要么全停（构建被杀），要么假装没停。四相 + “paused=暂停派发”明确解决这个歧义。  
+**成本：** 状态键从 2 个变 4 个（`data-phase="setup|running|paused|done"`）；`attention` 独立，不参与 phase 判定。  
+**测试影响：** 400 用例若断言 `body[data-phase]` 存在性，只需把旧 `idle` 映射为 `setup`，旧 `running` 保留。
+
+---
+
+## Q2：工具面板放哪？——全局右滑 tooldock 绑定 activeSeat
+
+**结论：选全局右滑 `.tooldock`，绑定 `activeSeat`。卡内只留 24px 定高状态行。**
+
+**50 席 micro 密度（卡片 56px）推演：**
+
+```text
+┌─ .grid data-density="micro" ──────────────────────────────┐
+│ ┌ web1 56px ┐┌ api1 56px ┐┌ api2 56px ┐                  │
+│ │[WEB] ⚙3  ││[API] ⚙1  ││[API] —   │                  │
+│ └───────────┘└───────────┘└───────────┘                  │
+│ ┌ api3 56px ┐┌ api4 56px ┐┌ api5 56px ┐                  │
+│ │[API] ⚠1  ││[API] —   ││[API] ⚙2  │                  │
+│ └───────────┘└───────────┘└───────────┘                  │
+└──────────────────────────────────────────────────────────┘
+右侧 .tooldock 380px（overlay，不占布局宽）:
+┌─ tooldock: web1 ──────────────────────────────┐
+│ [对话] [工具 3] [权限] [日志]                 │
+│ ┌ 运行中 1 ────────────────────────────────┐ │
+│ │ read_file  ████░░ 62%  参数: {path:D:/..}│ │
+│ └──────────────────────────────────────────┘ │
+│ ┌ 已完成 2 ────────────────────────────────┐ │
+│ │ search   ok  1.2s  → 已注入下一轮        │ │
+│ │ write    ⚠ 需确认 → [允许] [拒绝]        │ │
+│ └──────────────────────────────────────────┘ │
+└──────────────────────────────────────────────┘
+```
+
+- 卡内 56px 只够一行：`[WEB] ⚙3` / `[API] ⚠1`。点击卡片 → `activeSeat=web1` → tooldock 打开并绑定。  
+- 10 个工具同时跑：tooldock 顶部显示 `运行中 10`，按席位分桶；卡片状态行各显示自己的计数。全局 `.toolbus` 在 globalbar 只显示 `⚙10` 总数。  
+- 为什么不是卡内抽屉：56px 高展开会撑破 micro 密度，且每个席位一个 DOM 节点是 O(N)，50 席 = 50 个抽屉。  
+- 为什么不是 ⧉ 弹出窗：弹窗遮挡网格，且多个弹窗层级难管。  
+- 为什么不是入 deck：deck 是配置区，工具历史是运行期纵向时间线，节奏不匹配。
+
+**成本：** 全局唯一 DOM，O(1) 换绑；状态 +1：`activeSeat`、`body.tooldock-open`。  
+**反例：** 如果用户要并排对比两个席位的工具调用，全局 dock 强制切换；此时可开第二个只读 `.tooldock-secondary`，但 v1 不做。  
+**z-index 坑：** Electron webview 是原生层，overlay 可能被盖住。实测若被盖，改用独立 BrowserWindow 或把 tooldock 放在 webview 容器外并设 `webview.style.zIndex` 无效——需 CDP 实测确认。
+
+---
+
+## Q3：外部 AI 回答落位——选 A，但必须补编辑锁
+
+**结论：选 A（顶甲板 + 编辑锁 + max-height），不选 B。**
+
+**理由（如果你是每天用它咨询的用户）：**
+1. 用户原话“挪到上面”是明确指令，A 尊重它。  
+2. 外部 AI 回答是**间歇录入**，不是持续滚动。顶甲板展开时占 `max-height:40vh`，收起 28px。咨询时展开，录入完收起。  
+3. B（右滑抽屉）与 tooldock 共用会冲突：咨询时你要贴回答，同时看工具调用，两个功能抢同一个抽屉位置。  
+4. A 的失效场景是“顶部展开压网格”，但编辑锁 + max-height 解决：编辑时 `data-editing=true` 禁止折叠，防止误收；`max-height:40vh` 防止撑爆。
+
+**B 何时会出事：**  
+- 如果你在 50 席 micro 密度下咨询，右滑抽屉会盖住右侧几列席位，而顶甲板只压顶部，网格仍可见。  
+- 如果工具调用频繁，B 的抽屉被 tooldock 占用，外部 AI 回答要么排队要么抢位置。
+
+**关键 CSS/HTML：**
+
+```html
+<section class="topdeck" id="topdeck">
+  <button class="deck-summary" id="topdeck-toggle">控制甲板</button>
+  <div class="deck-body">
+    <div class="modezone" data-group="extbox">
+      <div class="extbox" id="extbox">
+        <div class="extbox-head">外部 AI 回答</div>
+        <div class="extbox-body" contenteditable="true"></div>
+        <div class="extbox-foot">[保存] [清空] [参与上下文]</div>
+      </div>
+    </div>
+  </div>
+</section>
+```
+
+```css
+.extbox-body{max-height:40vh;overflow-y:auto}
+body[data-editing="true"] .topdeck{flex-basis:auto !important}
+body[data-editing="true"] .deck-body{display:block !important}
+```
+
+**成本：** 状态 +1：`data-editing`；max-height 触发内部滚动，不触发 webview 重排。  
+**反例：** 如果用户要贴 5000 字长文并同时参考网格，顶甲板 40vh 仍会压网格。此时应给“弹出独立编辑窗”按钮，不改变主布局。
+
+---
+
+## Q4：API 席位要不要虚拟滚动？——不要，分界线 200
+
+**结论：先原生滚动 + 分组页签 + 密度档；不预建虚拟化；不推荐离屏保留（除非测试断言节点存在）。**
+
+**数量分界线及依据：**
+
+| 席位数 | 方案 | 依据 |
+|---|---|---|
+| 0~50 | 原生滚动 + 分组页签 | 50 个 API div ≈ 250~500 DOM 节点，Electron 渲染进程无压力 |
+| 50~200 | 原生滚动 + 分组 + 搜索 + 密度档 | 200 个 API div ≈ 1000~2000 节点，CDP 实测 `getBoundingClientRect()` 网格容器 <16ms 可接受 |
+| 200~500 | 分组 + 分页（只渲染当前页 API） | DOM 节点 >2500，布局时间可能 >16ms，分页是低成本替代 |
+| 500+ | 虚拟滚动或离屏保留 | 此时 DOM 爆炸，必须虚拟化；但 9 个 webview 仍常驻，只对 API div 虚拟化 |
+
+**可测判据：** 用 CDP `Runtime.evaluate` 测 `performance.now()` 前后 `document.querySelector('.grid').getBoundingClientRect()`，若 >16ms 或 `document.querySelectorAll('.cell').length > 2000`，上分页；若 >5000，上虚拟化。  
+**反例：** 如果你直接上虚拟滚动，9 个 webview 不能虚拟化，会变成“9 个常驻 + N 个虚拟”的混合体，滚动同步和焦点管理极复杂。Gemini 说“虚拟滚动是毒药（对 webview）”对，但对 API div 不是毒药，只是没必要。  
+**成本：** 分页状态 +1：`currentApiPage`；搜索状态 +1：`apiSearchQuery`。  
+**测试影响：** 若 400 用例断言所有 API 节点存在，分页删 DOM 会破；改用 `hidden` 或 `.offscreen` 保留节点。
+
+---
+
+## Q5：人工模式——选建模三
+
+**结论：建模三。底层是每席位 `delivery: 'auto' | 'manual'` 通道；另设“人工咨询”快捷模式 = 全 manual + 分发追踪面板。**
+
+**为什么不是建模一（第 12 种 mode）：**  
+- 模式列表是工作流模式（broadcast/review/iterate/...），人工咨询不是工作流，是投递通道。  
+- 建模一会污染模式列表：12 种变 13 种，且“人工咨询”跑什么工作流？如果跑 broadcast，那它只是 broadcast 的 manual 版本。  
+- 状态机照走但“发言者=人”很别扭：人不是席位，不能进 `seats` 数组。
+
+**为什么不是建模二（纯横切通道）：**  
+- 用户需要一个入口：“我要人工咨询”。纯通道没有快捷方式，用户要逐个席位切 manual，9 个窗口切 9 次。  
+- 没有分发追踪面板，用户还是要手动记“谁已发/谁已答”。
+
+**建模三的具体设计：**
+
+```text
+┌─ .header ────────────────────────────────────────────────────────┐
+│ [模式▾ broadcast] [人工咨询] [角色组▾] [议题] [开始会议]        │
+├─ .manual-panel（人工咨询时出现）─────────────────────────────────┤
+│ 咨询稿: [____________________________] [复制到剪贴板]           │
+│ 附件: [选择文件] 已选 3 个                                      │
+│ 席位: [全选] [web1 ✓已发] [web2 ✓已答] [api1 ○未发] ...        │
+│ 进度: 已发 2/9  已答 1/9  未答: web2 web3 api1 ...              │
+├─ .grid ──────────────────────────────────────────────────────────┤
+│ 9 webview + N API div                                           │
+├─ .logdock ────────────────────────────────────────────────────────┤
+│ 人工咨询记录 | 每席位: 已发/已答/回答内容                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**字段级：**
+
+```js
+// 每席位状态
+seat.delivery = 'auto' | 'manual';
+seat.manualState = 'idle' | 'sent' | 'answered';
+seat.manualAnswer = ''; // 回收的回答
+
+// 快捷模式
+const MANUAL_CONSULT = {
+  id: 'manual-consult',
+  label: '人工咨询',
+  sets: { allSeats: { delivery: 'manual' } },
+  opens: ['manual-panel'],
+  skips: ['autoRound', 'completionDetection'],
+  reuses: ['round-N.md', '会议记录.md']
+};
+```
+
+**与会议引擎的关系：**  
+- 人工模式不跑自动轮次、不依赖完成检测。  
+- 落盘格式复用：`round-N.md` / `会议记录.md`。  
+- 自动通道失败时，手动兜底顺滑：每席位“复制到剪贴板”→ 用户粘贴 → 标记已发；进度 `已发 k/M`；未发清单。  
+- R4 文件：手动=每席位文件选择器预填同一批文件；自动=CDP setFiles + 逐席位状态回报。
+
+**成本：** `seat.delivery` + `seat.manualState` 两个状态；`.manual-panel` 一个 DOM 容器；`MANUAL_CONSULT` 一个常量。  
+**反例：** 如果用户想要混合模式（一些席位自动，一些手动），建模三也支持，因为通道是每席位的。  
+**测试影响：** 400 用例若断言模式列表长度，人工咨询不占 mode 位，不会破。
+
+---
+
+## Q6：真实工作流合理性总检
+
+### 6.1 重做「模式 × phase」映射表
+
+基于 §4 真表，用 `mode.needs` 驱动 READY Gate：
+
+```js
+const MODE_PHASE_MAP = {
+  broadcast:   { setup:['mode-params','extbox','toolmatrix'], running:['round-progress','toolbus','log'], done:['summary','export'] },
+  review:      { setup:['material-upload','extbox','toolmatrix'], running:['stage-indicator','toolbus','log'], done:['summary','export'] },
+  assist:      { setup:['extbox','toolmatrix'], running:['plan-pool','toolbus','log'], done:['summary','export'] },
+  iterate:     { setup:['draft-upload','extbox','toolmatrix'], running:['iteration-counter','critique-list','toolbus','log'], done:['summary','export'] },
+  debate:      { setup:['extbox','toolmatrix'], running:['debater-status','toolbus','log'], done:['summary','export'] },
+  panel:       { setup:['group-config','extbox','toolmatrix'], running:['speak-order','toolbus','log'], done:['summary','export'] },
+  chairman:    { setup:['api-seat-config','extbox','toolmatrix'], running:['roll-call-queue','toolbus','log'], done:['summary','export'] },
+  divide:      { setup:['task-split','extbox','toolmatrix'], running:['subtask-status','toolbus','log'], done:['summary','export'] },
+  tournament:  { setup:['extbox','toolmatrix'], running:['bid-pool','eval-pool','verdict','toolbus','log'], done:['summary','export'] },
+  build:       { setup:['build-level','extbox','toolmatrix'], running:['artifact-verify','toolbus','log'], done:['summary','export'] },
+  transparent: { setup:['tmbox','material-upload','extbox','toolmatrix'], running:['round-progress','toolbus','log'], done:['summary','export'] }
+};
+```
+
+READY Gate 从 `mode.needs` 自动推导：
+
+```js
+const MODE_NEEDS = {
+  review:    ['材料'],
+  iterate:   ['草稿'],
+  chairman:  ['API 席位'],
+  transparent: ['议题','资料']
+};
+// READY Gate: mode.needs.every(n => checkNeed(n)) ? 启用开始 : 禁用+提示
+```
+
+### 6.2 至少 3 条工作流漏洞 + 修复建议
+
+**漏洞 W1：主席点名硬依赖 API 席位，但 UI 不阻止无 API 席位时开始。**  
+- 证据：§4 `chairman` 硬约束“主席必须走真实 API，绝不能用网页版（ADR-001）”。  
+- 修复：READY Gate 检查 `mode.needs` 含 `API 席位` 时，若 `apiSeats.length === 0`，禁用开始按钮并提示“主席模式需要至少一个 API 席位”。
+
+**漏洞 W2：招标评审依赖“产出物打 kind”的输出契约，但 UI 不区分候选/评标/结论。**  
+- 证据：§4 `tournament` 硬约束“产出物必须打 kind（candidate/ballot/verdict/revision/review），否则切片把评标当候选发出去”。  
+- 修复：UI 日志和席位卡加 kind 徽标：`[candidate]` `[ballot]` `[verdict]` `[revision]` `[review]`；`round.kind` 在切片时作为过滤依据。  
+- 反例：如果 AI 输出没打 kind，引擎应拒绝切片并挂 attention，而不是猜。
+
+**漏洞 W3：反复修正需要草稿，共同审阅需要材料，但 UI 不把这些做成硬门槛。**  
+- 证据：§4 `iterate` 前置 `草稿`，`review` 前置 `材料`。  
+- 修复：setup 阶段 `draft-upload` / `material-upload` 为空时，开始按钮禁用；READY Gate 显示 `⚠ 未提供草稿`。  
+- 反例：如果用户想“先开始再补草稿”，应允许但标记 `attention`，不硬阻塞。
+
+**漏洞 W4：loop 型模式的“第 N/M 轮”内容完全不同，统一进度显示会误导。**  
+- 证据：§4 `iterate` 一轮=挑错→修订，`chairman` 一轮=点名→发言，`tournament` 一轮=出标→评标→定标→改进→复评，`build` 一轮=产出→落盘→编译→验证。  
+- 修复：进度显示用 `mode.roundLabel`：iterate=`修正轮 N/5`，chairman=`点名轮 N/4`，tournament=`评审轮 N/3`，build=`构建轮 N`；不用统一的“第 N/M 轮”。  
+- 反例：如果用户只看“第 3 轮”不知道是挑错还是编译，会误判进度。
+
+**漏洞 W5（附加）：透明广播 O(N²) 上下文是已知代价，但 UI 不显示当前注入份数。**  
+- 证据：§4 `transparent` 9 人一轮 153 份注入实测。  
+- 修复：`.globalbar` 显示 `注入 153 份/轮`，超阈值挂 attention。  
+- 反例：如果 50 席不拆域，注入 2500 份/轮，UI 要提前警告，而不是等引擎崩。
+
+---
+
+## 结尾：对 §2 已定案 23 条的态度
+
+**无推翻。** 第 2 轮 23 条在 §4 真表下全部成立。唯一补充是 Q1 的“paused=暂停派发，不停已启动工具/构建”和 Q5 的“人工模式=通道+快捷模式，不占 mode 位”——这两条是新增细化，不是推翻。
+
+**总体推荐：** 四相状态机 + 全局 tooldock + 外部 AI 回答顶甲板（编辑锁）+ API 不虚拟化（分界线 200）+ 人工模式建模三 + READY Gate 从 `mode.needs` 自动推导 + kind 徽标 + `roundLabel` 区分 loop 语义。
