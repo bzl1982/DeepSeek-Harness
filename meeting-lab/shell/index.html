@@ -23,6 +23,49 @@
     .grid { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: minmax(220px, 1fr); gap: 4px; padding: 6px; overflow-y: auto; }
     .cell { position: relative; background: #121820; border: 1px solid #2a3a4a; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
     .cell webview { flex: 1; width: 100%; border: none; min-height: 0; }
+    /* ══════ 人工咨询·分发甲板（规范 V1 R2'）══════
+       收起态 = 28px 摘要行（进度一眼可见，不占空间）；
+       展开态 = absolute 浮层（F1 硬约束：z-index≥200、不挤压网格行高、
+       max-height:min(60vh, calc(100vh - 160px))、锚定甲板下缘向下展开）。 */
+    .dispatchdeck { position: relative; border-bottom: 1px solid #2a3a4a; background: #0e141d; flex: none; }
+    .dispatchdeck .dd-head { display: flex; align-items: center; gap: 8px; padding: 5px 12px; min-height: 28px; cursor: pointer; user-select: none; }
+    .dispatchdeck .dd-title { color: #4da3ff; font-size: 12px; font-weight: bold; }
+    .dispatchdeck .dd-summary { color: #8aa; font-size: 11px; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .dispatchdeck .dd-summary .bad { color: #ff6b6b; }
+    .dispatchdeck .dd-summary .ok { color: #69db7c; }
+    .dispatchdeck .dd-toggle { color: #8aa; font-size: 11px; }
+    .dispatchdeck .dd-body { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 200;
+      background: #101823; border: 1px solid #2a3a4a; border-top: none; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+      padding: 10px 12px; max-height: min(60vh, calc(100vh - 160px)); overflow-y: auto; }
+    .dispatchdeck.open .dd-body { display: block; }
+    .dispatchdeck.open .dd-toggle::after { content: ''; }
+    .dispatchdeck .dd-row { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0; }
+    .dispatchdeck .dd-row label.dd-label { color: #8aa; font-size: 11px; flex: none; width: 58px; padding-top: 5px; }
+    .dispatchdeck textarea.dd-text { flex: 1; min-height: 72px; max-height: 140px; resize: vertical; background: #0b0e14;
+      color: #cde; border: 1px solid #2a3a4a; border-radius: 4px; padding: 6px 8px; font-size: 12px; font-family: inherit; line-height: 1.5; }
+    .dispatchdeck .dd-seats { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+    .dispatchdeck .dd-seat { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: #8aa;
+      background: #121820; border: 1px solid #2a3a4a; border-radius: 10px; padding: 2px 8px; cursor: pointer; user-select: none; }
+    .dispatchdeck .dd-seat.on { color: #cde; border-color: #4da3ff; }
+    .dispatchdeck .dd-btns { display: flex; gap: 6px; margin-left: 66px; flex-wrap: wrap; }
+    .dispatchdeck button.dd-btn { background: #1a2a3d; color: #cde; border: 1px solid #345; border-radius: 4px;
+      padding: 4px 12px; font-size: 12px; cursor: pointer; }
+    .dispatchdeck button.dd-btn.primary { background: #1d4ed8; border-color: #2563eb; color: #fff; }
+    .dispatchdeck button.dd-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .dispatchdeck .dd-seatchips { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+    .dispatchdeck .dd-seatrow { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8aa;
+      padding: 2px 6px; border-radius: 3px; }
+    .dispatchdeck .dd-seatrow:hover { background: #16202e; }
+    .dispatchdeck .dd-seatrow .st { flex: none; width: 56px; text-align: center; border-radius: 3px; font-size: 10px; padding: 1px 0; }
+    .dispatchdeck .dd-seatrow .st.s-pending { background: #223; color: #89a; }
+    .dispatchdeck .dd-seatrow .st.s-sending { background: #2a3a5a; color: #7ab8ff; }
+    .dispatchdeck .dd-seatrow .st.s-sent { background: #1d3a2a; color: #69db7c; }
+    .dispatchdeck .dd-seatrow .st.s-failed { background: #3a1d1d; color: #ff6b6b; }
+    .dispatchdeck .dd-seatrow .err { color: #ff8787; font-size: 10px; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .dispatchdeck .dd-seatrow .mini { flex: none; font-size: 10px; color: #9ab; background: #1a2a3d; border: 1px solid #345;
+      border-radius: 3px; padding: 1px 7px; cursor: pointer; }
+    .dispatchdeck .dd-seatrow .mini:hover { color: #fff; border-color: #4da3ff; }
+    .dispatchdeck .dd-note { color: #678; font-size: 10px; margin: 4px 0 0 66px; line-height: 1.5; }
     .cell .bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px; background: #0d1118; border-top: 1px solid #2a3a4a; font-size: 11px; }
     .cell .name { color: #8fc7ff; }
     .cell .state { font-family: Consolas, monospace; }
@@ -167,6 +210,40 @@
     <input id="topic" value="请评审「通辽会议接入微软多智能体框架」的可行路径。" />
     <button id="btn-run">开始会议</button>
     <button id="btn-clear" class="ghost">清空日志</button>
+  </div>
+
+  <!-- ══════ 人工咨询·分发甲板（规范 V1 R2'：一个组件、一份 DispatchJob 状态）══════
+       收起 = 28px 摘要行；展开 = F1 浮层（零挤压网格）。C1 快照/C2 幂等/C3 持久化。 -->
+  <div class="dispatchdeck" id="dispatchdeck">
+    <div class="dd-head" id="dd-head" title="点击展开/收起人工咨询分发面板">
+      <span class="dd-title">🖐 人工咨询·分发</span>
+      <span class="dd-summary" id="dd-summary">未创建任务 —— 展开写咨询稿，一键发到勾选的席位</span>
+      <span class="dd-toggle" id="dd-toggle">展开 ▾</span>
+    </div>
+    <div class="dd-body">
+      <div class="dd-row">
+        <label class="dd-label">咨询稿</label>
+        <textarea class="dd-text" id="dd-text" placeholder="粘贴你要问 9 家的咨询稿……（点「就绪」生成不可变快照，之后改稿=新快照，杜绝 9 席回答不同版本）"></textarea>
+      </div>
+      <div class="dd-row">
+        <label class="dd-label">附件</label>
+        <input type="file" id="dd-files" multiple style="flex:1; font-size:11px; color:#8aa;" />
+        <span style="font-size:10px;color:#678;" id="dd-files-note">网页席位走 CDP 自动注入，失败自动降级</span>
+      </div>
+      <div class="dd-row">
+        <label class="dd-label">目标席位</label>
+        <div class="dd-seats" id="dd-seats"></div>
+        <button class="dd-btn" id="dd-all" title="全选/反选">全选</button>
+      </div>
+      <div class="dd-btns">
+        <button class="dd-btn primary" id="dd-ready">① 就绪（生成快照）</button>
+        <button class="dd-btn primary" id="dd-send" disabled>② 一键发送（L1 自动）</button>
+        <button class="dd-btn" id="dd-retry" disabled>重试失败席位</button>
+        <button class="dd-btn" id="dd-new">作废任务</button>
+      </div>
+      <div class="dd-seatchips" id="dd-status" style="margin-top:8px;"></div>
+      <div class="dd-note">L1=自动投递（文本注入+CDP 塞文件）→ 失败自动降级 L2（稿件进剪贴板，你手动贴，贴完点「标记已发」）→ L3 逐席复制。进度实时落盘，崩溃重启不丢（C3）。</div>
+    </div>
   </div>
 
   <div class="flowwrap">
@@ -1973,6 +2050,273 @@ extAdd.addEventListener('click', () => {
 
 renderExternalCount();
 log('侧栏「外部 AI 回答」：在浏览器里问完元宝/谷歌/千问，把回答贴进来 —— 它会成为一条会议消息并参与后续切片。', 'warn');
+
+/* ══════════════════════════════════════════════════════════════
+   人工咨询·分发甲板（规范 V1 R2'：一个组件、一份 DispatchJob 状态）
+   C1 就绪=不可变快照（改稿=新快照，9 席保证答同一份）
+   C2 逐席幂等（重试只碰 failed，已 delivered 绝不重发）
+   C3 进度实时落盘（localStorage），崩溃重启恢复续传
+   L1 自动投递 → 失败降级 L2（剪贴板+手动贴+标记已发）→ L3 逐席复制
+   ══════════════════════════════════════════════════════════════ */
+const D = require('../core/dispatch-job');
+const DD_KEY = 'dsh-dispatch-v1';
+let ddJob = null;
+const ddChecked = new Set();
+
+const ddDeck = document.getElementById('dispatchdeck');
+const ddHead = document.getElementById('dd-head');
+const ddSummary = document.getElementById('dd-summary');
+const ddToggle = document.getElementById('dd-toggle');
+const ddText = document.getElementById('dd-text');
+const ddFiles = document.getElementById('dd-files');
+const ddSeatsEl = document.getElementById('dd-seats');
+const ddStatusEl = document.getElementById('dd-status');
+const ddReadyBtn = document.getElementById('dd-ready');
+const ddSendBtn = document.getElementById('dd-send');
+const ddRetryBtn = document.getElementById('dd-retry');
+const ddNewBtn = document.getElementById('dd-new');
+const ddAllBtn = document.getElementById('dd-all');
+
+/** 当前全部席位（网页 + API），含发送通道元数据 */
+function ddListSeats() {
+  const out = [];
+  for (const [id, c] of cells) out.push({ id, name: c.provider.name, kind: 'web', entry: c });
+  for (const [id, c] of apiCells) out.push({ id, name: c.label || id, kind: 'api', entry: c });
+  return out;
+}
+/** 附件真实路径：Electron 33 必须走 webUtils.getPathForFile（File.path 已废弃） */
+function ddFilePaths() {
+  const paths = [];
+  for (const f of ddFiles.files) {
+    let p = null;
+    try { p = require('electron').webUtils.getPathForFile(f); } catch (e) { /* 旧内核回退 */ }
+    if (!p && f.path) p = f.path;
+    if (p) paths.push(p);
+  }
+  return paths;
+}
+/** C3：每次状态变更立即落盘 */
+function ddPersist() {
+  try { localStorage.setItem(DD_KEY, ddJob ? JSON.stringify(D.serialize(ddJob)) : ''); } catch (e) { /* 存储满不阻断 */ }
+}
+function ddRestore() {
+  try {
+    const raw = localStorage.getItem(DD_KEY);
+    if (!raw) return null;
+    return D.deserialize(JSON.parse(raw));
+  } catch (e) {
+    log('[分发] 恢复上次任务失败（已丢弃）：' + e.message, 'warn');
+    return null;
+  }
+}
+function ddRenderSummary() {
+  if (!ddJob) {
+    ddSummary.textContent = '未创建任务 —— 展开写咨询稿，一键发到勾选的席位';
+    ddSummary.className = 'dd-summary';
+    ddSendBtn.disabled = true; ddRetryBtn.disabled = true;
+    return;
+  }
+  const p = D.progress(ddJob);
+  const fails = D.failedSeats(ddJob);
+  let html = `快照 <b>${ddJob.snapshot.contentHash}</b> · `;
+  if (p.sent === p.total && p.total > 0) {
+    html += `<span class="ok">已发 ${p.sent}/${p.total} ✅ 全部送达</span>`;
+  } else {
+    html += `已发 <span class="ok">${p.sent}/${p.total}</span>`;
+    if (p.sending) html += ` · 发送中 ${p.sending}`;
+    if (p.failed) html += ` · <span class="bad">失败 ${p.failed}：${fails.map((f) => f.seatId).join('、')}</span>`;
+  }
+  ddSummary.innerHTML = html;
+  ddSendBtn.disabled = (p.sent === p.total) || p.sending > 0;
+  ddRetryBtn.disabled = p.failed === 0;
+}
+function ddRenderSeats() {
+  const seats = ddListSeats();
+  /* 席位勾选 chips */
+  ddSeatsEl.innerHTML = '';
+  for (const s of seats) {
+    const chip = document.createElement('span');
+    chip.className = 'dd-seat' + (ddChecked.has(s.id) ? ' on' : '');
+    chip.textContent = s.name;
+    chip.addEventListener('click', () => {
+      if (ddChecked.has(s.id)) ddChecked.delete(s.id); else ddChecked.add(s.id);
+      ddRenderSeats();
+    });
+    ddSeatsEl.appendChild(chip);
+  }
+  /* 逐席状态行 + L2/L3 兜底按钮 */
+  ddStatusEl.innerHTML = '';
+  if (!ddJob) return;
+  for (const s of seats) {
+    const st = ddJob.seats.get(s.id);
+    if (!st) continue;
+    const row = document.createElement('div');
+    row.className = 'dd-seatrow';
+    const badge = document.createElement('span');
+    badge.className = 'st s-' + st.status;
+    badge.textContent = ({ pending: '待发', sending: '发送中', sent: '已发', failed: '失败' })[st.status]
+      + (st.attempt > 1 ? ` ×${st.attempt}` : '');
+    const name = document.createElement('span');
+    name.textContent = s.name;
+    name.style.color = '#cde';
+    row.appendChild(badge); row.appendChild(name);
+    if (st.error) {
+      const err = document.createElement('span');
+      err.className = 'err'; err.textContent = st.error; err.title = st.error;
+      row.appendChild(err);
+    } else {
+      const sp = document.createElement('span'); sp.style.flex = '1'; row.appendChild(sp);
+    }
+    if (st.status === 'failed' || st.status === 'pending') {
+      const cp = document.createElement('span');
+      cp.className = 'mini'; cp.textContent = '📋 复制稿件';
+      cp.addEventListener('click', () => ddCopyFor(s.id));
+      row.appendChild(cp);
+      const mk = document.createElement('span');
+      mk.className = 'mini'; mk.textContent = '✓ 标记已发';
+      mk.title = '手动贴完/发完后点这里确认（C2：确认后绝不会重发）';
+      mk.addEventListener('click', () => {
+        const r = D.markSent(ddJob, s.id, { transport: D.TRANSPORT.L3 });
+        if (!r.ok) { log(`[分发] ${s.name}: ${r.reason}`, 'warn'); return; }
+        ddPersist(); ddRenderSummary(); ddRenderSeats();
+        log(`[分发] ${s.name} 已手动标记为已发（L3）`, 'ok');
+      });
+      row.appendChild(mk);
+    }
+    ddStatusEl.appendChild(row);
+  }
+}
+/** L2：稿件进剪贴板（权限已在 main.js 放行），用户去窗口手动贴 */
+async function ddCopyFor(seatId) {
+  if (!ddJob) return;
+  try {
+    await navigator.clipboard.writeText(ddJob.snapshot.text);
+    log(`[分发] ${seatId} 稿件已进剪贴板 —— 去那个窗口粘贴，贴完点「✓ 标记已发」`, 'ok');
+  } catch (e) {
+    log(`[分发] 复制到剪贴板失败：${e.message}`, 'bad');
+  }
+}
+/** 单席投递。transport=L1 自动；任何异常 → markFailed（不中断其他席位） */
+async function ddDispatchSeat(seatId, transport) {
+  const meta = ddListSeats().find((s) => s.id === seatId);
+  if (!meta) { D.markFailed(ddJob, seatId, { error: '席位不存在' }); return; }
+  const r = D.markSending(ddJob, seatId, { transport });
+  if (!r.ok) return;
+  ddPersist(); ddRenderSummary(); ddRenderSeats();
+  try {
+    if (meta.entry.popped) throw new Error('该席位已弹出为独立窗口，自动投递暂停（用 📋 复制稿件手动贴）');
+    const files = ddFilePaths();
+    if (meta.kind === 'web') {
+      const driver = makeWebviewDriver(meta.entry.wv, seatId);
+      if (ddJob.snapshot.text) await driver.sendText(ddJob.snapshot.text);
+      if (files.length) {
+        const okF = await driver.setFiles(files);
+        if (!okF) throw new Error('CDP setFileInputFiles 失败（文件自动注入失败）');
+      }
+      D.markSent(ddJob, seatId, { transport });
+    } else {
+      const raw = meta.entry.rawAdapter;
+      if (!raw || !raw.sendText) throw new Error('API 席位无发送接口');
+      if (files.length) throw new Error('API 席位暂不支持文件投递（本次只发文本）');
+      if (ddJob.snapshot.text) await raw.sendText(ddJob.snapshot.text);
+      D.markSent(ddJob, seatId, { transport });
+    }
+    log(`[分发] ${meta.name} ✅ 已送达（${transport}）`, 'ok');
+  } catch (e) {
+    D.markFailed(ddJob, seatId, { error: (e && e.message) || 'UNKNOWN' });
+    log(`[分发] ${meta.name} ❌ ${e && e.message} —— 已降级：点「📋 复制稿件」手动贴，贴完「✓ 标记已发」`, 'bad');
+  }
+  ddPersist(); ddRenderSummary(); ddRenderSeats();
+}
+/** 一键发送：只发 pending 的勾选席位，严格串行（sendInputEvent 抢焦点，不能并发） */
+async function ddSendAll() {
+  if (!ddJob) return;
+  const targets = [...ddChecked].filter((id) => {
+    const st = ddJob.seats.get(id);
+    return st && st.status === 'pending';
+  });
+  if (!targets.length) { log('[分发] 没有待发的勾选席位', 'warn'); return; }
+  for (const id of targets) {
+    await ddDispatchSeat(id, D.TRANSPORT.L1);
+    await new Promise((res) => setTimeout(res, 400));
+  }
+  const p = D.progress(ddJob);
+  log(`[分发] 本轮完成：已发 ${p.sent}/${p.total}`
+    + (p.failed ? `，失败 ${p.failed}（已降级 L2/L3 手动兜底，展开面板逐席处理）` : '，全部送达'),
+    p.failed ? 'warn' : 'hd');
+}
+/** 重试：C2 保证只碰 failed 席位 */
+async function ddRetry() {
+  if (!ddJob) return;
+  const targets = D.retryTargets(ddJob);
+  if (!targets.length) return;
+  log(`[分发] 重试 ${targets.length} 个失败席位（已 delivered 的席位不在名单里）`, '');
+  for (const id of targets) {
+    await ddDispatchSeat(id, D.TRANSPORT.L1);
+    await new Promise((res) => setTimeout(res, 400));
+  }
+}
+
+ddHead.addEventListener('click', () => {
+  ddDeck.classList.toggle('open');
+  ddToggle.textContent = ddDeck.classList.contains('open') ? '收起 ▴' : '展开 ▾';
+});
+ddReadyBtn.addEventListener('click', () => {
+  const text = ddText.value;
+  if (!text.trim()) { log('[分发] 咨询稿是空的，没法就绪', 'warn'); return; }
+  if (!ddChecked.size) { log('[分发] 至少勾一个目标席位', 'warn'); return; }
+  try {
+    const snap = D.createSnapshot({ text });
+    ddJob = D.createDispatchJob({ snapshot: snap, seats: [...ddChecked] });
+    ddPersist();
+    log(`[分发] 快照就绪（${snap.contentHash} · ${snap.text.length} 字 · ${ddChecked.size} 席）—— 之后改稿=新快照，9 席保证答同一份`, 'ok');
+    ddRenderSummary(); ddRenderSeats();
+  } catch (e) {
+    log('[分发] 就绪失败：' + e.message, 'bad');
+  }
+});
+ddSendBtn.addEventListener('click', ddSendAll);
+ddRetryBtn.addEventListener('click', ddRetry);
+ddNewBtn.addEventListener('click', () => {
+  /* 两击确认（不用原生 confirm：模态框会阻塞 renderer，自动化/CDP 全卡死） */
+  if (ddJob && ddJob._confirmArmed && (Date.now() - ddJob._confirmArmed) < 3000) {
+    ddJob = null;
+    localStorage.removeItem(DD_KEY);
+    ddRenderSummary(); ddRenderSeats();
+    log('[分发] 任务已作废', '');
+    return;
+  }
+  if (!ddJob) { ddJob = null; localStorage.removeItem(DD_KEY); ddRenderSummary(); ddRenderSeats(); return; }
+  const p = D.progress(ddJob);
+  if (p.sent >= p.total) {           // 全部发完，直接作废不确认
+    ddJob = null;
+    localStorage.removeItem(DD_KEY);
+    ddRenderSummary(); ddRenderSeats();
+    log('[分发] 任务已完成并清除', 'ok');
+    return;
+  }
+  ddJob._confirmArmed = Date.now();
+  ddNewBtn.textContent = '再点一次确认作废';
+  setTimeout(() => { ddNewBtn.textContent = '作废任务'; }, 3000);
+  log('[分发] 3 秒内再点一次「作废任务」确认（还有 ' + (p.total - p.sent) + ' 席未发）', 'warn');
+});
+ddAllBtn.addEventListener('click', () => {
+  const seats = ddListSeats();
+  if (ddChecked.size === seats.length) ddChecked.clear();
+  else seats.forEach((s) => ddChecked.add(s.id));
+  ddRenderSeats();
+});
+
+/* 初始化：默认全选 + 恢复上次未完成任务（C3） */
+ddListSeats().forEach((s) => ddChecked.add(s.id));
+ddJob = ddRestore();
+if (ddJob) {
+  const p = D.progress(ddJob);
+  log(`[分发] 已恢复未完成任务 ${ddJob.jobId}（快照 ${ddJob.snapshot.contentHash}，已发 ${p.sent}/${p.total}）—— 展开顶部甲板继续`, 'ok');
+  ddText.value = ddJob.snapshot.text;
+}
+ddRenderSummary();
+ddRenderSeats();
 </script>
 </body>
 </html>
