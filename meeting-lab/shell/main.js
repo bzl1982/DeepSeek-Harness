@@ -59,6 +59,8 @@ app.on('session-created', (session) => {
 //   表现为"所有网页模型都是未登录"——而且不会报错，只能靠人猜。
 const CLIENT_USER_DATA = path.join(app.getPath('appData'), 'DeepSeek Harness');
 
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
 if (REUSE_LOGIN) {
   app.setPath('userData', CLIENT_USER_DATA);
 }
@@ -132,7 +134,8 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
       await new Promise((r) => setTimeout(r, 250));
     }
 
-    /* ── 策略 A：chooser 拦截 ── */
+    /* ── 策略 A：chooser 拦截（受信任点击——合成 .click() 骗不过部分框架，
+     *   必须经 Input.dispatchMouseEvent 派 isTrusted=true 的真鼠标事件） ── */
     if (attach && attach.trigger) {
       let opened = null;
       const onMsg = (evt, method, params) => {
@@ -142,26 +145,48 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
         await dbg.sendCommand('Page.enable');
         await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
         dbg.on('message', onMsg);
-        const clickRes = await wc.executeJavaScript(`(function(){
-          var b = document.querySelector(${JSON.stringify(attach.trigger)});
-          if (!b) return 'no-trigger';
-          b.click(); return 'clicked';
-        })();`);
-        if (clickRes !== 'clicked') {
-          return { ok: false, error: '没找到附着按钮: ' + attach.trigger };
-        }
-        await new Promise((r) => setTimeout(r, 900));
-        if (!opened && attach.menu) {
-          // 触发按钮开的可能是菜单（如 Gemini"上传和工具"）→ 点含"上传文件"的菜单项
-          await wc.executeJavaScript(`(function(){
-            var items = document.querySelectorAll('[role="menuitem"],[role="option"],li,button,div[tabindex]');
-            for (var i = 0; i < items.length; i++) {
-              var it = items[i];
-              if (it.offsetParent !== null && /上传文件|上传附件|本地文件|从电脑/.test(it.textContent || '')) { it.click(); return; }
-            }
+
+        /** 在页面里找元素（返回 getBoundingClientRect 中心），再用 CDP Input 真点击 */
+        const trustClick = async (finderJs) => {
+          const rect = await wc.executeJavaScript(`(function(){
+            var el = (${finderJs})();
+            if (!el || el.offsetParent === null) return null;
+            var r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return null;
+            if (r.top < 0 || r.bottom > innerHeight + 20 || r.left < 0 || r.right > innerWidth + 20) return null;
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
           })();`);
-          await new Promise((r) => setTimeout(r, 900));
+          if (!rect) return false;
+          const o = { x: rect.x, y: rect.y, button: 'left', clickCount: 1 };
+          await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...o });
+          await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...o });
+          await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...o });
+          return true;
+        };
+
+        const clicked = await trustClick(`(() => {
+          return document.querySelector(${JSON.stringify(attach.trigger)});
+        })`);
+        if (!clicked) return { ok: false, error: '没找到附着按钮或不在视口内: ' + attach.trigger };
+        await sleepMs(1200);
+
+        if (!opened && attach.menu) {
+          // 触发按钮开的可能是菜单（谷歌"添加文件和工具"/ChatGPT"添加文件等"）
+          //   → 精确文本匹配菜单项（排除触发按钮自己），受信任点击
+          await trustClick(`(() => {
+            var trig = document.querySelector(${JSON.stringify(attach.trigger)});
+            var cands = document.querySelectorAll('[role="menuitem"],[role="menu"] *,li,button,[jsaction]');
+            for (var i = 0; i < cands.length; i++) {
+              var el = cands[i];
+              if (el === trig || el.contains(trig) || el.offsetParent === null || el.children.length > 3) continue;
+              var t = (el.textContent || '').trim();
+              if (t === '添加文件' || /^(上传文件|上传附件|本地文件|从电脑上传|从本地文件上传)/.test(t)) return el;
+            }
+            return null;
+          })`);
+          await sleepMs(1200);
         }
+
         if (opened && opened.backendNodeId) {
           await dbg.sendCommand('DOM.setFileInputFiles', { files, backendNodeId: opened.backendNodeId });
           return { ok: true, via: 'chooser' };

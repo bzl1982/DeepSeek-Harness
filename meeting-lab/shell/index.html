@@ -1044,11 +1044,12 @@ const ATTACH_BUTTONS = {
   'gemini-web': { trigger: 'button[aria-label="上传和工具"]', menu: true },   // 点开菜单后再点"上传文件"
   'yuanbao-web': { trigger: 'button[aria-label="添加"]', menu: true },        // 添加菜单里找上传项
   'chatgpt-web': { trigger: 'button[data-testid="composer-plus-btn"]', menu: true }, // "添加文件等"菜单
+  'google-search': { trigger: 'button[aria-label="添加文件和工具"]', menu: true }, // 谷歌 AI 模式（菜单项"添加文件"，已走查验证 chooser 弹出）
   'wenxin-web': { synthetic: ['input'] },   // 实测: 派 change+input 时能挂上, 零事件不挂 → 文心只听 input
   // 'kimi-web' / 'deepseek-web' / 'doubao-web'：直接塞已验证可通，零合成事件
 };
-/* 非对话型席位：没有聊天界面，文件投递无意义 */
-const NO_CHAT_SEATS = new Set(['google-search']);
+/* 非对话型席位：没有聊天界面，文件投递无意义（google-search 实测有 AI 模式上传，已移出） */
+const NO_CHAT_SEATS = new Set([]);
 
 function makeWebviewDriver(wv, providerId) {
   return {
