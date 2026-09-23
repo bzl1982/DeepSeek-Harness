@@ -168,9 +168,13 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
           return document.querySelector(${JSON.stringify(attach.trigger)});
         })`);
         if (!clicked) return { ok: false, error: '没找到附着按钮或不在视口内: ' + attach.trigger };
-        await sleepMs(1200);
-
-        if (!opened && attach.menu) {
+        /** 轮询等 chooser（固定 sleep 会漏：谷歌菜单渲染 ~1.5s，1.2s 就放弃过） */
+        const waitChooser = async (ms) => {
+          const t0 = Date.now();
+          while (!opened && Date.now() - t0 < ms) await sleepMs(200);
+          return !!opened;
+        };
+        if (!(await waitChooser(2500)) && attach.menu) {
           // 触发按钮开的可能是菜单（谷歌"添加文件和工具"/ChatGPT"添加文件等"）
           //   → 精确文本匹配菜单项（排除触发按钮自己），受信任点击
           await trustClick(`(() => {
@@ -184,7 +188,7 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
             }
             return null;
           })`);
-          await sleepMs(1200);
+          await waitChooser(4000);
         }
 
         if (opened && opened.backendNodeId) {

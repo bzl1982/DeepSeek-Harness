@@ -940,7 +940,6 @@ async function chairSendFiles() {
   let okN = 0;
   for (const [id, c] of cells) {
     if (c.enabled === false) continue;
-    if (NO_CHAT_SEATS.has(id)) { log(`   ⊘ ${c.provider.name}（搜索页无对话界面，跳过文件投递）`, 'warn'); continue; }
     let ok = false;
     try { ok = await makeWebviewDriver(c.wv, id).setFiles(files); } catch (_) { ok = false; }
     if (ok) okN += 1;
@@ -1048,8 +1047,6 @@ const ATTACH_BUTTONS = {
   'wenxin-web': { synthetic: ['input'] },   // 实测: 派 change+input 时能挂上, 零事件不挂 → 文心只听 input
   // 'kimi-web' / 'deepseek-web' / 'doubao-web'：直接塞已验证可通，零合成事件
 };
-/* 非对话型席位：没有聊天界面，文件投递无意义（google-search 实测有 AI 模式上传，已移出） */
-const NO_CHAT_SEATS = new Set([]);
 
 function makeWebviewDriver(wv, providerId) {
   return {
@@ -2212,7 +2209,6 @@ async function ddDispatchSeat(seatId, transport) {
   if (!r.ok) return;
   ddPersist(); ddRenderSummary(); ddRenderSeats();
   try {
-    if (NO_CHAT_SEATS.has(seatId)) throw new Error('搜索页无对话界面，文件投递不适用');
     if (meta.entry.popped) throw new Error('该席位已弹出为独立窗口，自动投递暂停（用 📋 复制稿件手动贴）');
     const files = ddFilePaths();
     if (meta.kind === 'web') {
