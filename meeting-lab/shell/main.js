@@ -165,10 +165,28 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
           return true;
         };
 
+        /* ★ prepare：站点需先进入某界面（谷歌要先点「AI 模式」才有承接文件的输入框） */
+        if (attach.prepare) {
+          const okPrep = await trustClick(`(() => {
+            var want = ${JSON.stringify(attach.prepare)};
+            var cands = document.querySelectorAll('button,[role="button"],[role="tab"],a,div[jsname],span');
+            for (var i = 0; i < cands.length; i++) {
+              var el = cands[i];
+              if (el.offsetParent === null) continue;
+              var t = (el.textContent || '').trim();
+              var lb = el.getAttribute('aria-label') || '';
+              /* 包含匹配且文本短（按钮常带图标/空格，精确相等会漏） */
+              if ((t.indexOf(want) >= 0 && t.length < 24) || (lb.indexOf(want) >= 0 && lb.length < 24)) return el;
+            }
+            return null;
+          })`);
+          console.log('[cdp-set-files] prepare(' + attach.prepare + '): ' + (okPrep ? '已点击' : '未找到'));
+          if (okPrep) await sleepMs(2500);
+        }
+
         const clicked = await trustClick(`(() => {
           return document.querySelector(${JSON.stringify(attach.trigger)});
-        })`);
-        if (!clicked) {
+        })`);        if (!clicked) {
           // ★ 不 early-return！附着按钮找不到/不在视口 → 继续往下走策略 C/B（否则拖放通道被跳过）
           console.log('[cdp-set-files] 策略 A 找不到附着按钮（' + attach.trigger + '），继续后续策略');
         } else {
@@ -253,6 +271,13 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
           var t = comp;
           for (var d = 0; d < 6 && t; d++) { targets.push(t); t = t.parentElement; }
           if (document.body) targets.push(document.body);
+          var hasChip = function () {
+            var text = document.body.innerText || '';
+            for (var m = 0; m < FILES.length; m++) { if (text.indexOf(FILES[m].name) >= 0) return true; }
+            return false;
+          };
+          /* ★ 逐层试探：每层只派一次 drop，出现芯片立刻停。
+           *   曾经 7 层同时派 → 文心/千问各收到 7 份重复（每层各挂一份）。 */
           for (var k = 0; k < targets.length; k++) {
             try {
               var dt = new DataTransfer();
@@ -264,10 +289,9 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
                 targets[k].dispatchEvent(new DragEvent(n, mk(n)));
               });
             } catch (e) { /* 这一层不行就下一层 */ }
+            await new Promise(function (r) { setTimeout(r, 900); });
+            if (hasChip()) return 'staged';
           }
-          await new Promise(function (r) { setTimeout(r, 1500); });
-          var text = document.body.innerText || '';
-          for (var m = 0; m < FILES.length; m++) { if (text.indexOf(FILES[m].name) >= 0) return 'staged'; }
           return 'no-chip';
         })();`);
         if (ack === 'staged') return { ok: true, via: 'drop' };

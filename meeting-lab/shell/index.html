@@ -1045,7 +1045,7 @@ const ATTACH_BUTTONS = {
   'gemini-web': { trigger: 'button[aria-label="上传和工具"]', menu: true },
   'yuanbao-web': { trigger: 'button[aria-label="添加"]', menu: true },
   'chatgpt-web': { trigger: 'button[data-testid="composer-plus-btn"]', menu: true, drop: true },
-  'google-search': { trigger: 'button[aria-label="添加文件和工具"]', menu: true, drop: true },
+  'google-search': { prepare: 'AI 模式', trigger: 'button[aria-label="添加文件和工具"]', menu: true, drop: true },
   // 'kimi-web' / 'deepseek-web' / 'doubao-web'：直接塞已验证可通，零配置即可
 };
 
