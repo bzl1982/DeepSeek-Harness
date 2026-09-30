@@ -47,3 +47,14 @@ _archive/
 
 # 官方源码参考与本地调试产物（含第三方源码副本、CDP 调试脚本与截图，不入库）
 desktop/official-ref/
+
+# ---- 2026-10-01 上传GitHub前补录：临时诊断文件与运行时数据不入库 ----
+desktop/_*.png
+desktop/_*.js
+desktop/agent/harness/data/
+meeting-lab/_*.txt
+meeting-lab/_*.js
+meeting-lab/shell/_*
+meeting-lab/data/
+meeting-lab/replies/
+meeting-lab/启动器日志.txt

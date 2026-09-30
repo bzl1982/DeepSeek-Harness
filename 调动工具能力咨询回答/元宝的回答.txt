@@ -1,0 +1,369 @@
+你这个场景本质上有三层东西要打通：
+
+1. 网页版 AI（远端/浏览器里跑的对话界面）  
+2. DeepSeek Harness（本地/客户端里的 Agent Runtime，Cordis 插件内核，200+ 插件/包）  
+3. 本地工具（Shell、文件系统、本地 MCP Server、Native App、硬件、NAS、数据库等）
+
+最稳的路线不是“让网页直接调本地”，而是：
+
+网页 AI ↔ Harness 本地运行时 ↔ 本地工具/MCP  
+
+中间用一条受控信道做“工具代理/桥”。
+
+下面给你一套可落地的技术路线。
+
+一、先定架构：别让网页直连本地
+
+浏览器有沙箱，不能直接碰：
+• 本地文件系统
+
+• 本机进程
+
+• USB/串口/摄像头
+
+• 局域网设备（NAS、路由器、Home Assistant）
+
+所以正确模型是：
+┌──────────────┐
+│ 网页版 AI     │  ← 用户聊天、出 tool_call
+│ Chat UI       │
+└──────┬───────┘
+       │ WebSocket / SSE / HTTP
+┌──────▼──────────────┐
+│ DeepSeek Harness     │  ← Agent Loop、权限、审批、轨迹
+│ dsh + Cordis         │
+└──────┬──────────────┘
+       │ stdio / 本地 socket / MCP
+┌──────▼──────────────┐
+│ 本地工具层           │
+│ bash / fs / MCP      │
+│ NAS / Docker / DB    │
+└─────────────────────┘
+
+
+Harness 本身就是“模型 + 执行环境”的胶水层，你要把网页 AI 当成一个 Model/UI 前端，把 dsh 当成工具执行后端。
+
+二、DeepSeek Harness 侧：把“网页 AI”封装成 Model Plugin
+
+Harness 是 Cordis：
+
+• ctx.llm：模型适配
+
+• ctx.tools：工具注册
+
+• ctx.fs / ctx.sandbox：执行环境
+
+• ctx.web：UI/HTTP 入口
+
+方案 A：Harness 主导 Agent Loop（推荐）
+
+网页只是“壳”：
+
+1. 网页把用户消息发给 Harness
+2. Harness 跑 agent loop
+3. Harness 用 DeepSeek / 其他模型
+4. Harness 调用 200+ 插件 + 本地 MCP
+5. 结果通过 SSE/WebSocket 推回网页
+
+👉 网页不需要懂 tool schema，只要会：
+• sendMessage
+
+• receiveEvent
+
+• approveToolCall
+
+这是最贴合 Harness 设计的做法。
+
+方案 B：网页模型主导，Harness 当“本地工具网关”
+
+如果你坚持“网页版 AI 自己决策”：
+
+1. 网页模型返回 tool_call
+2. 网页把 tool_call 发给 Harness
+3. Harness 在本机执行
+4. Harness 把 tool_result 还回去
+
+这时候 Harness 不是一个 Agent，而是一个：
+
+Local Tool Execution Server
+
+代价是：审批、轨迹、子代理、workflow 这些 Harness 能力会用得很别扭。
+
+三、网页 ↔ Harness 的通信：三种可选
+
+1️⃣ WebSocket（最推荐）
+
+Harness 起一个本地 WS 服务：
+浏览器 ──ws://127.0.0.1:3980──▶ dsh bridge
+
+
+优点：
+• 双向
+
+• 支持流式
+
+• 支持工具审批弹窗
+
+• 支持后台任务事件
+
+消息格式直接用 JSON-RPC 或 Harness 的 session event：
+{
+  "type": "tool.call",
+  "tool": "bash",
+  "args": { "command": "ls -la" },
+  "session": "abc123"
+}
+
+
+2️⃣ SSE + HTTP（简单、好调试）
+
+• 网页 POST /chat
+
+• Harness 用 SSE 推：
+
+  • think
+
+  • tool_call
+
+  • tool_result
+
+  - need_approval
+  • done
+
+适合“类 ChatGPT 界面”。
+
+3️⃣ Browser Native Messaging（最像 Claude/Chrome 插件）
+
+如果是浏览器扩展：
+网页/扩展 ──Native Messaging──▶ 本地 Bridge ──▶ dsh
+
+
+优点：
+• 不需要开 HTTP 端口
+
+• 用户感知“网页真的能碰本机”
+
+缺点：
+• 安装麻烦
+
+• 要写 manifest
+
+• Chrome 有 1MB 消息限制 
+
+四、本地工具层：统一成“MCP + Harness Tool Plugin”两层
+
+别把所有本地能力都写成 Harness 插件，也别全都写 MCP。  
+用分层：
+
+第一层：MCP Server（标准、跨客户端）
+
+适合：
+• 文件系统
+
+• Git
+
+• 数据库
+
+• NAS
+
+- Home Assistant
+• Chrome DevTools
+
+• Docker
+dsh ──stdio──▶ mcp-filesystem
+dsh ──stdio──▶ mcp-nas
+dsh ──stdio──▶ mcp-docker
+
+
+好处：
+• Claude Desktop / Cursor / dsh 都能用
+
+• 工具发现标准化（tools/list）
+
+• 以后换 Harness 也不亏
+
+第二层：Harness Cordis Plugin（深度集成）
+
+适合：
+• 权限模型
+
+• 审批流
+
+• 轨迹审计
+
+• 子代理
+
+• 自定义 agent loop
+
+• 把 MCP 工具“包装成业务工具”
+
+例如：
+ctx.tools.register({
+  name: 'nas.backup_workspace',
+  schema: {...},
+  async run(args) {
+    await ctx.tools.call('mcp:nas.run', {...})
+    ctx.session.log('backup done')
+  }
+})
+
+
+这样：
+• 模型看到的是“业务工具”
+
+• 底层可以是 MCP / Shell / Docker / SSH
+
+五、把“200+ 插件”管起来：Profile / Bundle / Preset
+
+DeepSeek Harness 不是“把所有插件都挂上”，而是：
+Bundle → Profile → Patch → Session Preset
+
+
+你该做一套“能力档位”：
+
+档位示例
+
+档位 工具
+
+safe-chat web_search / calc / memory
+
+coding bash / fs / git / subagent
+
+local-ops nas / docker / ssh / db
+
+danger full shell / network / rm -rf
+
+网页端让用户切“模式”，Harness 切 Profile。
+
+千万别：网页 AI 一句话就拿到 danger-full-access。
+
+六、安全边界（很重要）
+
+本地工具一旦放开，比 RCE 还可怕。
+
+必须做：
+
+1. 工具白名单
+
+allowed_tools:
+  - fs.read
+  - bash.readonly
+  - nas.list
+denied_tools:
+  - fs.delete
+  - bash.sudo
+
+
+2. 工作区沙箱
+
+• 文件操作限制在 /workspace
+
+• Shell 用 dsh-sandbox-local
+
+• Docker / MicroVM 跑危险命令
+
+3. 人工审批
+
+- 写文件
+• 删文件
+
+• 网络请求
+
+• 装包
+
+• 跑 sudo
+
+Harness 本身就有 dsh-user-approval / permission preset，别绕开。
+
+4. 桥接鉴权
+
+本地 WS / HTTP 必须：
+• token
+
+• 仅绑 127.0.0.1
+
+• 不允许 0.0.0.0 裸开
+
+• 可选：本机 unlock 后才允许网页连
+
+七、推荐落地路线（MVP → 生产）
+
+MVP（1–2 周）
+
+1. npx @deepseek-ai/dsh web 先跑起来
+2. 写个本地 dsh-bridge 插件：
+   • 起 WebSocket
+
+   • 接收 user_message
+
+   - 跑 session
+   • 推事件
+
+3. 网页用最小聊天框连 WS
+4. 先接：
+   • tool-bash
+
+   • tool-fs
+
+   • 1 个本地 MCP
+
+✅ 目标：网页说“列出工作区文件”，本机真执行。
+
+进阶（1 个月）
+
+• 网页模型也可以发 tool_call → Harness 执行
+
+• 做 Profile 切换
+
+• 做 tool approval UI
+
+• 接 NAS / Docker / SQLite / Chrome
+
+- 所有调用写进 append-only trajectory
+
+生产级
+
+• Harness 跑在：
+
+  • 本机
+
+  • WSL2
+
+  • 家里 Mini PC
+
+  • 服务器 container
+
+• 网页跑在：
+
+  • Vercel / Cloudflare / 内网
+
+• 桥：
+
+  • 本机 WebSocket Bridge
+
+  • 可选 Tailscale / WireGuard
+
+• 工具：
+
+  - MCP 管“设备/数据”
+  • Cordis Plugin 管“策略/业务/审计”
+
+八、一句总架构
+
+网页 AI = 嘴和脸  
+
+DeepSeek Harness = 大脑+手  
+
+MCP = 手能握的工具  
+
+Bridge = 神经
+
+如果你愿意，下一步我可以帮你画：
+
+1. dsh-bridge 插件骨架（Cordis 写法）
+2. 网页 ↔ Harness 的 WebSocket 协议
+3. 怎么把 200+ 插件拆成“可授权工具树”
+4. 怎么让“网页版元宝”通过 Harness 真操作你通辽家里的 NAS
+
+你先告诉我：  
+网页 AI 是“它来决策”还是“Harness 来决策”？ 这决定整个架构重心。

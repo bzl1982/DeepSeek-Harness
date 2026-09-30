@@ -10,14 +10,17 @@
  *  4. 应用退出时完整清理服务进程树
  */
 
-const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain, webContents, nativeImage } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 
 // [dsh-desktop 嵌入] 智能体大脑（网页版 AI × 本地 Harness）
 const { createAgentRuntime } = require('../agent/main.js');
+// [网页版智能体] 唯一配置源（命名/URL/partition/登录检测），三处界面共用
+const { AGENT_CATALOG } = require('./agentCatalog.js');
 
 let agentRuntime = null;
 
@@ -50,6 +53,35 @@ function resolveLoadingPage() {
  *  - 选择器基于 dsh 前端 bundle 的 CSS Modules 类名（fish / headlineText / previewBadge）
  */
 const BRAND_BLUE = '#4D6BFE';
+
+/* ---------- 窗口图标：鲸鱼，颜色跟随皮肤（蓝 / 黑） ---------- */
+// 背景（2026-09-22）：旧版 main.js 建窗口时**没有传 icon**，dev 模式下窗口/任务栏
+// 落到 Electron 默认图标（深色圆标），只有打包版才靠 build/icon.ico 显示鲸鱼 —— 这就是
+// 「左上角图标变成默认的了」的原因。这里显式设置，dev 与打包一致。
+// 两个 PNG 由 official-ref/make-icons.js 从 build/whale-mark.svg（官方鲸鱼矢量图）光栅化生成。
+const WINDOW_ICON_FILES = { blue: 'win-icon-blue.png', black: 'win-icon-dark.png' };
+function resolveWindowIcon(skin) {
+  const name = WINDOW_ICON_FILES[skin] || WINDOW_ICON_FILES.blue;
+  const candidates = [
+    path.join(__dirname, '..', 'build', name),        // 开发模式 & 打包进 asar
+    path.join(__dirname, '..', 'resources', name),    // 兜底
+    path.join(process.resourcesPath || '', name),     // 打包后 resources 目录
+  ];
+  for (const p of candidates) {
+    try { if (p && fs.existsSync(p)) return p; } catch (e) { /* 忽略 */ }
+  }
+  return null;
+}
+let windowIconPath = resolveWindowIcon('blue');
+
+// 启动自检日志：确认图标资源真的能加载（排查「左上角还是默认图标」时一眼可见）
+try {
+  const probe = windowIconPath ? nativeImage.createFromPath(windowIconPath) : null;
+  console.log('[icon] window icon = ' + windowIconPath + ' / ' +
+    (probe && !probe.isEmpty() ? JSON.stringify(probe.getSize()) : 'INVALID'));
+} catch (e) {
+  console.log('[icon] probe failed: ' + (e && e.message));
+}
 const SKIN_JS = `
 (() => {
   var KEY = 'dsh-desktop-skin';
@@ -220,6 +252,7 @@ function createWindow(url) {
     minWidth: 960,
     minHeight: 620,
     title: 'DeepSeek Harness',
+    icon: windowIconPath || undefined, // 鲸鱼图标（随皮肤切换，见 ipcMain.on('skin:changed')）
     autoHideMenuBar: true,
     backgroundColor: '#0b0e14',
     center: true,
@@ -251,21 +284,129 @@ function createWindow(url) {
     }
   });
 
-  // [会议功能] 主窗口右上角加「AI 会议」按钮
+  // [会议功能] 主窗口左下角「通辽会议」按钮（复制设置按钮样式，插在旁边）
   win.webContents.on('dom-ready', () => {
     const MEET_BTN_JS = `
       (function() {
-        if (document.getElementById('dsh-meet-btn')) return;
-        const btn = document.createElement('button');
-        btn.id = 'dsh-meet-btn';
-        btn.textContent = '🎯 AI 会议';
-        btn.style.cssText = 'position:fixed;top:12px;right:12px;z-index:99999;padding:8px 16px;background:#4da3ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;';
-        btn.onclick = () => { if (window.dshAgent && window.dshAgent.openMeeting) window.dshAgent.openMeeting(); };
-        document.body.appendChild(btn);
+        var injected = false;
+        function inject() {
+          try {
+            if (document.getElementById('dsh-meet-btn')) { injected = true; return; }
+            // [Bug6 修复] 严格锁定侧边栏底部「设置」按钮，过滤掉右上角头部齿轮
+            // 旧逻辑 fallback 到 button[aria-label*="设置"] 会误命中头部右上角齿轮，导致按钮跑到右上角。
+            function findSidebarSettingsBtn() {
+              // 1) 优先：侧边栏/导航容器内直接找设置按钮（class 或 aria-label 命中）
+              var containers = document.querySelectorAll('[class*="sidebar"], nav, aside');
+              for (var c = 0; c < containers.length; c++) {
+                var btns = containers[c].querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                  var b = btns[i];
+                  var cls = (b.className || '').toString();
+                  var aria = b.getAttribute ? (b.getAttribute('aria-label') || '') : '';
+                  if (/setting/i.test(cls) || /设置|settings/i.test(aria)) return b;
+                }
+              }
+              // 2) 兜底：所有「设置」按钮里，排除位于顶部 header/topbar 的，取最靠下（y 最大）的一个
+              var cands = document.querySelectorAll('button[aria-label*="设置"], button[aria-label*="Settings"]');
+              var best = null, bestY = -1;
+              for (var j = 0; j < cands.length; j++) {
+                var el = cands[j];
+                var inHeader = false, p = el;
+                while (p) {
+                  var pc = (p.className || '').toString();
+                  if (/header|topbar|top-bar|navbar|titlebar/i.test(pc)) { inHeader = true; break; }
+                  p = p.parentElement;
+                }
+                if (inHeader) continue;
+                var r = el.getBoundingClientRect();
+                if (r.height > 0 && r.top > bestY) { bestY = r.top; best = el; }
+              }
+              return best;
+            }
+            var settingsBtn = findSidebarSettingsBtn();
+            if (!settingsBtn) return;
+            // 深度克隆设置按钮：继承全部 class / CSS 变量 / flex 布局 / hover 样式，颜色字体与设置完全一致
+            var btn = settingsBtn.cloneNode(true);
+            btn.id = 'dsh-meet-btn';
+            btn.removeAttribute('data-reactid');
+            btn.setAttribute('aria-label', '通辽会议');
+            btn.title = '通辽会议';
+            // 清理克隆节点可能携带的内联背景（防历史方案残留导致自带底色）
+            btn.style.removeProperty('background');
+            btn.style.removeProperty('background-color');
+            btn.style.removeProperty('color');
+            // 只替换第一个非空文本节点为「通辽会议」
+            var walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              var t = walker.currentNode;
+              if (t.textContent && t.textContent.trim()) { t.textContent = '通辽会议'; break; }
+            }
+            // 替换图标为会议图标：整只换掉 SVG 并显式指定 viewBox=24，
+            // 避免沿用设置按钮原 viewBox（如 16×16）导致图形被裁切只剩圆点；
+            // width/height 跟随设置按钮图标的实际渲染尺寸，保证两个图标一样大
+            var svg = btn.querySelector('svg');
+            if (svg) {
+              var cls = svg.getAttribute('class') || '';
+              var w = svg.getAttribute('width') || '';
+              var h = svg.getAttribute('height') || '';
+              if (!w || !h) {
+                var sr = svg.getBoundingClientRect();
+                if (sr.width > 0) w = Math.round(sr.width) + 'px';
+                if (sr.height > 0) h = Math.round(sr.height) + 'px';
+              }
+              if (!w) w = '16px';
+              if (!h) h = '16px';
+              var ns = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              if (cls) ns.setAttribute('class', cls);
+              ns.setAttribute('viewBox', '0 0 24 24');
+              ns.setAttribute('width', w);
+              ns.setAttribute('height', h);
+              ns.setAttribute('fill', 'none');
+              ns.setAttribute('stroke', 'currentColor');
+              ns.setAttribute('stroke-width', '1.8');
+              ns.setAttribute('stroke-linecap', 'round');
+              ns.setAttribute('stroke-linejoin', 'round');
+              ns.setAttribute('style', 'flex-shrink:0;display:block;');
+              ns.innerHTML = '<rect x="2" y="4" width="14" height="10" rx="2"/><path d="M6 18h6"/><path d="M9 14v4"/><rect x="16" y="8" width="6" height="8" rx="1.5" opacity="0.7"/><circle cx="7" cy="9" r="1.2" fill="currentColor"/><circle cx="11" cy="9" r="1.2" fill="currentColor"/>';
+              svg.replaceWith(ns);
+            }
+            btn.onclick = function() { if (window.dshAgent && window.dshAgent.openMeeting) window.dshAgent.openMeeting(); };
+            // 布局：父容器纵向则直接插在设置下方；横向则用无样式 wrapper 包成上下两行（保证上下罗列）
+            var parent = settingsBtn.parentNode;
+            var ps = window.getComputedStyle(parent);
+            if (ps.display === 'flex' && ps.flexDirection.indexOf('column') >= 0) {
+              parent.insertBefore(btn, settingsBtn.nextSibling);
+            } else {
+              var wrapper = document.createElement('div');
+              wrapper.style.cssText = 'display:flex;flex-direction:column;gap:4px;width:100%;';
+              parent.insertBefore(wrapper, settingsBtn);
+              wrapper.appendChild(settingsBtn);
+              wrapper.appendChild(btn);
+            }
+            injected = true;
+          } catch (e) {}
+        }
+        // 立即试一次 + MutationObserver 持久监听（React 重渲染删掉克隆按钮后自动补回，防再次消失）
+        inject();
+        var mo = new MutationObserver(function() {
+          inject();
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
+        // 30 秒兜底：从未注入成功则断开观察，避免无限空转
+        setTimeout(function() { if (!document.getElementById('dsh-meet-btn')) mo.disconnect(); }, 30000);
       })();
     `;
     win.webContents.executeJavaScript(MEET_BTN_JS).catch(() => {});
   });
+
+  // [已删除 · 2026-09-22] 原「模型 UI 注入」整段（读取 inject/model-ui.js 并 executeJavaScript）
+  // 该注入会在页面上挂一个全局 hover 浮层 .dsh-mui-flyout（position:fixed / z-index 2147483600 /
+  // background #161922 / box-shadow 10px 34px rgba(0,0,0,.5)）+ 全局 MutationObserver + 宽泛关键词命中，
+  // 症状就是"鼠标移到哪、哪就冒出一块黑色阴影弹窗"，并在网页智能体区叠加重复的「打开并登录」按钮。
+  // 现已整段删除（不是注释掉、不是改名），注入源文件也已移出仓库（official-ref/quarantine/），黑阴影不可能再出现。
+  // 若日后要做模型弹窗增强，必须改在官方包 @deepseek-ai/dsh-client-ui-model-selection 内部做局部增强，
+  // 严禁再使用全局注入 / 全局 MutationObserver / 全屏 fixed 浮层。
+
 
   // 注入皮肤系统（品牌蓝 / 官方黑 切换 + 设置面板「字体颜色」选项）
   win.webContents.on('dom-ready', () => {
@@ -376,6 +517,62 @@ app.whenReady().then(async () => {
     return agentRuntime.removeProvider(id);
   });
 
+  // [会议功能] 拖拽排序期间：让会议窗口内所有 webview guest 的鼠标事件穿透到宿主 DOM。
+  // guest 也是 WebContents，setIgnoreMouseEvents 是进程级穿透，比 CSS pointer-events 更底层，
+  // 与宿主侧「data-dragging → webview pointer-events:none」双保险。
+  ipcMain.on('meeting:set-ignore-mouse', (event, ignore) => {
+    const host = event.sender;
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.getType() === 'webview' && wc.hostWebContents === host) {
+        try { wc.setIgnoreMouseEvents(!!ignore); } catch (err) { /* 忽略个别 guest 未就绪 */ }
+      }
+    }
+  });
+
+  // [网页版智能体] 唯一配置源：命名/URL/partition/登录检测选择器（三处界面共用）
+  ipcMain.handle('catalog:get', () => AGENT_CATALOG);
+
+  // [网页版智能体] 登录状态中心：会议窗口 webview 检测上报 → 主进程缓存 → 广播给主窗口/会议窗口
+  const authState = new Map(); // id -> { status: 'in'|'out'|'unknown', name, updatedAt }
+  AGENT_CATALOG.forEach((m) => authState.set(m.id, { status: 'unknown', name: '', updatedAt: 0 }));
+
+  ipcMain.on('auth:report', (event, payload) => {
+    if (!payload || typeof payload.id !== 'string') return;
+    const id = payload.id;
+    if (!authState.has(id)) return;
+    const prev = authState.get(id);
+    const status = payload.status === 'in' || payload.status === 'out' ? payload.status : 'unknown';
+    const name = typeof payload.name === 'string' ? payload.name : '';
+    if (prev.status === status && prev.name === name) return; // 未变化不广播，防 UI 闪烁
+    authState.set(id, { status, name, updatedAt: Date.now() });
+    const snapshot = Object.fromEntries(authState);
+    // 广播给所有窗口（主窗口 dsh UI + 会议窗口名牌）
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.getType() === 'window' && !wc.isDestroyed()) {
+        wc.send('auth:changed', snapshot);
+      }
+    }
+  });
+  ipcMain.handle('auth:getState', () => Object.fromEntries(authState));
+
+  // [模型 UI 调试] 接收 renderer dump 的 DOM 结构，写日志文件供排查
+  ipcMain.on('model-ui:dump', (_e, data) => {
+    try {
+      const dumpPath = require('path').join(app.getPath('temp'), 'dsh-model-ui-dump.json');
+      require('fs').writeFileSync(dumpPath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (err) { /* 忽略写文件失败 */ }
+  });
+
+  // [窗口图标] 皮肤变化 → 同步窗口/任务栏图标（蓝鲸 / 黑鲸）
+  // 皮肤值存在 renderer 的 localStorage('dsh-desktop-skin')，preload 里轮询上报，此处只做 setIcon。
+  ipcMain.on('skin:changed', (_e, skin) => {
+    const p = resolveWindowIcon(skin);
+    if (!p) return;
+    windowIconPath = p;
+    try { if (win && !win.isDestroyed()) win.setIcon(p); } catch (err) { /* 忽略 */ }
+    try { if (splash && !splash.isDestroyed()) splash.setIcon(p); } catch (err) { /* 忽略 */ }
+  });
+
   // [会议功能] 打开 AI 会议窗口
   let meetingWin = null;
   ipcMain.on('meeting:open', () => {
@@ -383,6 +580,7 @@ app.whenReady().then(async () => {
     meetingWin = new BrowserWindow({
       width: 1600, height: 900, minWidth: 1200, minHeight: 700,
       title: 'AI 会议', backgroundColor: '#0b0e14',
+      icon: windowIconPath || undefined,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: true,
         preload: path.join(__dirname, '..', 'agent', 'meeting-preload.js'),
@@ -392,13 +590,113 @@ app.whenReady().then(async () => {
     meetingWin.on('closed', () => { meetingWin = null; });
   });
 
+  // [会议功能] 把长文本写成临时 .md 文件（meeting 窗口 sandbox:true，renderer 无 fs 权限，由主进程代写）
+  ipcMain.handle('meeting:writeTempMd', async (_e, filename, content) => {
+    const dir = path.join(os.tmpdir(), 'dsh-meeting-files');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const p = path.join(dir, filename);
+    await fs.promises.writeFile(p, content, 'utf-8');
+    return p;
+  });
+
+  // [P0 会议功能] 把拖拽进来的真实文件落盘到会话目录，返回绝对路径 + sha256。
+  // 这是附件握手的【地基】：没有 localPath，AttachmentBus 就没有落点。
+  // ★ 安全校验（缺一不可，否则 renderer 就能借主进程写任意位置）：
+  //   ① 只写进 <sessionDir>/ 下
+  //   ② 文件名做 basename + 白名单字符过滤（拦掉 ../ 与绝对路径）
+  //   ③ 单个文件 200MB 上限，单会话目录总量 2GB 上限（超了报 TOO_LARGE）
+  // 同一 sessionKey 的文件都落在同一个会话目录，散会后可整个删除。
+  const MEETING_MAX_FILE_BYTES = 200 * 1024 * 1024;
+  const MEETING_MAX_SESSION_BYTES = 2 * 1024 * 1024 * 1024;
+  const safeFileName = (name) => {
+    const base = path.basename(String(name || '').replace(/\\/g, '/'));
+    const cleaned = base.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+    return cleaned || `file_${Date.now().toString(36)}`;
+  };
+  const sha256OfFile = async (p) => {
+    const crypto = require('crypto');
+    const h = crypto.createHash('sha256');
+    await new Promise((resolve, reject) => {
+      const s = fs.createReadStream(p);
+      s.on('data', (d) => h.update(d));
+      s.on('end', resolve);
+      s.on('error', reject);
+    });
+    return h.digest('hex');
+  };
+  // [P0 会议功能] 陈旧会议附件清理：os.tmpdir()/dsh-meeting-files 下的会话目录。
+  // 惰性执行一次（首次真正用到附件功能时才跑），删掉 24h 前的会话目录——
+  // 否则"散会后可整个删除"只是注释，临时目录会无限累积。
+  let meetingTmpSwept = false;
+  const sweepStaleMeetingFiles = async () => {
+    if (meetingTmpSwept) return;
+    meetingTmpSwept = true;
+    const root = path.join(os.tmpdir(), 'dsh-meeting-files');
+    try {
+      const entries = await fs.promises.readdir(root, { withFileTypes: true });
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      for (const ent of entries) {
+        if (!ent.isDirectory()) continue;
+        const full = path.join(root, ent.name);
+        try {
+          const st = await fs.promises.stat(full);
+          if (st.mtimeMs < cutoff) await fs.promises.rm(full, { recursive: true, force: true });
+        } catch (e) { /* 单个目录清理失败不影响其它 */ }
+      }
+    } catch (e) { /* 根目录不存在 = 从未用过附件功能 */ }
+  };
+
+  ipcMain.handle('meeting:saveAttachment', async (_e, sessionKey, name, bytes, size, mime) => {
+    const key = String(sessionKey || '').replace(/[^A-Za-z0-9_-]/g, '') || 's';
+    sweepStaleMeetingFiles(); // 惰性清理陈旧附件目录（不阻塞本次落盘）
+    // ★ 校验对象必须与写入对象一致：size 是 renderer 自报的独立参数、可伪造，
+    //   只校验它的话「谎报 size=1 + 塞超大数据」即可绕过 200MB 上限。
+    //   真实长度一律以 bytes 自身为准（ArrayBuffer/TypedArray 用 byteLength）。
+    const realSize = bytes && typeof bytes.byteLength === 'number'
+      ? bytes.byteLength
+      : (bytes && typeof bytes.length === 'number' ? bytes.length : -1);
+    if (!Number.isInteger(realSize) || realSize <= 0 || realSize > MEETING_MAX_FILE_BYTES) {
+      return { ok: false, error: 'TOO_LARGE' };
+    }
+    const dir = path.join(os.tmpdir(), 'dsh-meeting-files', `session_${key}`);
+    await fs.promises.mkdir(dir, { recursive: true });
+    // 总量上限：先估算已用字节（数目录下文件）
+    let used = 0;
+    try {
+      const entries = await fs.promises.readdir(dir);
+      for (const f of entries) {
+        /* eslint-disable-next-line no-await-in-loop */
+        const st = await fs.promises.stat(path.join(dir, f));
+        used += st.size;
+      }
+    } catch (e) { /* 目录不存在 */ }
+    if (used + realSize > MEETING_MAX_SESSION_BYTES) {
+      return { ok: false, error: 'TOO_LARGE' };
+    }
+    const safe = safeFileName(name);
+    const p = path.join(dir, `${Date.now().toString(36)}-${safe}`);
+    // 防御：basename 已过滤，再检查一次最终路径确实落在 sessionDir 内
+    if (!p.startsWith(dir + path.sep)) {
+      return { ok: false, error: 'BAD_NAME' };
+    }
+    try {
+      await fs.promises.writeFile(p, Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes));
+      const sha256 = await sha256OfFile(p);
+      return { ok: true, localPath: p, size: realSize, mime: mime || 'application/octet-stream', sha256 };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+
   // [会议功能] 独立浏览器窗口（完整浏览器功能，登录用）
   const browserWins = new Map();
-  ipcMain.on('meeting:openBrowser', (_e, { providerId, url }) => {
+  function openBrowserWindow(providerId, url) {
+    if (!providerId || !url) return;
     if (browserWins.has(providerId)) { browserWins.get(providerId).focus(); return; }
     const bw = new BrowserWindow({
       width: 1280, height: 800, minWidth: 800, minHeight: 600,
       title: providerId, backgroundColor: '#0b0e14',
+      icon: windowIconPath || undefined,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false,
         partition: 'persist:agent-' + providerId,
@@ -406,6 +704,13 @@ app.whenReady().then(async () => {
     });
     bw.loadURL(url);
     bw.on('closed', () => { browserWins.delete(providerId); if (meetingWin && !meetingWin.isDestroyed()) { meetingWin.webContents.send('meeting:refreshWebview', providerId); } });
+  }
+  ipcMain.on('meeting:openBrowser', (_e, { providerId, url }) => openBrowserWindow(providerId, url));
+  // [Bug3 补齐] 设置页「打开并登录」入口：按 providerId 复用 persist:agent-{id} 同分区，与会议窗口 cookie 互通
+  ipcMain.on('meeting:openLogin', (_e, providerId) => {
+    const m = AGENT_CATALOG.find((x) => x.id === providerId);
+    if (!m) return;
+    openBrowserWindow(m.id, m.url);
   });
   try {
     const url = await startDshService();

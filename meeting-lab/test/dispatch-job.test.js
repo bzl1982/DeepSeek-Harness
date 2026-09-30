@@ -174,13 +174,25 @@ test('C3: formatVersion 不认识 → 拒绝恢复', () => {
   assert.throws(() => D.deserialize(null), /formatVersion/);
 });
 
-test('C3: sending 态也能恢复（崩溃时正在发的席位恢复为 sending，可人工接管）', () => {
+test('C3: 崩溃恢复把 sending 转为待人工确认的 failed', () => {
   const job = makeJob();
   D.markSending(job, 'web3', { transport: D.TRANSPORT.L1 });
   const restored = D.deserialize(JSON.parse(JSON.stringify(D.serialize(job))));
   const s = restored.seats.get('web3');
-  assert.strictEqual(s.status, D.SEAT_STATUS.SENDING);
+  assert.strictEqual(s.status, D.SEAT_STATUS.FAILED);
   assert.strictEqual(s.attempt, 1);
-  // sending 态重入被拒 → 上层可以先 markFailed 再重试，或人工接管
-  assert.strictEqual(D.markSending(restored, 'web3').ok, false);
+  assert.match(s.error, /人工确认/);
+  assert.deepStrictEqual(D.retryTargets(restored), ['web3']);
+});
+
+test('C2: 单席自动重试最多三次', () => {
+  const job = makeJob();
+  for (let i = 0; i < D.MAX_ATTEMPTS; i++) {
+    assert.strictEqual(D.markSending(job, 'web1').ok, true);
+    D.markFailed(job, 'web1', { error: 'network' });
+  }
+  const fourth = D.markSending(job, 'web1');
+  assert.strictEqual(fourth.ok, false);
+  assert.strictEqual(fourth.reason, 'attempt_limit');
+  assert.strictEqual(job.seats.get('web1').attempt, D.MAX_ATTEMPTS);
 });

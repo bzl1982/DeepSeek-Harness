@@ -62,6 +62,43 @@ const CLIENT_USER_DATA = path.join(app.getPath('appData'), 'DeepSeek Harness');
 
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ★ 2026-09-23 #19 回读门闩（第 7 轮咨询 R7' 冻结，Agnes F7-4）：
+ * 「CDP 调用成功」≠「文件真的挂上」。三路证据取其一才算 staged：
+ *   ① 本次要发的文件名进了 <input type=file>.files（归一化精确比对，杜绝残留旧文件误报）；
+ *   ② 页面正文 innerText 出现文件名（多数站点附件芯片带文件名文本）；
+ *   ③ 常见附件芯片容器（class/data-testid/aria-label 含 attach|chip|upload|附件|文件）文本出现文件名
+ *     —— DeepSeek 这类站点收完即清空 input、芯片是独立元素，只有③能抓到（修复"实际成功却报失败"假阴性）。
+ * 归一化：去空白/nbsp + 小写，容忍站点显示文件名时加空格或大小写差异。 */
+function stageCheckExpr(names) {
+  return `(function(){
+    var NAMES = ${JSON.stringify(names)};
+    function norm(s){ return (s||'').toLowerCase().replace(/[\\s\\u00a0]/g,''); }
+    var WANTS = NAMES.map(norm);
+    function hit(t){ if(!t) return false; var n = norm(t);
+      for (var i=0;i<WANTS.length;i++){ if (n.indexOf(WANTS[i])>=0) return true; } return false; }
+    var ins = document.querySelectorAll('input[type=file]');
+    for (var i=0;i<ins.length;i++){ var fl = ins[i].files; if(!fl) continue;
+      for (var j=0;j<fl.length;j++){ if (WANTS.indexOf(norm(fl[j].name))>=0) return 'staged'; } }
+    if (hit(document.body && document.body.innerText)) return 'staged';
+    var chips = document.querySelectorAll('[class*="attach"],[class*="chip"],[class*="upload"],[data-testid*="attach"],[data-testid*="upload"],[aria-label*="附件"],[aria-label*="文件"]');
+    for (var c=0;c<chips.length;c++){
+      if (hit(chips[c].textContent) || hit(chips[c].getAttribute && chips[c].getAttribute('aria-label'))) return 'staged';
+    }
+    return 'no-chip';
+  })()`;
+}
+/* 轮询回读：站点把文件挂上 UI 需要时间（谷歌菜单 ~1.5s、文心框架更慢），
+ * 固定单次 sleep 会两头误判；400ms 步进轮询到 ms 上限。 */
+async function pollStage(names, wc, ms) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    try { if (await wc.executeJavaScript(stageCheckExpr(names)) === 'staged') return 'staged'; }
+    catch (_) { /* webview 正在导航，下一轮再试 */ }
+    await sleepMs(400);
+  }
+  return 'no-chip';
+}
+
 if (REUSE_LOGIN) {
   app.setPath('userData', CLIENT_USER_DATA);
 }
@@ -125,9 +162,14 @@ ipcMain.on('seat-popup-update', (e, { id, text }) => {
  *   策略 A（有 attach.trigger 时）：文件选择器拦截——点站点自己的📎按钮，
  *     拦截弹出的 chooser，把文件塞进真实 backendNodeId（绕开"抓错 input"黑洞）。
  *   策略 B（兜底）：querySelector 找第一个 input[type=file] 直接塞（DP/豆包/Kimi 已验证可通）。 */
-ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
+ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach, kind }) => {
+  const fileKind = (kind === 'image') ? 'image' : 'file';   // 默认按文件处理
   const wc = webContents.fromId(webContentsId);
   if (!wc) return { ok: false, error: 'webContents 不存在（webview 可能还没 dom-ready）' };
+  /* ★ R7' 共识：{Kimi/DeepSeek/谷歌} 的自动上传通道真机实测不可靠，
+   *   渲染端对它们传 attach.manualOnly=true → 直接返回「需人工」，
+   *   不浪费 8s 自动尝试、更不产生假成功/假失败日志（L1/L2 独立路径的门闩）。 */
+  if (attach && attach.manualOnly) return { ok: false, manual: true, error: '按第7轮共识跳过自动上传，需人工挂附件' };
   const dbg = wc.debugger;
   try {
     if (!dbg.isAttached()) {
@@ -198,15 +240,36 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
           };
           if (!(await waitChooser(2500)) && attach.menu) {
             // 触发按钮开的可能是菜单（谷歌"添加文件和工具"/ChatGPT"添加文件等"）
-            //   → 精确文本匹配菜单项（排除触发按钮自己），受信任点击
+            // ★ 精确点菜单项，别误点"从云端硬盘添加/更多"。
+            //   旧逻辑两个坑：① children>3 把"上传文件"（图标+文字子节点）误杀；
+            //   ② 前缀正则抓到外层容器（textContent 拼成"上传文件从云端硬盘添加…"）→ 点到第二项。
+            //   现改为：只认"可见、行高 24-60px 的叶子菜单项"，且不含"云端/更多"，才点。
+            //   ★ 图片/文件分流：kind=image 优先命中 menuImage（如「添加图片」），
+            //     kind=file 优先命中 menuFile（如「添加文件」），否则回退默认白名单。
+            const wantMenu = (fileKind === 'image' && attach.menuImage)
+              ? attach.menuImage
+              : (fileKind === 'file' && attach.menuFile) ? attach.menuFile : null;
             await trustClick(`(() => {
               var trig = document.querySelector(${JSON.stringify(attach.trigger)});
-              var cands = document.querySelectorAll('[role="menuitem"],[role="menu"] *,li,button,[jsaction]');
+              var WANT = ${JSON.stringify(wantMenu)};
+              var OK_TXT = /^(上传文件|上传附件|本地文件|从电脑上传|从本地上传|从本地文件上传|本地上传|添加文件)$/;
+              var cands = Array.prototype.slice.call(
+                document.querySelectorAll('li,[role="menuitem"],[role="menu"] button,[role="menu"] div,button')
+              );
               for (var i = 0; i < cands.length; i++) {
                 var el = cands[i];
-                if (el === trig || el.contains(trig) || el.offsetParent === null || el.children.length > 3) continue;
-                var t = (el.textContent || '').trim();
-                if (t === '添加文件' || /^(上传文件|上传附件|本地文件|从电脑上传|从本地文件上传)/.test(t)) return el;
+                if (el === trig) continue;
+                if (trig && el.contains && trig.contains(el)) continue;   // 排除触发按钮自身
+                if (el.offsetParent === null) continue;                 // 不可见（菜单没开）
+                var r = el.getBoundingClientRect();
+                if (r.height < 24 || r.height > 60) continue;           // 菜单项行高，排除外层容器
+                var direct = (el.textContent || '').trim();
+                if (direct.indexOf('云端') >= 0 || direct.indexOf('更多') >= 0) continue;  // 云端硬盘/更多上传选项
+                var lb = (el.getAttribute('aria-label') || '').trim();
+                /* 指定了菜单项文本（图片/文件分流）→ 精确命中该项（含子串，因项常带图标） */
+                if (WANT && (direct.indexOf(WANT) >= 0 || lb.indexOf(WANT) >= 0)) return el;
+                /* 否则回退默认白名单（文件类） */
+                if (!WANT && (OK_TXT.test(direct) || OK_TXT.test(lb))) return el;
               }
               return null;
             })`);
@@ -218,12 +281,8 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
             /* ★ 芯片验收：塞进真实节点 ≠ 站点挂上了（谷歌不在 AI 模式时静默无痕）。
              *   1.5s 后页面正文不含文件名 → 视为未挂上，继续走拖放/直塞（自愈式降级）。 */
             const names = files.map((p) => path.basename(p));
-            const ackChooser = await wc.executeJavaScript(`(function(){
-              var t = document.body.innerText || '';
-              var names = ${JSON.stringify(names)};
-              for (var i = 0; i < names.length; i++) { if (t.indexOf(names[i]) >= 0) return 'staged'; }
-              return 'no-chip';
-            })();`);
+            /* ★ #19 回读门闩：轮询 3s，三路证据（input.files / 正文 / 附件芯片容器）取其一 */
+            const ackChooser = await pollStage(names, wc, 3000);
             if (ackChooser === 'staged') return { ok: true, via: 'chooser' };
             console.log('[cdp-set-files] 策略 A 塞入成功但页面无芯片，继续后续策略');
           } else {
@@ -253,7 +312,9 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
           if (total > MAX) break;
           picked.push({
             name: path.basename(p),
-            type: /\.(md|txt|csv|json|log)$/i.test(p) ? 'text/plain' : 'application/octet-stream',
+            type: /\.(md|txt|csv|json|log)$/i.test(p) ? 'text/plain'
+              : /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(p) ? 'image/' + (/\.svg$/i.test(p) ? 'svg+xml' : (/\.webp$/i.test(p) ? 'webp' : (/\.bmp$/i.test(p) ? 'bmp' : (/\.gif$/i.test(p) ? 'gif' : 'png'))))
+              : 'application/octet-stream',
             b64: fs.readFileSync(p).toString('base64'),
           });
         }
@@ -271,19 +332,38 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
           var t = comp;
           for (var d = 0; d < 6 && t; d++) { targets.push(t); t = t.parentElement; }
           if (document.body) targets.push(document.body);
+          var SENT = FILES.map(function (f) { return f.name; });
           var hasChip = function () {
-            var text = document.body.innerText || '';
-            for (var m = 0; m < FILES.length; m++) { if (text.indexOf(FILES[m].name) >= 0) return true; }
+            /* ★ #19 回读门闩（与主进程 stageCheckExpr 同判据）：三路证据取其一。
+             *   不能用「input.files 有任意文件」——残留旧文件会误报成功、让新文件漏发。 */
+            var norm = function (s) { return (s || '').toLowerCase().replace(/[\\s\\u00a0]/g, ''); };
+            var WANTS = SENT.map(norm);
+            var hit = function (t) { if (!t) return false; var n = norm(t);
+              for (var i = 0; i < WANTS.length; i++) { if (n.indexOf(WANTS[i]) >= 0) return true; } return false; };
+            var ins = document.querySelectorAll('input[type=file]');
+            for (var i = 0; i < ins.length; i++) {
+              var fl = ins[i].files; if (!fl) continue;
+              for (var j = 0; j < fl.length; j++) { if (WANTS.indexOf(norm(fl[j].name)) >= 0) return true; }
+            }
+            if (hit(document.body && document.body.innerText)) return true;
+            var chips = document.querySelectorAll('[class*="attach"],[class*="chip"],[class*="upload"],[data-testid*="attach"],[data-testid*="upload"],[aria-label*="附件"],[aria-label*="文件"]');
+            for (var c = 0; c < chips.length; c++) {
+              if (hit(chips[c].textContent) || hit(chips[c].getAttribute && chips[c].getAttribute('aria-label'))) return true;
+            }
             return false;
           };
-          /* ★ 逐层试探：每层只派一次 drop，出现芯片立刻停。
-           *   曾经 7 层同时派 → 文心/千问各收到 7 份重复（每层各挂一份）。 */
+          /* ★ 修复 7 份重复：每个候选层只派一次 drop，且事件 bubbles:false
+           *   —— 否则在 comp 上派一次就沿祖先冒泡，parent/grandparent/…/body
+           *   各自 drop 监听全被触发一遍 = 文心/千问各 7 份。bubbles:false
+           *   保证这一层只触发本节点自己的监听，不级联到祖先；本节点的
+           *   stopPropagation 也不影响后续层（因为后续层是独立直接派发）。 */
           for (var k = 0; k < targets.length; k++) {
+            if (hasChip()) return 'staged';   // ★ 提前停：前面某层（含异步延迟）已挂上，别再派新层
             try {
               var dt = new DataTransfer();
               for (var j = 0; j < FILES.length; j++) dt.items.add(makeFile(FILES[j]));
               var mk = function (n) {
-                return { bubbles: true, cancelable: true, dataTransfer: dt, composed: true };
+                return { bubbles: false, cancelable: true, dataTransfer: dt, composed: true };
               };
               ['dragenter', 'dragover', 'drop'].forEach(function (n) {
                 targets[k].dispatchEvent(new DragEvent(n, mk(n)));
@@ -326,7 +406,11 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
         const attrs = (desc.node && desc.node.attributes) || [];
         const ai = attrs.indexOf('accept');
         const accept = ai >= 0 ? String(attrs[ai + 1]) : '';
-        if (/^\s*image\//.test(accept)) continue;   // 图片专用 → 跳过
+        const isImage = /^\s*image\//.test(accept);
+        /* ★ 图片/文件分流：发图片时只选 image/* 框，发文件时跳过 image/* 框。
+         *   否则把 .md/.txt 塞进图片框 → 被当非法类型静默丢弃（一直收不到的真因之一）。 */
+        if (fileKind === 'image') { if (!isImage) continue; }
+        else { if (isImage) continue; }
         targetNode = nid;
         break;
       } catch (e) { /* 描述失败就试下一个 */ }
@@ -347,15 +431,10 @@ ipcMain.handle('cdp-set-files', async (e, { webContentsId, files, attach }) => {
         }
       })();`);
     }
-    /* ★ 策略 B 也验芯片：静默黑洞（塞进未接线的 input）必须报失败，不许日志假成功 */
-    await sleepMs(1500);
+    /* ★ 策略 B 也验芯片：静默黑洞（塞进未接线的 input）必须报失败，不许日志假成功。
+     *   #19 回读门闩：轮询 3.5s 三路证据取其一（DeepSeek 收完清空 input → 靠附件芯片容器兜住假阴性）。 */
     const namesB = files.map((p) => path.basename(p));
-    const ackB = await wc.executeJavaScript(`(function(){
-      var t = document.body.innerText || '';
-      var names = ${JSON.stringify(namesB)};
-      for (var i = 0; i < names.length; i++) { if (t.indexOf(names[i]) >= 0) return 'staged'; }
-      return 'no-chip';
-    })();`);
+    const ackB = await pollStage(namesB, wc, 3500);
     if (ackB === 'staged') return { ok: true, via: 'direct' };
     return { ok: false, error: '页面未出现附件（该站点直接塞通道无效，需站点专属适配）' };
   } catch (err) {
@@ -375,13 +454,19 @@ function createWindow() {
       webviewTag: true,
     },
   });
-  win.loadFile(path.join(__dirname, 'index.html'));
+  const isGallery = process.argv.includes('--gallery');
+  win.loadFile(path.join(__dirname, isGallery ? 'window-shell.html' : 'index.html'));
+  if (isGallery) win.setTitle('统一 AI 窗口壳 · 画廊（占位版）');
   return win;
 }
 
 app.whenReady().then(() => {
   console.log('[meeting-lab] userData =', app.getPath('userData'));
   console.log('[meeting-lab] 登录态复用 =', REUSE_LOGIN ? '是（复用客户端 partition）' : '否（独立）');
+  /* ★ API 接入核心（2026-09-25 第 1+2 步）：密钥库（safeStorage，仅主进程）
+   *   + providers/seats 注册表 + 三协议适配器（openai-chat/anthropic/gemini）
+   *   + 流式 IPC（api:chat-stream / api:stream-evt）。详见 shell/api-main.js。 */
+  require('./api-main').register();
   createWindow();
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();

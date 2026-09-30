@@ -1,0 +1,471 @@
+# 完善版：通辽会议 × 多智能体编排落地方案（基于评审定案）
+本方案基于六方评审结论进行全面修正，**彻底放弃「Python+Playwright重造浏览器」的倒退路线**，完全复用现有Electron架构资产与9个已登录账号，不引入AutoGen/MAF运行时依赖，仅借鉴AutoGen的编排模型思想，用纯Node.js原生实现会议核心层，优先解决「回复完成检测、附件握手确认、会议状态管理」三大核心缺口，同时保留未来向微软MAF升级的协议兼容性。
+
+---
+
+## 一、核心裁决与方案基线修正
+### 1.1 三大技术裁决（严格遵循评审结论）
+| 裁决项 | 结论 | 核心理由 |
+|---|---|---|
+| **是否引入AutoGen运行时** | ❌ 不引入，仅借鉴编排模型 | 已进入维护模式，2026 Q3主流API将弃用其依赖的legacy回调模式，新项目无长期支持 |
+| **是否引入MAF** | ❌ Phase 0-2不引入，保留升级路径 | 1. MAF用确定性图工作流取代了会话式GroupChat，与「9个AI自由讨论」的核心场景错配；2. 违背项目「纯Node、无编译、无运行时下载」的铁律 |
+| **浏览器控制权** | ✅ 完全复用Electron webview体系 | 现有9个独立分区已登录、9宫格UI成熟，重造Playwright属于产品倒退，且登录态迁移成本极高 |
+
+### 1.2 对原方案的核心修正
+1. **技术栈从Python切换为纯Node.js CommonJS**，与现有项目技术栈完全统一，无额外运行时依赖
+2. **放弃独立浏览器池**，直接复用Electron的`webContents`、CDP能力、`Partitions`分区登录态
+3. **核心目标从「接入框架」转向「补齐三大缺口」**：回复完成检测、附件握手协议、会议状态机
+4. **实施路线从「直接改客户端」转向「先独立测试台验证，再小步集成」**，零风险验证核心能力
+
+---
+
+## 二、目标架构设计
+### 2.1 整体分层架构
+```
+┌─────────────────────────────────────────────────────────┐
+│  通辽会议UI层（现有，零改动/小改动）                     │
+│  9宫格展示 · 会议记录面板 · 附件栏 · 状态指示灯           │
+└────────────────────────┬────────────────────────────────┘
+                         │ Electron IPC（现有通信通道）
+┌────────────────────────▼────────────────────────────────┐
+│  Meeting Core层（新增，纯Node实现）                      │
+│  ┌─────────────┬──────────────┬──────────────────────┐  │
+│  │ 会议模型     │ 发言策略      │ 附件总线             │  │
+│  │ 消息/轮次/状态 │ 广播/轮询/主持 │ 先齐后发·ACK门闩    │  │
+│  ├─────────────┼──────────────┼──────────────────────┤  │
+│  │ 完成检测器   │ 终止策略      │ 故障隔离             │  │
+│  │ 多信号联合   │ 条件组合器     │ 超时闭麦·单点重试    │  │
+│  └─────────────┴──────────────┴──────────────────────┘  │
+└────────────────────────┬────────────────────────────────┘
+                         │ Adapter标准接口（现有，扩展3个方法）
+┌────────────────────────▼────────────────────────────────┐
+│  WebAI Adapter层（现有资产复用）                         │
+│  sendText · readMessage · detectToolCall · ★uploadFiles │
+│  ★waitForResponse · ★resetSession                      │
+└────────────────────────┬────────────────────────────────┘
+                         │ Electron webview + CDP（现有）
+┌────────────────────────▼────────────────────────────────┐
+│  9个独立webview分区（现有登录态）                         │
+│  DeepSeek / GPT / Kimi / 豆包 / 通义 / 元宝 / Gemini /  │
+│  谷歌搜索 / 文心                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 2.2 架构核心原则
+1. **资产最大化复用**：不新增浏览器实例，100%复用现有分区登录态、Adapter接口、CDP文件上传能力
+2. **层间协议隔离**：Meeting Core与Adapter之间通过标准消息接口交互，未来替换编排层时不动下层任何代码
+3. **纯Node无编译**：全部使用CommonJS规范，无需构建步骤，符合`npm install && npm start`的项目铁律
+4. **故障隔离**：单AI崩溃、超时、封号均不影响全局，支持自动闭麦降级与单独重试
+
+---
+
+## 三、核心模块详细实现（可落地代码级）
+### 3.1 会议消息模型（Meeting Model）
+会议状态的唯一可信源，**完全独立于网页端状态**，解决页面刷新、崩溃导致的会议记录丢失问题。
+
+```javascript
+// core/meeting-model.js
+const STATUS = {
+  PENDING: 'pending',
+  STREAMING: 'streaming',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  TIMEOUT: 'timeout'
+};
+
+function createMeetingMessage(opts) {
+  return {
+    id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    meetingId: opts.meetingId,
+    senderType: opts.senderType, // user / agent / system
+    senderId: opts.senderId,
+    content: opts.content || '',
+    attachments: opts.attachments || [],
+    round: opts.round || 1,
+    turn: opts.turn || 0,
+    timestamp: Date.now(),
+    status: opts.status || STATUS.PENDING
+  };
+}
+
+function createAttachmentRef(filePath, fileStat) {
+  return {
+    attachmentId: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name: require('path').basename(filePath),
+    size: fileStat.size,
+    mime: require('mime-types').lookup(filePath) || 'application/octet-stream',
+    localPath: filePath,
+    sha256: '' // 上传前计算校验
+  };
+}
+
+module.exports = { STATUS, createMeetingMessage, createAttachmentRef };
+```
+
+### 3.2 附件总线与握手协议（Attachment Bus）
+**从根源解决「9个AI偶尔收不到文件」的问题**：将「各自上传+固定sleep」改为「统一登记→并发上传→全部ACK→统一发送」的门闩机制。
+
+#### 核心流程
+```
+用户拖拽文件 → 会议层统一拦截（避免9个webview抢事件）
+    ↓
+AttachmentBus登记附件 → 生成本地attachmentId + 计算sha256
+    ↓
+并发扇出到N个Adapter → 每个Adapter执行CDP上传
+    ↓
+每个AI上传完成后返回ACK（DOM出现附件卡片/进度100%）
+    ↓
+门闩等待：waitForAllACK(timeout)
+    ↓
+全部成功 → 统一触发sendText()
+部分失败 → 失败项自动重试2次，仍失败则降级为「文本文件名占位」
+    ↓
+9个AI同时开始生成回复
+```
+
+#### 核心代码实现
+```javascript
+// core/attachment-bus.js
+const { createAttachmentRef } = require('./meeting-model');
+
+class AttachmentBus {
+  constructor(adapters, options = {}) {
+    this.adapters = adapters;
+    this.timeout = options.timeout || 30000;
+    this.retry = options.retry || 2;
+  }
+
+  async uploadAndWait(filePaths) {
+    // 1. 统一登记附件
+    const attachments = await Promise.all(filePaths.map(async (p) => {
+      const stat = await require('fs').promises.stat(p);
+      return createAttachmentRef(p, stat);
+    }));
+
+    // 2. 并发扇出上传，单点隔离
+    const results = await Promise.allSettled(
+      this.adapters.map(adapter => 
+        this._uploadWithRetry(adapter, attachments)
+      )
+    );
+
+    // 3. 统计结果
+    const success = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+
+    return {
+      success: success === this.adapters.length,
+      successCount: success,
+      failedCount: failed,
+      attachments
+    };
+  }
+
+  async _uploadWithRetry(adapter, attachments) {
+    for (let i = 0; i <= this.retry; i++) {
+      try {
+        return await adapter.uploadFiles(attachments, this.timeout);
+      } catch (e) {
+        if (i === this.retry) throw e;
+        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      }
+    }
+  }
+}
+
+module.exports = AttachmentBus;
+```
+
+### 3.3 多信号联合完成检测器
+**替代固定sleep的命门模块**，通过多维度信号联合判定回复完成，兼顾准确率与速度。
+
+#### 检测信号矩阵
+| 信号类型 | 实现方式 | 可靠度 | 适用场景 |
+|---|---|---|---|
+| 停止按钮消失 | DOM选择器检测 | ★★★★ | 主流AI（DeepSeek、GPT、Kimi） |
+| 发送按钮恢复可用 | DOM属性检测 | ★★★ | 绝大多数站点 |
+| DOM内容稳定 | MutationObserver监听N毫秒无变化 | ★★★★ | 通用兜底 |
+| 网络流结束 | CDP Network域监听responseReceived | ★★★★★ | 流式输出站点 |
+| 生成中标志消失 | DOM状态位检测 | ★★★ | 辅助校验 |
+
+#### 判定规则
+- 满足 **≥2个独立信号** 触发 → 判定为`COMPLETED`
+- 超过`timeoutMs`仍未满足 → 判定为`TIMEOUT`，标记该AI「闭麦」，会议继续
+
+#### 核心代码实现
+```javascript
+// core/completion-detector.js
+class CompletionDetector {
+  constructor(webContents, selectors, options = {}) {
+    this.webContents = webContents;
+    this.selectors = selectors; // { stopBtn, sendBtn, messageItem, loadingFlag }
+    this.timeout = options.timeout || 60000;
+    this.stableMs = options.stableMs || 1500;
+  }
+
+  waitForComplete() {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._cleanup();
+        reject(new Error('TIMEOUT'));
+      }, this.timeout);
+
+      let signals = new Set();
+      const checkDone = () => {
+        if (signals.size >= 2) {
+          clearTimeout(timer);
+          this._cleanup();
+          resolve(true);
+        }
+      };
+
+      // 信号1: 停止按钮消失
+      this._pollSelector(() => !this._exists(this.selectors.stopBtn), () => {
+        signals.add('stop_gone');
+        checkDone();
+      });
+
+      // 信号2: 发送按钮恢复
+      this._pollSelector(() => this._isEnabled(this.selectors.sendBtn), () => {
+        signals.add('send_ready');
+        checkDone();
+      });
+
+      // 信号3: DOM内容稳定
+      this._observeStable(this.selectors.messageItem, this.stableMs, () => {
+        signals.add('dom_stable');
+        checkDone();
+      });
+    });
+  }
+
+  // 内部方法：轮询选择器、MutationObserver监听、清理函数等
+  _pollSelector(check, cb) { /* 实现略 */ }
+  _observeStable(selector, ms, cb) { /* 实现略 */ }
+  _exists(selector) { return this.webContents.executeJavaScript(`document.querySelector('${selector}') !== null`); }
+  _isEnabled(selector) { return this.webContents.executeJavaScript(`!document.querySelector('${selector}').disabled`); }
+  _cleanup() { /* 清理轮询与观察者 */ }
+}
+
+module.exports = CompletionDetector;
+```
+
+### 3.4 编排核心（Orchestrator）
+**照搬AutoGen的编排抽象，Node原生实现**，不引入任何第三方框架依赖。
+
+#### 已实现的编排能力（对应AutoGen概念）
+| AutoGen概念 | Node实现 | 说明 |
+|---|---|---|
+| `GroupChat` | `MeetingOrchestrator` | 会议总控，管理轮次与消息广播 |
+| `RoundRobinGroupChat` | `RoundRobinStrategy` | 轮询发言策略 |
+| `Broadcast` | `BroadcastStrategy` | 广播模式（当前默认，一发多收） |
+| `MaxMessageTermination` | `MaxRoundTermination` | 最大轮次终止 |
+| `TextMentionTermination` | `KeywordTermination` | 关键词终止 |
+| `Concurrent fan-out` | `Promise.allSettled` | 并发扇出+单点失败隔离 |
+
+#### 核心代码实现
+```javascript
+// core/meeting-orchestrator.js
+const { STATUS, createMeetingMessage } = require('./meeting-model');
+const AttachmentBus = require('./attachment-bus');
+
+class MeetingOrchestrator {
+  constructor(adapters, options = {}) {
+    this.adapters = adapters;
+    this.strategy = options.strategy || 'broadcast';
+    this.maxRounds = options.maxRounds || 10;
+    this.currentRound = 0;
+    this.history = [];
+    this.attachmentBus = new AttachmentBus(adapters);
+  }
+
+  async startRound(userContent, attachments = []) {
+    this.currentRound++;
+    if (this.currentRound > this.maxRounds) {
+      return { done: true, reason: 'max_rounds' };
+    }
+
+    // 1. 登记用户消息
+    const userMsg = createMeetingMessage({
+      meetingId: this.meetingId,
+      senderType: 'user',
+      senderId: 'human',
+      content: userContent,
+      attachments,
+      round: this.currentRound
+    });
+    this.history.push(userMsg);
+
+    // 2. 附件握手（有附件时执行）
+    if (attachments.length > 0) {
+      const uploadResult = await this.attachmentBus.uploadAndWait(attachments);
+      if (!uploadResult.success) {
+        // 部分失败时注入系统提示
+        this.history.push(createMeetingMessage({
+          senderType: 'system',
+          content: `【系统提示】${uploadResult.failedCount}个AI附件上传失败，已降级为文本模式`
+        }));
+      }
+    }
+
+    // 3. 按策略广播消息
+    const prompt = this._buildPrompt();
+    const results = await Promise.allSettled(
+      this.adapters.map(async (adapter, idx) => {
+        const msg = createMeetingMessage({
+          senderType: 'agent',
+          senderId: adapter.id,
+          round: this.currentRound,
+          turn: idx,
+          status: STATUS.STREAMING
+        });
+        this.history.push(msg);
+
+        try {
+          await adapter.sendText(prompt);
+          await adapter.waitForResponse();
+          const content = await adapter.readLastMessage();
+          msg.content = content;
+          msg.status = STATUS.COMPLETED;
+          return { id: adapter.id, content };
+        } catch (e) {
+          msg.status = e.message === 'TIMEOUT' ? STATUS.TIMEOUT : STATUS.FAILED;
+          msg.content = `【系统提示】${adapter.name} 回复超时/失败，已临时闭麦`;
+          throw e;
+        }
+      })
+    );
+
+    return {
+      round: this.currentRound,
+      results: results.map((r, i) => ({
+        agentId: this.adapters[i].id,
+        success: r.status === 'fulfilled',
+        content: r.status === 'fulfilled' ? r.value.content : r.reason.message
+      }))
+    };
+  }
+
+  _buildPrompt() {
+    // 构建会议纪要前缀，注入历史上下文
+    return this.history
+      .filter(m => m.status === STATUS.COMPLETED || m.senderType === 'user')
+      .map(m => `[${m.senderType === 'user' ? '用户' : m.senderId}]: ${m.content}`)
+      .join('\n\n');
+  }
+}
+
+module.exports = MeetingOrchestrator;
+```
+
+---
+
+## 四、Adapter层扩展（最小改动，复用现有资产）
+在现有`generic-web`适配器基础上，仅扩展3个标准方法，完全兼容原有接口。
+
+| 扩展方法 | 职责 | 实现基础 |
+|---|---|---|
+| `uploadFiles(attachments, timeout)` | 批量上传附件，返回ACK Promise | 复用现有CDP `DOM.setFileInputFiles`能力 |
+| `waitForResponse(timeout)` | 等待回复完成，抛出超时异常 | 调用新增的CompletionDetector |
+| `resetSession()` | 重置网页端对话，清空内置上下文 | 执行页面刷新/点击新建对话按钮 |
+
+> 扩展原则：不修改原有`sendUserMessage`、`detectMessage`等方法，仅做增量叠加，保证向后兼容。
+
+---
+
+## 五、Phase 0 独立测试台落地方案
+**完全不触碰现有`desktop/`目录代码**，独立目录验证三大核心不确定性，风险为零。
+
+### 5.1 验证目标
+| 序号 | 验证项 | 验收标准 |
+|---|---|---|
+| 1 | 完成检测器可靠性 | 短答、长答、流式输出场景下，误判率<5%，不漏判 |
+| 2 | 附件握手有效性 | 9个AI全部收到附件才发送；单AI失败可重试，不阻塞全局 |
+| 3 | 并发故障隔离 | 单AI崩溃/超时，其余8个正常返回，会议不中断 |
+
+### 5.2 目录结构
+```
+D:\DeepSeek Harness\meeting-lab\
+├── package.json          # 纯Node依赖，仅electron + mime-types
+├── README.md            # 运行说明与验收标准
+├── core/                # 纯逻辑，可直接node运行单测
+│   ├── meeting-model.js
+│   ├── attachment-bus.js
+│   ├── completion-detector.js
+│   └── meeting-orchestrator.js
+├── adapters/            # 从现有项目拷贝，扩展3个方法
+│   ├── contract.js
+│   ├── deepseek-web.js
+│   └── chatgpt-web.js
+├── test/                # 自动化测试用例，无需GUI
+│   ├── model.test.js
+│   ├── completion.test.js
+│   └── attachment.test.js
+└── shell/               # 最小Electron壳，可视化验证
+    ├── main.js          # 加载现有分区登录态
+    └── index.html       # 简易双格调试界面
+```
+
+### 5.3 关键：复用现有登录态
+通过Electron Session分区直接指向现有`Partitions`目录，**无需重新登录任何AI账号**：
+
+```javascript
+// shell/main.js
+const { app, BrowserWindow, session } = require('electron');
+const path = require('path');
+
+const PARTITION_ROOT = 'D:\\Users\\Admin\\AppData\\Roaming\\DeepSeek Harness\\Partitions';
+
+app.whenReady().then(() => {
+  const win = new BrowserWindow({ width: 1200, height: 800 });
+  
+  // 直接复用DeepSeek的已登录分区
+  const sess = session.fromPartition('persist:agent-deepseek', {
+    cache: true,
+    path: path.join(PARTITION_ROOT, 'agent-deepseek')
+  });
+  
+  win.loadURL('[https://chat.deepseek.com](https://chat.deepseek.com)', { session: sess });
+});
+```
+
+### 5.4 测试用例设计
+1. **完成检测测试集**：10字短答、500字长答、代码生成、网络中断异常
+2. **附件握手测试集**：单TXT、多PDF、图片混合、模拟单AI上传失败
+3. **故障隔离测试集**：手动关闭一个webview、网络延迟模拟、页面崩溃模拟
+
+---
+
+## 六、分期落地路线图
+| 阶段 | 目标 | 交付物 | 代码侵入性 | 周期预估 |
+|---|---|---|---|---|
+| **Phase 0** | 独立测试台验证三大核心能力 | meeting-lab测试台 + 验证报告 | 0（完全独立） | 1周 |
+| **Phase 1** | Meeting Core模块化工坊化，单测覆盖 | npm包形式的独立模块 | 0（新增目录） | 1周 |
+| **Phase 2** | 集成进现有会议UI，上线「广播模式+状态机+附件握手」 | 修复文件收不全、增加状态指示灯、修复charLimit死代码bug | 小改动（仅修改meeting.html与adapter入口） | 1周 |
+| **Phase 3** | 新增主持人模式、轮询讨论，升级为真正会议 | 主持人API调度、AI互相点评、会议纪要自动生成 | 中等改动 | 2周 |
+| **Phase 4（可选）** | MAF sidecar替换编排层 | 用微软MAF实现编排，下层完全不动 | 0（协议兼容） | 按需 |
+
+---
+
+## 七、关键风险与应对
+### 7.1 双重上下文边界问题（评审盲点）
+- **策略**：会议层维护权威历史，网页端仅保留单轮上下文
+- **做法**：每轮开始前调用`resetSession()`清空网页对话，再注入完整会议纪要作为prompt前缀
+- **优势**：状态完全可控，避免网页内置上下文与注入历史叠加导致的窗口膨胀
+
+### 7.2 Shadow DOM/iframe穿透
+针对豆包、通义等使用Shadow DOM的站点：
+- 使用CDP的`/deep/`深度选择器
+- 兜底方案：通过`executeJavaScript`递归穿透Shadow Root查找元素
+
+### 7.3 账号安全与反爬
+- **错峰发送**：9个AI随机偏移100-500ms发送，避免同时触发请求
+- **拟人输入**：模拟打字速度逐字输入，不瞬间填充文本框
+- **自动闭麦**：单个账号触发人机验证时自动标记失败，不影响其余AI
+
+### 7.4 未来MAF升级兼容性
+Meeting Core对外暴露标准`Agent`接口与`Meeting`接口，未来若需MAF的`checkpointing`、`durable execution`等能力，仅需替换编排层实现，Adapter层、Webview层、UI层均无需改动。
+
+---
+
+需要我帮你输出Phase 0测试台的完整可运行代码包，或者针对DeepSeek网页版写精准的选择器与完成检测配置吗？

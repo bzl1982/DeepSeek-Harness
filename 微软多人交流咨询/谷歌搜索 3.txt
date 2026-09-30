@@ -1,0 +1,355 @@
+收到这份第二轮（2026年9月22日）深度评审与共识收敛文件。
+这份文档极具含金量：它不仅精准地通过多源交叉验证纠正了上一轮关于 MAF (Microsoft Agent Framework) 1.0 隐式会话模型的客观事实错误 [2]，还通过深入翻阅 DSH 客户端源码 [2]，彻底剥离出「文件收不全」的三层核心根因（非文本未传内容、上传失败静默继续、缺乏路径句柄） [2]，并将 7 家 AI 的高维意见收敛为 8 条铁律共识（ADR）。
+现在，我们要克服纸面推演的局限，进入最硬核的“施工与防守”阶段。为了让你的自研 Node Meeting Core 拥有真正工业级的抗风控、抗改版与上下文驾驭能力，我将为你深度完善这套落地方案，重点攻克文档中暴露出的上下文重置激进度参数、完成检测信号防御、同质化坍塌对抗、以及最底层的文件真实路径补全（Phase 0）。
+------------------------------
+## 🛠️ 一、 攻克 Phase 0 地基：补齐 attachedFiles 真实物理路径
+如实证所述，PDF/图片之前在客户端只发了占位符，且 Drop 事件未保留真实路径 [2]。这是所有附件方案空转的根因 [2]。我们必须最先修改 desktop/agent/meeting.html 的文件接收主链路。
+## 1.1 客户端 Drop 拦截与真实路径提取（修改 meeting.html）
+利用 Electron 环境下 File 对象特有的 path 属性（原生 Web 浏览器中不可见，但 Electron 中可直接拿到绝对路径），彻底重构文件解析：
+
+// 目标文件：desktop/agent/meeting.html - 修改 handleFiles 函数function handleFiles(files) {
+  const container = document.getElementById('attachment-list');
+  
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    // ★ 关键：提取 Electron 注入的本地绝对路径（地基补全）
+    const localPath = file.path || ''; 
+    const ext = file.name.split('.').pop().toLowerCase();
+    
+    const fileItem = {
+      id: 'att_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      name: file.name,
+      size: file.size,
+      localPath: localPath, // 注入物理路径，供 AttachmentBus 消费
+      ext: ext,
+      status: 'pending'
+    };
+
+    // 区分文件类型，提取预览或文本
+    if (['txt', 'md', 'markdown', 'json', 'csv', 'log'].includes(ext)) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        fileItem.text = e.target.result;
+        attachedFiles.push(fileItem);
+        renderAttachmentCard(fileItem);
+      };
+      reader.readAsText(file);
+    } else {
+      // PDF、图片、Docx 等非纯文本格式
+      // 不再使用无意义的 [PDF文件: xxx] 文本占位符污染发送框
+      fileItem.text = `[FileAttachment: ${file.name}]`; 
+      if (file.type.startsWith('image/')) {
+        fileItem.isImage = true;
+        fileItem.dataUrl = URL.createObjectURL(file); // 仅做前端 UI 预览预览，不参与文本拼接
+      }
+      attachedFiles.push(fileItem);
+      renderAttachmentCard(fileItem);
+    }
+  }
+}
+
+## 1.2 重构发送逻辑，引入静默失败拦截器
+修复“ok 变量声明后从未被检查，失败也照发”的重大 Bug：
+
+// 修改 smartSend / broadcast 核心发送链路async function executeMeetingSend(cell, promptText, attachedFiles) {
+  // 1. 如果有附件，启动网关分布式门闩
+  if (attachedFiles && attachedFiles.length > 0) {
+    updateMeetingStatusUI('正在分发附件并建立握手...');
+    
+    // 扇出调用 9 个 Webview 的 CDP 注入，必须使用真实物理路径
+    const uploadTasks = attachedFiles.map(async (file) => {
+      // 必须严格检查 CDP 返回的执行状态 ok
+      const ok = await uploadFileToWebview(cell.webview, file.localPath); 
+      if (!ok) {
+        throw new Error(`文件【${file.name}】在格子【${cell.id}】中通过 CDP 注入失败`);
+      }
+      
+      // 阻塞轮询直到 DOM 出现附件卡片完成解析（ACK 门闩）
+      const ack = await cell.adapter.waitForUploadACK(15000);
+      if (!ack) {
+        throw new Error(`格子【${cell.id}】上传文件超时，网页端未生成附件卡片`);
+      }
+    });
+
+    try {
+      // 严格门闩：全部成功才允许放行
+      await Promise.all(uploadTasks);
+    } catch (err) {
+      console.error('[Meeting Core] 附件门闩拦截：', err.message);
+      // 触发兜底优雅降级：提示用户，或者转为文本大纲模式
+      showNotification(`附件同步失败: ${err.message}。系统已自动为您降级处理。`);
+      // 拦截主发送流程，阻止静默失败继续
+      return false; 
+    }
+  }
+
+  // 2. 门闩释放，执行真文本发送
+  await cell.webview.executeJavaScript(`sendToWebpage("${promptText}")`);
+  return true;
+}
+
+------------------------------
+## 🧠 二、 上下文决策矩阵：Hy4 滚动公式 × KIMI 单点重置
+针对分歧 1（网页端自带记忆与外部会议纪要冲突） [2]，采取温和且精准的滚动修剪策略。在 Meeting Core 中引入如下上下文路由计算函数：
+
+// meeting-lab/core/context-manager.js
+class MeetingContextManager {
+  constructor(charLimit = 10000) {
+    this.charLimit = charLimit;
+    this.globalExecutiveSummary = ""; // 存放由高效 API 压缩生成的全局会议纪要
+  }
+
+  /**
+   * 为某一个具体的网页 AI 编排当轮的 Prompt 输入
+   * @param {Object} agent - 目标 AI 实例
+   * @param {string} userQuestion - 用户本轮提的新问题
+   * @param {Array} history - 统一消息模型的全量历史 [2]
+   */
+  compilePromptForAgent(agent, userQuestion, history) {
+    // 1. 网页版自带多轮对话缓存，我们严禁每轮都冲刷全量历史
+    // 提取最近 2 轮的原始对白原文（确保局部上下文的绝对精确） [2]
+    const recentTurns = history.slice(-2);
+    let recentContextText = "";
+    
+    recentTurns.forEach(turn => {
+      recentContextText += `轮次(${turn.round}) 用户问: ${turn.input}\n`;
+      Object.keys(turn.responses).forEach(id => {
+        if (id !== agent.id) { // 别人说的话才需要喂给它，它自己说的话它的网页记得
+          recentContextText += `【${turn.responses[id].agentName}】答: ${turn.responses[id].content}\n`;
+        }
+      });
+    });
+
+    // 2. 组装符合 Hy4 范式的标准上下文边界公式 [2]
+    const systemPrompt = `[通辽会议 - 跨AI辩论机制]\n你当前的身份是智囊团成员【${agent.name}】。\n`;
+    const summarySection = this.globalExecutiveSummary ? `[前期会议要点摘要]:\n${this.globalExecutiveSummary}\n` : '';
+    const executionSection = `[前两轮各方对白原生切片]:\n${recentContextText}\n[当前你面临的任务]:\n请针对上述辩论过程，并结合用户的最新提问做出回应。\n用户新提问：${userQuestion}`;
+
+    const finalPrompt = `${systemPrompt}${summarySection}${executionSection}`;
+
+    // 3. 容错与单点重置门槛检查 [2]
+    if (finalPrompt.length > this.charLimit) {
+      console.warn(`[Context] AI【${agent.name}】触发长度超限门槛，执行【单点重置】。`);
+      // 触发该网页格子的独立刷新/清除上下文按钮，其余格子保持不刷 [2]
+      agent.adapter.clickNewChatButton(); 
+      
+      // 重置后，该 AI 丧失了网页缓存，必须一次性喂给它更厚的全局摘要来完成“热身”
+      return `${systemPrompt}[注意：由于会话重新初始化，请知悉历史纪要]:\n${this.globalExecutiveSummary}\n[新任务]: ${userQuestion}`;
+    }
+
+    return finalPrompt;
+  }
+
+  /**
+   * 异步触发外部标准 API 压缩全局会议记录（每 3-5 轮触发一次，切勿高频调用） [2]
+   */
+  async updateSummaryAsync(history) {
+    // 过滤并抽取历史，调用低成本、高上下文的官方 DeepSeek API 执行摘要更新
+    // 将 9 个 AI 的长篇大论压缩进 2000 字以内的全局矩阵，更新 this.globalExecutiveSummary
+  }
+}
+
+module.exports = MeetingContextManager;
+
+------------------------------
+## 🛡️ 三、 防御性完成检测（解决“抓空”与“跨轮闩锁”Bug）
+针对谷歌 2 的代码缺陷（AI 尚未开始吐字、页面处于初始静止状态时，文本无增长信号误置为真，导致直接提前结束并抓取到空串） [2]，在测试台中实施“必须首见文本（RequireContent）”和“信号状态激活器（Arm 机制）”：
+
+// meeting-lab/core/completion.js - 完善防守逻辑
+class SecureCompletionDetector {
+  constructor(webContents, selectors) {
+    this.webContents = webContents;
+    this.selectors = selectors;
+    this.armed = false; // 每轮初始化状态锁
+  }
+
+  /**
+   * 每一轮发送问题前，必须手动重置并激活状态锁，杜绝跨轮信号污染（解决跨轮闩锁） [2]
+   */
+  arm() {
+    this.armed = true;
+    this.hasSeenContent = false; // 必须首先看到内容产生
+  }
+
+  async waitForResponse(timeoutMs = 45000) {
+    if (!this.armed) {
+      throw new Error("[Detector] 未执行 arm() 激活，严禁进入完成检测周期");
+    }
+
+    let lastText = "";
+    let silenceTicks = 0;
+
+    return new Promise((resolve) => {
+      const timeoutTimer = setTimeout(() => {
+        clearInterval(loop);
+        this.armed = false;
+        resolve({ status: 'timeout', data: '【闭麦提示：响应超时】' });
+      }, timeoutMs);
+
+      const loop = setInterval(async () => {
+        try {
+          const [hasStop, hasSend, currentText] = await this.webContents.executeJavaScript(`
+            (() => {
+              const stop = !!document.querySelector('${this.selectors.stopBtn}');
+              const send = !!document.querySelector('${this.selectors.sendBtn}');
+              
+              // 穿透 Shadow DOM 支持（Hy4 范式：通过 preload 注册获取） [2]
+              let text = '';
+              const el = document.querySelector('${this.selectors.messageText}');
+              if (el) text = el.innerText || el.textContent || '';
+              return [stop, send, text];
+            })()
+          `);
+
+          // 核心防御点一：判断 AI 是否真正开始吐字 [2]
+          if (!this.hasSeenContent && currentText.trim().length > 0) {
+            this.hasSeenContent = true; // AI 开始输出，RequireContent 门槛跨越 [2]
+          }
+
+          // 如果 AI 还没开始吐字，即使页面完全静止，也绝对不允许判定为结束 [2]
+          if (!this.hasSeenContent) {
+            return; // 继续等待生成开始
+          }
+
+          // 核心防御点二：文本静止计数
+          if (currentText === lastText) {
+            silenceTicks++;
+          } else {
+            silenceTicks = 0;
+            lastText = currentText;
+          }
+
+          // 满足联合判据：AI 吐过字 + 停止按钮消失 + 发送恢复 + 文本连续 5 次采样（1.5秒）无变化 [2]
+          if (!hasStop && hasSend && silenceTicks >= 5) {
+            clearInterval(loop);
+            clearTimeout(timeoutTimer);
+            this.armed = false;
+            resolve({ status: 'completed', data: currentText.trim() });
+          }
+        } catch (err) {
+          // 忽略执行偶发异常
+        }
+      }, 300);
+    });
+  }
+}
+
+------------------------------
+## 🎭 四、 对抗“同质化坍塌”：差异化人格注入（盲点 A 突破）
+如果不做防御，9 个同级别的 AI 面对同一段上下文会迅速坍塌成复读机 [2]。必须在 Meeting Core 驱动每轮扇出时，强制为每个网页 AI 的前缀注入“分歧人格”：
+
+// desktop/src/agentCatalog.js - 为 9 个模型目录扩展显式立场特征const agentCatalog = {
+  "deepseek-web": {
+    name: "DeepSeek",
+    charLimit: 12000,
+    // 注入红队极端挑剔人格，强制拉大信息熵 [2]
+    personaPrefix: "【红队极端评审员视角】。你现在的任务是极度挑剔和冷酷。请不要重复别人的赞同性话语，专门寻找当前方案中的漏洞、隐藏合规风险与最坏情况，用词要锐利刺骨。" 
+  },
+  "kimi-web": {
+    name: "Kimi",
+    charLimit: 8000,
+    personaPrefix: "【务实派成本与工程落地视角】。请完全忽略宏观的叙事，只关注算力成本、实施周期、运维开销和工程可行性。如果别人提出了高大上的架构，你负责帮大家算账算时间，戳破不切实际的泡沫。"
+  },
+  "gemini-web": {
+    name: "Gemini",
+    charLimit: 15000,
+    personaPrefix: "【学术派多模态与前沿技术视角】。你负责引入业界最新的论文思想与前沿突破，评估当前讨论是否符合技术演进趋势，提供激进的、具有颠覆性的替代路线。"
+  }
+  // ... 其余 6 个 AI 均配置完全对立、互补的人格特征 [2]
+};
+
+当 ContextManager 在组装 finalPrompt 时，将这个 personaPrefix 强行钉在首行，用规则催生涌现分歧，用 Prompt 的差异化输入对抗模型的同质化坍塌。
+------------------------------
+## 🛡️ 五、 桌面端专属：同一设备指纹多账号防风控规约（盲点 B 突破）
+9 个账号在同一套 Electron 宿主、同一 IP 下高频并发，极易被反爬判别为“账号农场” [2]。必须在 meeting-lab/core/orchestrator.js 的并发执行器中接入流量整形与安全闭麦熔断：
+
+// meeting-lab/core/orchestrator.js - 引入风控整形限制
+class SecureMeetingOrchestrator {
+  constructor(agents, concurrencyLimit = 3) {
+    this.agents = agents;
+    this.concurrencyLimit = concurrencyLimit; // 限制同时处于生成状态的浏览器上限 [2]
+  }
+
+  async executeBroadcast(promptInput) {
+    console.log(`[Security] 启动防风控错峰广播流量整形，并发限制: ${this.concurrencyLimit}`);
+    
+    const results = {};
+    let activeGenerations = 0;
+    
+    // 使用队列池控制并发上限，阻止 9 个网页在一瞬间同时点击发送
+    const pool = this.agents.map((agent, index) => async () => {
+      // 错峰延迟：依据各自的格子索引，人为制造 400ms - 2000ms 的随机拟人打字/点击间隔 [2]
+      const staggeredDelay = index * 400 + Math.random() * 300;
+      await new Promise(r => setTimeout(r, staggeredDelay));
+
+      try {
+        agent.updateState('pending');
+        await agent.adapter.sendText(promptInput);
+        
+        // 阻塞等待响应
+        const res = await agent.detector.waitForResponse(45000);
+        
+        // 关键防御点：如果检测到页面弹出了滑动验证码
+        if (res.data.includes("请完成安全验证") || res.data.includes("captcha")) {
+          throw new Error("CAPTCHA_TRIGGERED");
+        }
+
+        results[agent.id] = res;
+      } catch (err) {
+        if (err.message === "CAPTCHA_TRIGGERED") {
+          console.error(`[CRITICAL RISK] AI【${agent.name}】触发滑动验证码！`);
+          // 熔断规约：一旦触碰验证码，严禁自动重试风暴，立即原地闭麦，交由人工处理 [2]
+          agent.updateState('blocked_by_captcha'); 
+          return { status: 'failed', content: '【⚠️ 系统提示：该AI当前触发风控验证码，已自动为您就地闭麦。请在宫格内手动完成滑块验证后右键唤醒】' };
+        }
+        
+        agent.updateState('failed');
+        return { status: 'failed', content: `【报错闭麦】: ${err.message}` };
+      }
+    });
+
+    // 顺序与并发调度器控制
+    const chunkedTasks = [];
+    for (let i = 0; i < pool.length; i += this.concurrencyLimit) {
+      const chunk = pool.slice(i, i + this.concurrencyLimit).map(task => task());
+      await Promise.allSettled(chunk); // 分批扇出，减缓宿主指纹的短时流量洪峰 [2]
+    }
+
+    return results;
+  }
+}
+
+------------------------------
+## 📅 六、 项目推进总路线图（Phase 0 - Phase 3）
+根据本轮达成的 8 条 ADR 共识 [2]，我们将执行路径完全收敛为不依赖外部繁重运行时的自研演进线路：
+## Phase 0: 独立测试台验证 (当前)
+
+* 动作：在独立目录 meeting-lab/ 下跑通 node --test。
+* 目标：彻底调通包含本章在内的 completion.js (防空抓) 与 attachment-bus.js (物理路径补全 + ACK 门闩)。
+* 状态：已实现核心纯逻辑单测 68/68 通过。
+
+## Phase 1: 客户端数据流打通
+
+* 动作：修改 desktop/agent/meeting.html 里的 handleFiles [2]，将物理绝对路径保存到文件模型中 [2]；去除 charLimit 永远不生效的死代码，在 agentCatalog.js 中为 9 家分化最大字符限制与差异化人格前缀。
+* 目标：消除非文本格式（PDF/图片）内容发送为空的底层硬伤。
+
+## Phase 2: Meeting Core 状态机挂载
+
+* 动作：将测试台验证完的 orchestrator.js、completion.js、attachment-bus.js 作为独立底层库正式引入 DSH 客户端目录中。
+* 目标：取代原有的盲目广播，为 9 宫格 UI 挂载精准的“等待中、生成中、完成、超时闭麦、风控熔断”五态指示灯。
+
+## Phase 3: 主持人介入与交叉辩论
+
+* 动作：利用标准外部 API (如官方 DeepSeek API) 作为会议主持人 (Chairman)，引入图式受控编排端口 (OrchestrationPort)。
+* 目标：开启真正具有交叉讨论性质的接力会议模式 (round_robin)，由主持人动态抽取上几轮的分歧点，向特定 AI 进行“点名提问”。
+
+------------------------------
+## 🔍 七、 进阶防守深度提问
+当你的独立测试台（meeting-lab）完全就绪，并且成功补齐了文件的真实物理路径后 [2]，如果你想继续榨干这 9 个同框网页 AI 的全部潜能，建议你带着这 3 个直击本质的工程与产品问题继续向外部进行技术深水区咨询：
+
+   1. 多账号会话上下文（Session）异步擦除与热身时序：当某个网页 AI 长对话卡顿触发单点重置（KIMI 策略）后 [2]，在模拟点击“新对话”到 DOM 结构完全就绪之间，如何设计基于 CDP Runtime 域的“会话空白期状态锁”，防止重置过程中的残余异步推流请求污染下一轮会议的新消息模型？
+   2. 拟人化流量特征与宿主指纹的协同隐藏：除了在网络层控制同时处于生成状态的 AI 上限（concurrencyLimit: 3）以及错峰发送之外 [2]，在 Electron 的 WebContents 层面，是否有必要动态修改每个格子的 navigator.hardwareConcurrency（模拟不同的 CPU 核心数）和 Canvas 渲染指纹，以彻底瓦解反爬系统对“同指纹多账号农场”的关联性判定？ [2]
+   3. 分歧矩阵抽取的 Token 经济学与高压缩比算法：利用外部标准 API 做会议纪要压缩和分歧矩阵抽取时（盲点 A） [2]，为了将 9 个 AI 每轮总计四五千字的原始语料控制在最划算的 Token 成本内，采用什么样的“系统提示词消元法”或分层聚合（MapReduce）压缩时机，能在不丢失跨 AI 辩论因果链的前提下，实现 85% 以上的超高压缩比？ [2]
+
+你可以现在立刻在你的终端输入命令进行复核 [2]，确认 meeting-lab 的防空抓逻辑和路径修复逻辑已经牢牢锁死这 68 个通过的自动化用例 [2]！我们下一步将直接进行 Phase 1 的客户端物理路径注入。
+

@@ -1,0 +1,304 @@
+下面按你的要求**直接给结论、给成本、给反例、给字段级设计**。先给总判，再逐条回答 Q1–Q9，最后给草案 A/B 的修改与动手优先级。
+
+---
+
+## 总判（先纠三个错，避免你照草案动手）
+
+1. **你的 5 个缺口全部成立，没有需要推翻的。** `divide` 的 `slice: SLICE.TASK` 代码证据确凿；`chairman` 无 `maxIterations` 是真实成本黑洞；人肉中转不是 message 就进不了切片；产物是文本就永远到不了软件。这五条不用再讨论。
+2. **草案 A 的“第 3 步定标由收敛类顺序发言选出胜者”是错的**——那是**脆弱瓶颈且不可复现**。定标应该由**代码用聚合规则（Borda）自动算出** winner，收敛席只补《定标说明/遗留风险》；AI 不负责“拍板选谁”。
+3. **草案 B 的“冻结契约由收敛类写”职责错了**——契约是技术产物，**架构师起草，收敛类只做冻结校验与完整性检查**；且**集成者必须是独立新角色 + 必须走 API/工具通道**，网页版 AI 不能当集成者（它不能落盘、不能跑编译）。
+
+---
+
+## Q1｜工作流 A：新建 `tournament` 还是组合？
+
+**结论：新建 `tournament` 模式，且必须参数化 `candidateSource`。组合不行。**
+
+**为什么组合不行**：
+- `broadcast` 只有“出 N 份意见”，**没有评判/选优阶段**；
+- `iterate` 的 `needs:['draft']` 只能改进**给定一份**草稿，无法“从 N 份里选一份”；
+- 硬要 `broadcast + iterate`，编排层必须临时造一个“评分 + 选择”逻辑，而这个逻辑**没有 seat / slice / termination / cost / modelFit 字段**，无法复用、无法单测、没有成本维度、不参与选角。等于把 tournament 散落在 orchestrator 里写死——**那还不如声明成模式**。
+- 更关键：工作流 A 第 3 步是**问外部 AI（元宝/谷歌/千问/DeepSeek）后人工复制回来**。候选来源是**人肉粘贴**，不是系统内并行调用。所以出标阶段内部调用 = **0 次**，这和 `broadcast`（内部 N 次并行）根本不是一回事，语义不同，不能叫 broadcast。
+
+**成本**（N = 候选数，工作流 A 你实际一次问 3~4 家，所以 **N≈3~4**，不是 9）：
+
+| 来源 | 阶段1 出标 | 阶段2 评标 | 阶段3 定标 | 阶段4-5 改进复评 | 总计 |
+|---|---|---|---|---|---|
+| `external`（人肉粘贴） | **0 次内部调用**（人工粘贴 N 条 message） | M 次（**M=评审席数，建议 3，不是 9**） | **0 次**（规则聚合） | 2×R 次（R=改进轮数） | **M + 2R**，N=4 时约 3+2R 次 |
+| `internal`（系统内出标） | N 次 | M 次 | 0 次 | 2R 次 | N+M+2R |
+
+评标阶段每人注入 N 份候选，上下文 ≈ N·L；因 N≈3~4，**远没到 O(N²)**，很便宜。
+
+**反例（什么时候不该这么做）**：候选只有 1 份，或问题**有唯一正确答案**（如“这个报错怎么修”）→ 不该开 tournament，直接用 `assist` 或 `iterate`。
+
+**字段级设计**：
+```js
+mode: 'tournament',
+candidateSource: 'external' | 'internal',   // external=人肉粘贴；internal=内部并行出标
+maxCandidates: 4,                            // 内部出标时限制候选数，防 O(N²)
+evaluatorSeats: ['red-team','fact-check','architect'], // 评标只要 3 席，不要全员
+phases: [
+  { name:'出标', seat: candidateSource==='external' ? 'human-relay' : 'build',
+    speak: candidateSource==='external' ? SPEAK.RELAY : SPEAK.PARALLEL, slice: SLICE.TASK },
+  { name:'评标', seat:'evaluator', speak: SPEAK.PARALLEL, slice: SLICE.CANDIDATES }, // 新切片=全部候选，不含评分
+  { name:'定标', seat:'converge', speak: SPEAK.AUTO_RULE, slice: SLICE.ALL },        // 规则聚合，非模型决策
+  { name:'改进', seat:'build',    speak: SPEAK.SEQUENTIAL, slice: SLICE.CRITIQUES },
+  { name:'复评', seat:'critic',   speak: SPEAK.PARALLEL,   slice: SLICE.DRAFT },
+]
+```
+
+---
+
+## Q2｜评标怎么防锚定？
+
+**结论：评标天然需要看到所有方案，锚定**不能**像 `review` 那样用“先并行独立”消除——只能缓解两类锚定。**
+
+- `review` 防的是“审阅意见互相抄”：同一份材料可并行独立 → 有效。
+- 评标是 **N 份方案互相比较**，评审者必须同现看到所有候选，否则无法比较。所以**做不到“先独立”**。要防的是：
+  1. **跟票**：看到别人的评分后从众 → 草案已做（`otherScores: 'NONE'`），保留。
+  2. **首因效应**：先读到的第 1 份方案锚定后面打分 → 用**每个评审者独立的随机阅读顺序**打散。
+
+**机制（零额外 token，前处理即可）**：
+- `authorIdentity: 'BLIND'`：匿名化，去掉提案席位名/AI 名，防“权威锚定”。
+- `candidateOrder: 'shuffled-per-evaluator'`：用 `seed = hash(evaluatorId + round)` 对候选重排，**每个评审者看到的顺序不同**，避免所有评审者都被同一份“第一方案”锚定。
+- 用**排序/pairwise** 输出（见 Q3），比绝对分更抗尺度锚定。
+
+**成本**：重排/匿名是纯前处理，**0 次调用、0 额外 token**。
+
+**反例**：候选之间差异极大（一眼分优劣）→ 防锚定收益很低，可关掉 shuffle；但 `otherScores:'NONE'`（防跟票）**必须永远保留**。
+
+**字段级**：
+```js
+evaluation: {
+  visibility: { candidates: 'ALL', otherScores: 'NONE', authorIdentity: 'BLIND' },
+  order: 'shuffled-per-evaluator',
+  seedFrom: 'evaluatorId+round'
+}
+```
+
+---
+
+## Q3｜打分 vs 淘汰？跨模型尺度怎么校准？
+
+**结论：用「强制排序 + Borda 计数」聚合；若允许打分则做 per-evaluator z-score 归一化；用 Top-K 淘汰减少改进成本。**
+
+可直接实现的做法：
+1. **每个评审者输出对 N 个候选的严格全序**（或 pairwise 胜负），**不要**直接输出 1–10 分。
+2. 代码算 **Borda**：第 1 名得 N-1 分，第 2 名 N-2…最后 0 分，求和，最高分 = winner；并列时由收敛席/人工裁决。
+3. 如果评审者坚持给绝对分：**per-evaluator 归一化**  
+   `z = (score - mean(该评审者所有打分)) / std(该评审者所有打分)`，再跨评审者求和。这消除“有人手松给 8 分、有人手紧给 3 分”的尺度偏差。
+4. **淘汰**：`survivorCount: 1`（胜出）+ `runnerUpCount: 1`（备选），其余淘汰；后续只改进胜出者，不改进全部 N 份。
+
+**成本**：Borda/归一化是 **O(N·M) 纯计算，0 token**。排序输出比打分略长一点，可忽略。
+
+**反例**：候选彼此**不可比**（解决的是不同子问题）或只有 1 个候选 → 排序/Borda 无意义，改用**达标制**（是否通过门槛 `pass: true/false`），不要排名。
+
+**字段级**：
+```js
+scoring: {
+  mode: 'rank',                 // 'rank' | 'score'
+  aggregation: 'borda',         // 'borda' | 'copeland'(pairwise)
+  normalize: 'zscore-per-evaluator', // score 模式必开
+  survivorCount: 1,
+  runnerUpCount: 1
+}
+```
+
+---
+
+## Q4｜工作流 A 的可计算终止判据？
+
+**结论：“满意/效果”不可完全客观计算 → 必须人机协作。系统内用 `no-new-critique` + `maxRounds` 防空转，最终由人工 `tryPass` 终止。**
+
+对你三个候选的判定：
+- ① **「本轮最优方案得分增幅 < 阈值」：不推荐。** 改进阶段只改胜出者、复评只挑错，没有重新打分，分数不变；若重新打分，归一化后跨轮会抖动，判据不稳定。
+- ② **「没有评审者提出新的反对意见」（`no-new-critique`）：推荐。** 与 `iterate` 同构，纯集合运算可单测；文本规范化（去空白标点 + 截前 60 字）必须做，否则换个标点算新意见 → 永不停机。
+- ③ **强制人工确认：必须保留。** 因为“效果好不好”要你实际去试，系统内算不出来。
+
+**正确组合**：`复评无新批评` 或 `达到 maxRounds(3)` → 停止改进；然后等你**手动尝试**，点 `tryPass=true`（成功）才真正结束；若失败，把失败原因作为新批评写回咨询案，**进入下一轮 tournament**（重写/细化 TASK 再问外部）。若以后能自动跑测试（工作流 B），则用 `testsPass` 替代人工。
+
+**成本**：无额外调用；`maxRounds` 硬上限防无限烧 token。
+
+**反例**：若“尝试”可由自动化测试验证（如单测通过）→ 不该用人工确认，直接 `testsPass === true` 终止，省人力。
+
+**字段级**：
+```js
+termination: {
+  converge: 'no-new-critique',  // 复评阶段无新批评
+  maxRounds: 3,                 // 硬上限
+  final: 'human-confirm',       // 最终必须人点 tryPass
+  humanConfirmField: 'tryPass',
+  autoTestFallback: 'testsPass' // 有自动化测试时优先用
+}
+```
+
+---
+
+## Q5｜接口契约谁写、什么形态？
+
+**结论：架构师起草 → 收敛类（主持助理）冻结校验 → 书记员做遗漏检查。形态 = 语言无关类型签名/IDL，只声明跨模块边界，绝不写实现体。**
+
+- **起草=架构师**（职责就是技术可行性/耦合边界，正好写模块划分与接口）。
+- **冻结=收敛类主持助理**：做“完整性校验”（所有跨模块依赖是否都有定义？有无循环依赖？错误码是否一致？），无异议置 `frozen: true`。书记员补“遗漏项”（有没有模块没人负责？）。
+- **分界线（关键）**：契约只定义**“模块之间必须一致的东西”**——导出签名、数据结构、错误码、文件路径；**不定义模块内部算法/实现**。这样 AI 仍是设计者，不是抄写员。
+
+**形态示例（TypeScript interface 子集，无函数体）**：
+```ts
+interface ModuleA {
+  method1(param: TypeX): Promise<Result<TypeY, ErrorCode>>;  // 只给签名
+}
+// 禁止写实现、禁止写具体算法
+```
+
+**字段级**：
+```js
+contract: {
+  version: '1.0',
+  modules: [{ name, responsibility, exports: ['method1(p:T):R<E>'], dependsOn:[], files:['src/a.ts'] }],
+  errors: { E_NETWORK: '网络超时', E_VALIDATION: '参数非法' },
+  frozen: false   // 冻结后置 true；实现阶段只读，修改必须回退到架构阶段走 contract-issue
+}
+```
+
+**成本**：起草 1 次 + 冻结校验 1 次，契约长度远小于代码，很便宜。
+
+**反例**：任务是 9 份**互不依赖**的独立文档 → 不需要契约，硬加是过度设计；契约过细（把内部逻辑也写）→ AI 降级为抄写员，丢设计价值。
+
+---
+
+## Q6｜分头实现每个 AI 看什么？
+
+**结论：需要新增 `CONTRACT` 切片。最小内容 = 契约全文 + 自己模块详情 + 其他模块一句话摘要；禁止注入他人实现代码。**
+
+`CONTRACT` 切片定义：
+- `contractFull`: true（签名/数据结构/错误码，必看，否则拼不起来）
+- `ownModule`: 'full'（职责、要导出什么、文件路径约定）
+- `otherModules`: 'one-line-summary'（只给职责，不给实现）→ 避免上下文爆炸，也避免被别人实现带偏
+- `taskBrief`: 'TASK'（本轮任务）
+- **禁止**：其他模块的实现代码、详细方案、讨论过程（那是 `ALL` 的负担，且会互相抄）
+
+**成本**：每人上下文 ≈ 契约长度 + 自己模块 + (N-1) 句摘要 ≈ O(contract + N)，并行 N 次调用；比 `ALL`（O(N·L)）小一个量级。
+
+**反例**：模块间要改**同一文件/强耦合** → 不可分头，`CONTRACT` 也救不了，应改用 `assist` 单人串行或人工拆分。
+
+**字段级**：
+```js
+SLICE.CONTRACT = {
+  include: ['contractFull','ownModuleFull','otherModulesSummary','taskBrief'],
+  otherModulesDetail: 'NONE'
+}
+// divide 模式修改：分头攻克阶段 slice: SLICE.TASK → SLICE.CONTRACT
+```
+
+---
+
+## Q7｜O(N²) panel 与不可预测 chairman，降成本最有效的 3 个（最优先）
+
+**排序（按有效性）：**
+
+1. **滚动摘要压缩（rolling summary）** —— 最有效  
+   panel 第 k 人注入前 k-1 份的**压缩摘要**而非全文，成本从 `O(N²L)` 降到 `O(N·S)`（S=摘要常数，如 300 字）。  
+   **副作用**：丢细节 → 摘要必须保留三块：`已达成共识 / 仍有分歧 / 待决问题`；用**真实 API 模型**做压缩（不占网页席位、快）。  
+   **反例**：会议很短（N=3、单轮）时，压缩本身要额外归并调用，反而比原 O(N²) 更贵 → 小会别硬上压缩，直接 `ALL`。
+
+2. **分组合并（hierarchical fan-in）** —— 第二  
+   9 人分 3 组，组内先归并出 3 份组意见再上会；成本 `O((N/3)²×3 + 3²)`。  
+   **副作用**：少数派意见被组长吞掉 → 组长输出必须带 `异议清单` 随组意见上浮，否则丢 diversity。
+
+3. **硬性限制 `maxSeats` / 只在分歧点串行** —— 第三  
+   panel 补 `maxSeats: 5`；或改用 `chairman` 模式**按需点名**（只注入相关方，不是全员 O(N²)）。  
+   **副作用**：丢广度，9 人价值下降。
+
+**必须补的字段（堵缺口三）**：
+- 所有 mode 增加：
+```js
+cost: { calls: 'N', contextGrowth: 'O(N·L)' | 'O(N²L)', tier: 'low'|'mid'|'high'|'unknown' },
+limits: { maxSeats?: 5, maxIterations?: 5, maxCandidates?: 4 }
+```
+- **`panel`**：`limits: { maxSeats: 5, compression: 'rolling-summary' }`（默认开压缩）
+- **`chairman`**：补 `maxIterations: 5` + `hardStop: 'maxIterations'` + `costCeilingCalls`（原来只有 iterate 有 maxIterations，这是它成本不可预测的根源）
+
+---
+
+## Q8｜人工中转席位怎么建模？
+
+**结论：既要是 external message，也要是一个特殊席位类型。两者结合。**
+
+- **Message 层**：`MeetingModel` 的 message 增加  
+  `senderType: 'external'`（外部 AI 经人肉粘贴）+ `relayBatchId`（一次粘贴多家回答时同批 id）+ `sourceName`（“元宝/千问/谷歌”）。  
+  → 这样外部回答**进入 `messages`，能参与切片**，成为候选/意见。`senderType:'external'` 与 `'user'|'agent'|'system'` 并列。
+- **席位层**：注册 `providerType: 'human-relay'` 的席位：
+  - `isReady()` 永远 true（人在就 ready）
+  - `sendText()` 是 no-op（系统只把咨询案文本展示给人去复制，**不发给任何模型**）
+  - `waitForResponse()` 返回 Promise，由 UI **“粘贴完成”按钮** resolve（**不等 CDP、无完成检测**）
+  - 可配 `humanTimeoutMs`（或 Infinity + 提醒）
+
+**成本**：出标阶段内部调用 **0 次**（外部问答发生在用户自己的浏览器，不烧你系统 token）。
+
+**反例**：若某外部 AI 以后 API 化 → 应转成普通 `api` 席位，不再用 human-relay；human-relay 只是“零摩擦人肉入口”的过渡形态。
+
+**字段级**：
+```js
+seat: { providerType: 'web' | 'api' | 'human-relay' }
+message: { senderType: 'user'|'agent'|'system'|'external', relayBatchId?, sourceName? }
+```
+
+---
+
+## Q9｜从文本到可运行软件：环节 + 集成者
+
+**最少 7 个环节**：
+1. 需求澄清（功能清单 + **明确“不做什么”**）
+2. 架构设计（模块划分 + 依赖）
+3. **冻结契约**（跨模块签名/数据结构/错误码）★没有这步必拼不起来
+4. **分头实现**（产出 `Artifact`，不是自由文本）
+5. **集成验证**（落盘 + 编译/运行 + 测试；集成者执行）
+6. **修复回路**（定位归属 → 原作者/集成者修）
+7. 交付（可运行包/仓库）
+
+**集成者：必须是独立新角色「集成工程师」，不能复用主持助理。**
+- 主持助理 = 归并**观点**；集成工程师 = 拼装**产物 + 跑命令 + 看编译错误**。职责完全不同，且集成者需要**工具权限（文件/终端）**。
+- 硬约束：只做拼装、落盘、运行验证、报编译/运行错误；**禁止讨论战略、禁止改他人实现逻辑**。
+- **必须走 API / 工具通道**：网页版 AI 不能落盘、不能跑编译，**不能当集成者**。
+
+**谁修**：
+- 优先**原作者修**：切片 = 编译/运行错误 + 自己模块 + 契约（职责明确）。
+- 集成者**只修集成层错误**：导入路径、构建脚本、文件名不匹配。
+- 无法定位 → `owner:'unknown'` 交人工/主席；修复轮数上限（如 3），超过人工介入。
+
+**产物形态（字段级）**：
+```js
+Artifact: { path: string, content: string, language: string, producedBy: seatId, round: number, verified?: boolean }
+// 模式 output 从 text 改为 artifacts；阶段5 产出 verified + buildLog
+```
+
+**成本**：分头 N 次 + 集成 1 次（+本地运行，不耗 token 耗时间）+ 修复 R 次。
+
+**反例**：只做原型/方案探讨，不需要可运行软件 → 不该上 `build`，用 `assist`/`panel` 出文本方案即可；硬上集成验证是浪费。
+
+---
+
+## 对草案 A / B 的字段级修改（请照这个改，不要照原草案）
+
+### 草案 A `tournament` —— 关键纠错
+- ❌ 原“第 3 步定标由收敛类顺序发言选出胜者” → ✅ **改为规则聚合自动定标**：`speak: SPEAK.AUTO_RULE`，代码用 Borda 算 winner+runnerUp；收敛席只产出《定标说明与遗留风险》（可选 1 次，**不是决策瓶颈**）。
+- ✅ 评标席位改 `evaluatorSeats: ['red-team','fact-check','architect']`（3 席，不是全员），避免 O(N²。
+- ✅ 增 `candidateSource` + `humanConfirm` 终止（见 Q1/Q4）。
+- ✅ 增 `SPEAK.RELAY` 与 `human-relay` 席位支持 external 出标。
+
+### 草案 B `build` —— 关键纠错
+- ❌ 原“冻结契约由收敛类写” → ✅ **架构师起草（阶段2产出契约草案），阶段3 收敛类主持助理做冻结校验 + 书记员做遗漏检查**；契约形态见 Q5，冻后置 `frozen:true`。
+- ✅ 阶段5 集成验证席位 = `集成工程师`，`providerType: 'api'|'tool'`，**网页版不可**。
+- ✅ 阶段6 修复归属原作者（不是集成者全修），见 Q9。
+- ✅ 增 `CONTRACT` 切片 + `Artifact` 产物；`divide` 的分头攻克 slice 从 `TASK` 改为 `CONTRACT`。
+
+---
+
+## 下一步动手优先级（按你 Q1/Q4/Q5/Q7 想先写代码）
+
+1. **先补 `cost` + `limits` 字段**（Q7/缺口三）：给 8 个模式加 `cost.tier`；给 `panel` 补 `maxSeats:5 + rolling-summary`，给 `chairman` 补 `maxIterations:5 + hardStop`。**这一步先堵住不可预测成本，最急**。
+2. **新增 `tournament` 模式**（Q1/Q4）：含 `candidateSource`/external、Borda 聚合定标、`no-new-critique + maxRounds + humanConfirm`。
+3. **新增 `CONTRACT` 切片 + `Artifact` 产物，改 `divide` 分头攻克为 `CONTRACT`，新增 `build` 模式**（Q5/Q6/Q9）。
+4. **增加 `human-relay` providerType 与 `external` senderType**（Q8），让人肉粘贴成为一等公民、零摩擦入口。
+
+> 最后提醒一句：**工作流 A 的 N 是你问的外部家数（3~4），不是系统内 9 席**——所以 tournament 很便宜，别被 O(N²) 吓到；真正贵的是系统内 9 人 `panel`，那个必须靠 `maxSeats:5` + 滚动摘要压住。

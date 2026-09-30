@@ -1,0 +1,241 @@
+# 微软多AI对话开源项目与「通辽会议」接入落地方案
+## 一、微软开源项目确认：AutoGen 核心原理
+你提到的微软开源多人AI对话项目，是 **Microsoft AutoGen**（2026年已整合升级为 **Microsoft Agent Framework**，核心多智能体对话能力完全延续AutoGen架构），是目前工业界最成熟的开源多AI协作框架，原生支持多智能体同框对话、任务分发、轮次调度。
+
+### 1. 核心工作原理
+AutoGen 采用「消息总线+智能体抽象+群聊调度」的三层解耦架构：
+- **Core 层（底层）**：实现异步Actor消息总线、事件驱动运行时，负责Agent之间的消息路由、状态隔离、并发调度，完全解耦「消息传递」和「智能体逻辑」。
+- **AgentChat 层（中间层）**：封装标准智能体抽象（`BaseChatAgent`）和群聊管理器（`GroupChat`），提供开箱即用的轮询对话、发言排序、终止条件判断。
+- **Extensions 层（上层）**：内置主流API型LLM适配器（OpenAI、Azure、Gemini、Anthropic等）、代码沙箱、工具调用扩展。
+
+### 2. 原生对话逻辑
+所有AI能力都被封装为**Agent**，每个Agent只需实现标准消息接口：
+- 接收统一格式的聊天消息（文本、文件、图片）
+- 处理后返回响应消息
+- 由 `GroupChatManager` 统一管理发言顺序、消息广播、上下文同步
+
+原生设计面向**API接口型大模型**，通过HTTP调用获取回复；而你的「通辽会议」是**网页版AI**（无开放API，通过浏览器页面交互），这是核心适配难点。
+
+---
+
+## 二、接入核心思路：网页版AI 转 AutoGen 标准Agent
+要把9个网页版AI接入AutoGen，核心是开发一层 **WebAI 适配器**，把「浏览器页面的输入输出操作」封装成AutoGen兼容的标准Agent接口，让AutoGen把网页AI当成普通API型Agent调度。
+
+### 整体架构设计
+```
+┌───────────────────────────────────────────────────────────┐
+│                     通辽会议前端UI                        │
+│              （9格同框展示、消息输入、文件上传）             │
+└─────────────────────┬─────────────────────────────────────┘
+                      │
+┌─────────────────────▼─────────────────────────────────────┐
+│                AutoGen 群聊管理器                          │
+│  （消息广播、轮次调度、上下文管理、终止条件判断）             │
+└─────────┬─────────┬─────────┬─────────────────────────────┘
+          │         │         │
+┌─────────▼─┐ ┌─────▼─────┐ ┌▼───────────┐   ×9个
+│ WebAI代理1 │ │ WebAI代理2 │ │ WebAI代理9 │
+│  (适配器)  │ │  (适配器)  │ │  (适配器)  │
+└─────────┬─┘ └─────┬─────┘ └─────┬───────┘
+          │         │             │
+┌─────────▼─────────▼─────────────▼───────┐
+│      Playwright 浏览器自动化池           │
+│  （9个隔离浏览器标签页，对应9个AI网页）   │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 三、落地实现方案
+### 1. 技术栈选型（与你现有DeepSeek Harness对齐）
+- 主框架：`autogen-agentchat`（AutoGen v0.4+ 稳定版）
+- 浏览器自动化：`playwright`（和你现有Harness技术栈一致，无需新增依赖）
+- 运行环境：Python 3.10+（AutoGen官方推荐）
+- 前端对接：通过WebSocket把AutoGen的消息流推送到你的「通辽会议」UI
+
+### 2. 核心组件：WebAI 适配器开发
+每个网页版AI对应一个`WebChatAgent`，继承AutoGen的`BaseChatAgent`基类，内部封装Playwright页面操作逻辑。
+
+#### 适配器核心实现逻辑
+```python
+from autogen_agentchat.agents import BaseChatAgent
+from autogen_agentchat.messages import ChatMessage, TextMessage, FileMessage
+from playwright.async_api import Page, Browser
+from typing import List, AsyncGenerator
+
+class WebAIChatAgent(BaseChatAgent):
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        page: Page,  # Playwright页面对象，对应一个AI网页
+        input_selector: str,  # 输入框CSS选择器
+        send_selector: str,   # 发送按钮CSS选择器
+        output_selector: str, # 回复内容CSS选择器
+        upload_selector: str = None, # 文件上传按钮选择器
+    ):
+        super().__init__(name=name, description=description)
+        self.page = page
+        self.input_selector = input_selector
+        self.send_selector = send_selector
+        self.output_selector = output_selector
+        self.upload_selector = upload_selector
+        self._last_msg_count = 0  # 记录已有消息数，用于抓取新回复
+
+    @property
+    def produced_message_types(self):
+        return (TextMessage, )
+
+    async def on_messages(
+        self,
+        messages: List[ChatMessage],
+        cancellation_token,
+    ) -> AsyncGenerator[ChatMessage, None]:
+        # 1. 拼接所有输入消息为完整文本
+        input_text = "\n".join([
+            f"[{msg.source}]: {msg.content}" 
+            for msg in messages if isinstance(msg, TextMessage)
+        ])
+
+        # 2. 处理文件消息（如果有）
+        for msg in messages:
+            if isinstance(msg, FileMessage) and self.upload_selector:
+                await self._upload_file(msg.path)
+
+        # 3. 网页端输入并发送
+        await self.page.fill(self.input_selector, input_text)
+        await self.page.click(self.send_selector)
+
+        # 4. 等待回复生成并抓取
+        reply_text = await self._wait_for_reply()
+        
+        # 5. 返回标准格式消息给AutoGen
+        yield TextMessage(content=reply_text, source=self.name)
+
+    async def _wait_for_reply(self, timeout=60) -> str:
+        # 等待新消息出现，轮询检测消息数量变化
+        for _ in range(timeout * 2):
+            await self.page.wait_for_timeout(500)
+            msg_elements = await self.page.query_selector_all(self.output_selector)
+            if len(msg_elements) > self._last_msg_count:
+                # 抓取最新一条回复
+                new_msg = msg_elements[-1]
+                text = await new_msg.inner_text()
+                self._last_msg_count = len(msg_elements)
+                return text
+        raise TimeoutError(f"AI {self.name} 回复超时")
+
+    async def _upload_file(self, file_path: str):
+        # 网页端文件上传
+        async with self.page.expect_file_chooser() as fc_info:
+            await self.page.click(self.upload_selector)
+        file_chooser = await fc_info
+        await file_chooser.set_files(file_path)
+```
+
+### 3. 9个AI 批量初始化与浏览器池管理
+使用Playwright的BrowserContext创建9个隔离标签页，分别对应9个网页版AI，批量生成适配器Agent。
+
+```python
+from playwright.async_api import async_playwright, BrowserContext
+
+# 9个网页AI的配置（示例，按实际页面替换选择器）
+AI_CONFIGS = [
+    {"name": "DeepSeek", "url": "[https://chat.deepseek.com](https://chat.deepseek.com)", 
+     "input": "#chat-input", "send": ".send-btn", "output": ".message-content"},
+    {"name": "GPT", "url": "[https://chat.openai.com](https://chat.openai.com)",
+     "input": "#prompt-textarea", "send": '[data-testid="send-button"]', "output": ".markdown"},
+    {"name": "Kimi", "url": "[https://kimi.moonshot.cn](https://kimi.moonshot.cn)",
+     "input": "#editor", "send": ".send-btn", "output": ".chat-message"},
+    # ... 剩余6个AI配置
+]
+
+async def init_web_ai_agents(context: BrowserContext) -> List[WebAIChatAgent]:
+    agents = []
+    for config in AI_CONFIGS:
+        page = await context.new_page()
+        await page.goto(config["url"])
+        # 等待页面加载完成，处理登录态（可复用本地浏览器缓存）
+        await page.wait_for_selector(config["input"])
+        
+        agent = WebAIChatAgent(
+            name=config["name"],
+            description=f"{config['name']} 网页版AI助手",
+            page=page,
+            input_selector=config["input"],
+            send_selector=config["send"],
+            output_selector=config["output"],
+        )
+        agents.append(agent)
+    return agents
+```
+
+### 4. AutoGen 群聊配置：实现「一发多收」
+配置`RoundRobinGroupChat`（轮询群聊），实现用户发一条消息，自动广播给9个AI，全部回复后汇总到前端。
+
+```python
+from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen_agentchat.conditions import TextMentionTermination
+
+async def create_tongliao_meeting(agents: List[BaseChatAgent]):
+    # 终止条件：用户输入"结束"时停止
+    termination = TextMentionTermination(text="结束")
+    
+    # 创建9人群聊，轮询发言
+    team = RoundRobinGroupChat(
+        participants=agents,
+        termination_condition=termination,
+        max_turns=1  # 每轮用户输入后，每个AI回复1次
+    )
+    return team
+```
+
+### 5. 消息流转完整流程
+1. **用户输入**：在「通辽会议」前端输入问题/上传文件，通过WebSocket发送到后端
+2. **消息入队**：AutoGen群聊管理器接收用户消息，封装为标准`ChatMessage`
+3. **广播分发**：群聊管理器按配置依次把消息发送给9个WebAI Agent
+4. **网页交互**：每个Agent通过Playwright操作对应浏览器标签页，输入内容、发送、抓取回复
+5. **结果汇总**：所有Agent返回回复后，AutoGen统一整理消息流
+6. **前端渲染**：通过WebSocket把9个AI的回复推送到前端9格界面，对应展示
+
+---
+
+## 四、关键问题与优化方案
+### 1. 网页版AI的登录态与稳定性
+- **方案**：Playwright加载本地浏览器用户数据目录（`user_data_dir`），复用已登录的Cookie，避免每次启动重新登录
+- **防检测**：添加`stealth`插件，模拟真实用户操作，增加输入延时、随机打字速度，防止网页AI判定为机器人
+
+### 2. 回复抓取准确性
+- 针对不同AI网页的DOM结构，单独优化选择器，优先使用`data-testid`、稳定类名
+- 增加「回复完成检测」：监听页面加载状态、停止动画、按钮状态变化，确保抓取完整回复而非半成品
+
+### 3. 并发性能优化
+- 9个AI采用**异步并发**执行，而非串行，总耗时等于最慢的那个AI的回复时间
+- 浏览器资源复用：使用同一个BrowserContext下的多个标签页，减少内存占用
+
+### 4. 文件上传支持
+- 针对支持文件解析的网页AI，在适配器中实现`FileMessage`处理逻辑，自动触发网页文件选择器上传
+- 不支持文件的AI自动降级为文本摘要发送
+
+---
+
+## 五、最小可运行Demo步骤
+1. 安装依赖
+```bash
+pip install autogen-agentchat playwright
+playwright install chromium
+```
+
+2. 按你的9个AI网页，填写`AI_CONFIGS`里的URL和DOM选择器
+3. 运行初始化脚本，启动浏览器池和9个Agent
+4. 调用`team.run_stream()`获取流式消息，对接你的前端UI
+
+---
+
+## 六、进阶扩展（后续可迭代）
+1. **接入AutoGen工具能力**：给群聊增加代码执行、网页搜索Agent，让9个AI可以调用工具
+2. **自定义调度策略**：替换`RoundRobinGroupChat`为自定义调度器，实现辩论模式、评审模式、投票模式
+3. **持久化**：接入AutoGen的内存扩展，保存每轮会议记录，支持历史回溯
+4. **异常容错**：增加AI掉线重连、回复失败重试、超时跳过机制，提升9AI同框的稳定性
+
+需要我帮你补全完整的可运行Python脚本，或者针对某个具体AI网页（比如DeepSeek网页版）写精准的选择器和抓取逻辑吗？

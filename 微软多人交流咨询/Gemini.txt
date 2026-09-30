@@ -1,0 +1,79 @@
+这是一个非常有挑战性且极具前瞻性的想法！你正在尝试将“**多人协同对话（Multi-Agent Collaboration）**”从传统的 API 模式，迁移到更复杂的“**Web UI 自动化/模拟**”模式。
+
+你提到的微软项目应该是 **[Microsoft AutoGen](https://github.com/microsoft/autogen)**。它的核心理念是让多个 Agent 通过对话来解决复杂问题。
+
+### 1. 微软 AutoGen 的核心原理分析
+
+AutoGen 的底层逻辑并非“网页聊天”，而是 **“消息总线 + 角色定义 + 状态机”**：
+
+*   **Group Chat Manager (协调者)**：这是灵魂。它不参与具体对话，而是决定“现在轮到谁说话”。它维护一个对话历史，并根据当前上下文判断最适合回答的人。
+*   **Agent Roles (角色定义)**：每个 Agent 都有一个 `system_message`（设定身份）和 `tools`（工具集）。
+*   **Message Routing (消息路由)**：当 Agent A 发出消息，Manager 接收后，通过一个选择逻辑（可以是 LLM 决策，也可以是轮询）将消息转发给 Agent B。
+*   **Communication Protocol (通信协议)**：它们之间传递的是结构化的 JSON 数据（包含 sender, content, role 等），而不是 HTML 页面。
+
+---
+
+### 2. 你的挑战：从 API 到 Web UI 的跨越
+
+**核心矛盾点：**
+*   **AutoGen**：输入 JSON $\rightarrow$ 调用 API $\rightarrow$ 输出 JSON。
+*   **通辽会议（你的项目）**：输入文本 $\rightarrow$ **模拟用户点击/输入网页** $\rightarrow$ **通过 DOM 监听/爬虫抓取网页反馈** $\rightarrow$ 提取文本。
+
+你要解决的是如何把“网页版的 AI”伪装成“AutoGen 的 API 节点”。
+
+---
+
+### 3. 可落地的接入方案：基于“代理模拟器”的架构
+
+我建议不要试图修改 AutoGen 的核心代码去兼容网页，而是**为每一个网页版 AI 写一个“适配器（Adapter）”**，让 AutoGen 认为它在跟 API 对话。
+
+#### 方案架构图
+`AutoGen (Manager)` $\leftrightarrow$ `Adapter Layer (中转站)` $\leftrightarrow$ `Browser Automation (Playwright/Selenium)` $\leftrightarrow$ `Web AI UIs (ChatGPT/DeepSeek/etc.)`
+
+#### 详细实施步骤
+
+##### 第一步：开发“网页智能代理驱动层” (The Driver)
+你需要使用 **Playwright** (推荐) 或 Selenium。为每一个网页 AI 编写一个驱动脚本。
+*   **功能**：
+    *   `send_message(text)`：定位输入框，粘贴文本，模拟回车。
+    *   `get_last_response()`：不断轮询 DOM 元素（比如等待“停止生成”按钮消失，或者监测新消息气泡的出现），抓取最新文本。
+    *   `upload_file(path)`：模拟点击上传按钮并注入文件路径。
+
+##### 第二步：实现“自定义 Agent 接口” (The Adapter)
+AutoGen 允许自定义 `ConversableAgent`。你需要重写它的 `receive` 和 `send` 方法。
+
+*   **逻辑流程**：
+    1.  **AutoGen 发出指令** $\rightarrow$ 调用你的 `CustomWebAgent.send()`。
+    2.  **`send()` 内部操作** $\rightarrow$ 调用 Playwright 驱动 $\rightarrow$ 在浏览器里输入文字 $\rightarrow$ 触发发送。
+    3.  **等待反馈** $\rightarrow$ 驱动层开始 `poll` 网页 DOM $\rightarrow$ 拿到 AI 的回复文本。
+    4.  **返回结果** $\rightarrow$ 将文本封装成 JSON 返回给 AutoGen 的 Manager。
+
+##### 第三步：解决“通辽会议”的同步问题 (Sync Strategy)
+既然你是 9 个网页同框，且你已经实现了文件分发，你需要解决**“谁在什么时候说话”**的冲突。
+
+*   **方案 A：托管模式 (Manager-Led)**
+    *   让 AutoGen 的 `GroupChatManager` 运行在后台。
+    *   Manager 决定 Agent 1 说话 $\rightarrow$ 触发 Agent 1 的 Playwright 脚本 $\rightarrow$ Agent 1 在网页上回复 $\rightarrow$ 你通过监听网页 DOM 捕获到回复 $\rightarrow$ 把回复同步给其他 8 个网页。
+*   **方案 B：广播模式 (Broadcast-Led)**
+    *   你现在的逻辑是“我发文件，9 个人都能收到”。
+    *   你可以模仿这种模式：Manager 发起一个问题 $\rightarrow$ 驱动层控制 9 个浏览器标签页**同时**输入 $\rightarrow$ 你通过一个“聚合器”收集 9 个页面的结果 $\rightarrow$ 传回给 Manager 进行总结。
+
+---
+
+### 4. 技术栈推荐
+
+| 组件 | 推荐工具 | 原因 |
+| :--- | :--- | :--- |
+| **多智能体框架** | **Microsoft AutoGen** | 逻辑成熟，适合处理复杂的“谁该说话”逻辑。 |
+| **浏览器自动化** | **Playwright** | 比 Selenium 更快，支持异步（Asyncio），极其适合处理 9 个并发窗口。 |
+| **通信中间件** | **FastAPI / Redis** | 用于在你的 Python 后端逻辑和前端网页展示之间传递实时消息。 |
+| **DOM 解析** | **BeautifulSoup / Selector** | 用于精准定位网页 AI 的回复内容。 |
+
+### 5. 给你的开发建议 (Roadmap)
+
+1.  **MVP 阶段**：先别做 9 个。先写一个 Python 脚本，用 Playwright 操控一个网页版 DeepSeek，实现“输入文本 $\rightarrow$ 自动读取回复”的闭环。
+2.  **集成阶段**：将这个 Playwright 逻辑封装进 AutoGen 的 `UserProxyAgent` 或自定义 Agent 类中。
+3.  **并发阶段**：引入 `asyncio`，同时启动 9 个 Playwright Context（浏览器上下文），确保它们互不干扰。
+4.  **UI 融合**：将 AutoGen 的决策过程（即“Manager 决定下一轮谁说话”）实时通过 WebSocket 传回你的“通辽会议”前端，让用户能看到“正在请求 Agent A...”的提示。
+
+**总结：** 你不是在做“网页对话”，你是在通过 **Playwright** 为每一个网页 AI 建立一个 **“虚拟 API 接口”**，从而让 AutoGen 这种高级的大脑能够指挥这些“网页身体”。

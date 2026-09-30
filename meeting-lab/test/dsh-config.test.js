@@ -171,16 +171,77 @@ test('附件内联：文本类会被读进 prompt，不支持的类型明确报�
   const r = await a.uploadFiles(
     [{ attachmentId: 'a1', name: 'note.txt', localPath: txt },
       { attachmentId: 'a2', name: 'x.zip', localPath: zip }],
-    { onAck: (id) => acks.push(id) },
+    { onAck: (id, ok, meta) => acks.push({ id, ok, meta }) },
   );
 
   assert.strictEqual(r.ok, false, '有失败项时 ok 应为 false');
   assert.strictEqual(r.failed.length, 1);
   assert.strictEqual(r.failed[0].name, 'x.zip');
   assert.ok(/UNSUPPORTED/.test(r.failed[0].error));
-  assert.deepStrictEqual(acks, ['a1'], '只有成功内联的项应当 ACK');
+  assert.deepStrictEqual(acks, [
+    { id: 'a1', ok: true, meta: {} },
+    { id: 'a2', ok: false, meta: { error: 'UNSUPPORTED_FORMAT_FOR_API' } },
+  ], '每项必须回报明确的成功/失败，失败不能被误记为成功');
 
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('附件请求实证：文本和图片进入请求体，下一轮不泄漏旧附件', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mlab-wire-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const txt = path.join(tmp, 'note.txt');
+  const img = path.join(tmp, 'pixel.png');
+  fs.writeFileSync(txt, 'ATTACHMENT_SENTINEL_726');
+  const bytes = Buffer.from([137, 80, 78, 71]);
+  fs.writeFileSync(img, bytes);
+  const bodies = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+      status: 200, headers: { 'Content-Type': 'text/event-stream' },
+    });
+  });
+  const a = createApiAdapter({ baseURL: 'https://e.invalid/v1', apiKey: 'test-only', model: 'test' });
+  await a.uploadFiles([
+    { attachmentId: 'txt', name: 'note.txt', localPath: txt },
+    { attachmentId: 'img', name: 'pixel.png', localPath: img },
+  ]);
+  await a.sendText('first');
+  const first = await a.waitForResponse();
+  assert.strictEqual(first.completion.result, 'COMPLETED');
+  assert.match(bodies[0].messages[0].content[0].text, /ATTACHMENT_SENTINEL_726/);
+  assert.strictEqual(bodies[0].messages[0].content[1].image_url.url, 'data:image/png;base64,' + bytes.toString('base64'));
+  await a.sendText('second');
+  await a.waitForResponse();
+  assert.strictEqual(bodies[1].messages[0].content, 'second', '消费后的附件不能污染下一个请求');
+});
+
+test('同名附件使用 ID 区分 ACK，新准备批次和取消清理旧材料', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mlab-ids-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const txt = path.join(tmp, 'same.txt');
+  fs.writeFileSync(txt, 'OLD_ATTACHMENT');
+  const bodies = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n');
+  });
+  const a = createApiAdapter({ baseURL: 'https://e.invalid/v1', apiKey: 'test-only', model: 'test' });
+  const acks = [];
+  await a.uploadFiles([
+    { attachmentId: 'good', name: 'same.txt', localPath: txt },
+    { attachmentId: 'bad', name: 'same.txt' },
+  ], { onAck: (id, ok) => acks.push([id, ok]) });
+  assert.deepStrictEqual(acks, [['good', true], ['bad', false]]);
+  await a.uploadFiles([]);
+  await a.sendText('replacement');
+  await a.waitForResponse();
+  assert.strictEqual(bodies[0].messages[0].content, 'replacement');
+  await a.uploadFiles([{ attachmentId: 'again', name: 'same.txt', localPath: txt }]);
+  await a.cancel();
+  await a.sendText('after-cancel');
+  await a.waitForResponse();
+  assert.strictEqual(bodies[1].messages[0].content, 'after-cancel');
 });
 
 test('附件缺 localPath 时明确报 NO_LOCAL_PATH（不静默跳过）', async () => {

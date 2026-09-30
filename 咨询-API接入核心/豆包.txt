@@ -1,0 +1,697 @@
+### 2026-09-25 16:05:13 · 字节跳动-豆包 · 网页采集
+
+咨询案第 1 轮完整评审与输出
+环境约束：Electron33、原生 JS 无前端框架、尽量零 npm 依赖、单机 Windows11 单用户、最大 50 个 API 智能体席位；严格遵循每题：一句话结论 + 字段级设计 + 成本 + 反例 + 关键可运行代码；最后实施顺序；额外输出【你漏掉的风险点】；对你 §6 草案做批判修正。
+原始现状：已有 OpenAI‑chat SSE 流解析，仅支持单轮消息；蹭读外部 dsh yaml 配置；API 席位仅只读输出，无输入 / 会话 / 设置界面。
+前置：你漏掉的缺口 & 风险点（§4 缺口补充）
+表格
+遗漏项	影响说明
+SSE 流中断处理（AbortController 断开之后，残留 delta 缓冲区未清理）	切换席位、停止会话会出现脏消息乱入其他对话窗口
+模型元数据过期失效（缓存的 contextWindow 长期不刷新）	上下文截断策略算错 token，直接触发模型报错
+中转服务商部分接口不返回 usage，只返回 delta 内容	用量统计全部为 0，右侧上下文 UI 完全失效
+席位实例生命周期管理：50 席位打开 / 销毁，事件监听器没有解绑	renderer 内存泄漏，Electron 页面越跑越卡
+baseURL 尾部斜杠不一致（https://xxx/v1 vs https://xxx/v1/）	fetch 拼接路径 404，各适配器需要统一 normalize 端点
+reasoning_content 字段各厂商别名不一致：thinking_content / reasoning	思考内容漏解析
+大附件二进制内存膨胀：50 席位同时加载 PDF/base64 图片，renderer 堆内存暴涨	OOM 崩溃
+safeStorage：Windows 设备加密关闭、WSL 远程、mac 无钥匙串场景，safeStorage.isEncryptionAvailable() === false	密钥加密直接失效，原有方案会静默明文落盘
+Q1 多协议适配器设计
+问题：内置哪些适配器覆盖主流；中转站全部按 openai‑chat 兼容是否足够；字段级接口、差异清单。
+一句话结论：内置 4 适配器 openai‑chat / openai‑responses / anthropic‑messages / gemini‑native；所有中转站、one‑api/new‑api/openRouter 全部走 openai‑chat 适配器足够；openai‑responses 建议纳入但做可选开关；定义统一适配器接口契约，所有适配器必须实现同样方法签名，内部封装厂商差异。
+成本：总代码量≈800‑1100 行；维护负担：每新增厂商需要维护请求体映射、SSE 事件解析；性能开销几乎为 0，只是参数对象转换，无 IO。
+反例：不要把厂商差异散写在业务代码；不要强制中转使用 responses 协议，绝大多数中转仅实现 chat/completions。
+统一适配器接口契约（字段级，core/protocols/types.js）
+javascript
+运行
+/**
+ * @typedef Provider
+ * @property {string} id
+ * @property {string} protocol // "openai-chat"|"openai-responses"|"anthropic-messages"|"gemini-native"
+ * @property {string} name
+ * @property {string} baseURL //已经normalize去除尾部斜杠
+ * @property {string} apiKeyEnc //safeStorage加密字符串
+ */
+
+/**
+ * @typedef ChatParams
+ * @property {number} temperature
+ * @property {number|null} max_tokens
+ * @property {ReasoningParam} reasoning //Q6统一思考等级
+ * @property {Array<Attachment>} attachments //Q9附件抽象
+ */
+
+/**
+ * @typedef ListModelItem
+ * @property {string} id
+ * @property {number|null} context_window //上下文窗口tokens
+ * @property {boolean} multimodal //是否图文
+ * @property {boolean} support_reasoning //是否输出思考内容
+ * @property {string|null} raw //厂商原始model对象
+ */
+
+/**
+ * 适配器统一接口，所有协议必须实现
+ */
+const IAdapter = {
+  /**
+   * 获取模型列表
+   * @param {Provider} provider
+   * @returns {Promise<ListModelItem[]>}
+   */
+  async listModels(provider) {},
+
+  /**
+   * 流式对话入口
+   * @param {Provider} provider
+   * @param {string} modelId
+   * @param {Array<Message>} messages
+   * @param {ChatParams} params
+   * @param {AbortSignal} signal
+   * @param {Function} onDelta (event: {type:"content"|"reasoning"|"usage"|"error"|"done", payload})
+   * @returns {Promise<void>}
+   */
+  async chatStream(provider, modelId, messages, params, signal, onDelta) {},
+};
+
+各适配器核心差异清单
+表格
+适配器	接口路径	SSE 格式特殊点	关键请求体差异
+openai‑chat	${baseURL}/chat/completions	标准data: {...}；usage 仅出现在最后 chunk	messages 标准 OpenAI 格式；reasoning_effort顶层；附件image_url
+openai‑responses	${baseURL}/responses	SSE 事件名不是 chunk，是response.completed等；delta 结构完全不同	输入用input数组，不再是 messages；推理参数顶层；中转支持度差
+anthropic‑messages	${baseURL}/messages	event: content_block_delta；思考输出thinking_delta；默认不返回 usage，需要请求头anthropic‑beta: tokens‑usage‑2024‑07‑31	thinking:{budget_tokens}；图片用source:{type:"base64"}；最大 token 必填字段
+gemini‑native	${baseURL}/v1beta/models/{model}:streamGenerateContent	SSE 外层candidates[0].content.parts；思考放在thought字段；API key 放在 query 参数而不是 header Authorization	thinkingConfig对象；图片inlineData；没有 messages，用 contents 数组
+openai‑responses 建议：做配置开关，默认关闭；因为绝大多数中转网关没有实现 responses 接口，仅官方 OpenAI 可用。
+最小可运行工具函数：baseURL 标准化（所有适配器调用）
+javascript
+运行
+// normalizeBaseUrl.js 零依赖
+function normalizeBaseUrl(urlStr) {
+  const u = new URL(urlStr);
+  u.pathname = u.pathname.replace(/\/+$/, "");
+  return u.toString();
+}
+// test
+console.assert(normalizeBaseUrl("https://a.com/v1/") === "https://a.com/v1");
+
+Q2 模型列表自动拉取，缓存降级，元数据来源
+一句话结论：优先调用协议原生 listModels；拉取失败使用本地缓存；元数据（contextWindow/multimodal/support_reasoning）不要完全依赖 API 返回；采用「接口返回优先 + 内置静态兜底字典」；过期缓存 TTL=24h。
+成本：代码≈350 行；维护负担：静态元数据字典需要跟随新模型迭代更新；性能开销：单次网络请求；缓存落盘 JSON。
+反例：不要完全信任中转返回/v1/models，部分中转返回空数组、返回重复模型 id；不要每次打开设置页面都重拉模型列表。
+伪代码流程：
+plaintext
+listModelsFlow(provider):
+  1. 读取provider.modelCache，判断updatedAt是否在24h以内 && cache不为空
+      → 缓存有效，直接返回缓存
+  2. 发起适配器.listModels网络请求
+  3. 成功：写入provider.modelCache、updatedAt = Date.now()，持久化providers.json，返回转换后的ListModelItem[]
+  4. 网络失败 / 接口返回空列表：
+      if 本地缓存存在 → 返回过期缓存 + UI警告"模型列表来自缓存，可能过期"
+      else → 使用内置静态元数据字典，返回该协议内置默认模型列表 + UI强警告
+
+元数据来源优先级（从高到低）
+适配器 listModels 接口返回（如果厂商 API 提供）
+本地缓存（providers.json modelCache 字段）
+内置静态 JSON 兜底字典 static‑model‑meta.json（硬编码各知名模型窗口、多模态、推理能力）
+重要现实问题：Anthropic、Gemini 原生接口没有标准化返回 contextWindow 字段，所以必须兜底静态字典，不能只靠 API。
+字段扩展（providers.json 新增）
+javascript
+运行
+{
+  "id": "xxx",
+  "modelCache": [/* ListModelItem[] */],
+  "modelCacheUpdatedAt": 1780000000000, // unix ms
+  "modelCacheTtlMs": 86400000 //24h
+}
+
+Q3 密钥本地存储选型：safeStorage vs keytar vs yaml 明文
+一句话结论：单机 Electron 单用户场景优先选择 safeStorage；但必须做可用性判断；当isEncryptionAvailable()===false直接禁止保存密钥，绝不降级明文存储；不推荐 keytar，不允许明文 yaml。
+成本：代码≈120 行，零 npm 依赖（safeStorage 是 Electron 内置模块）；维护负担低。
+反例：绝对不能在 safeStorage 不可用的时候自动 fallback 明文写磁盘；不要用 keytar：keytar 需要额外 npm 包；Windows 部分企业策略禁用系统凭据服务，keytar 也会失效，且打包 electron‑builder 处理 keytar 容易踩坑。
+可运行最小代码片段（主进程！safeStorage 仅主进程调用，renderer 不能直接访问）
+javascript
+运行
+// main process
+const { safeStorage } = require("electron");
+
+function encryptSecret(plaintext) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("ENCRYPTION_UNAVAILABLE：当前系统不支持加密，禁止保存密钥");
+  }
+  const buf = safeStorage.encryptString(plaintext);
+  return buf.toString("base64");
+}
+
+function decryptSecret(base64Enc) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("ENCRYPTION_UNAVAILABLE");
+  }
+  const buf = Buffer.from(base64Enc, "base64");
+  return safeStorage.decryptString(buf);
+}
+
+业务规则：UI 层面，如果加密不可用：弹窗警告；只允许临时内存使用密钥，拒绝持久化存储密钥。
+你的草案薄弱点修正：你原先没有处理isEncryptionAvailable失败分支，会出现静默明文漏洞。
+Q4 50 席位并发流式输出，信号量限流，DOM 渲染节流
+一句话结论：两层限流：全局 HTTP 信号量（默认 6） + 每个 provider 独立二级信号量；渲染层采用「每个席位独立消息队列 + requestAnimationFrame 合并批量 DOM 刷写」；50 席位不需要立刻上完整虚拟列表，但要强制队列节流；DOM 不做每 delta 直接 appendChild。
+成本：代码≈400 行；内存开销：每个席位维护 delta 队列；50 席位同时全流式极端场景，内存峰值会升高；延迟：信号量排队会带来请求排队延迟。
+反例：不要无限制同时开启 50 个 fetch SSE 流；不要每收到一个 delta 就操作 DOM；不要全局单一信号量忽略服务商独立 rate‑limit。
+字段级数据结构
+javascript
+运行
+/** 全局并发信号量状态 core/concurrency‑semaphore.js */
+const ConcurrencyState = {
+  global: { max:6, running:0, queue:[] },
+  perProvider: new Map(), // providerId → {max: number, running:0, queue:[]}
+};
+
+/** 每个席位渲染队列对象（renderer进程） */
+class SeatRenderQueue {
+  constructor(seatId) {
+    this.seatId = seatId;
+    this.pendingContent = "";
+    this.pendingReasoning = "";
+    this.flushScheduled = false;
+  }
+  appendContent(text){ this.pendingContent += text; }
+  appendReasoning(text){ this.pendingReasoning += text; }
+  // rAF批量刷DOM，合并多次delta
+  flush() {
+    if(this.flushScheduled) return;
+    this.flushScheduled = true;
+    requestAnimationFrame(()=>{
+      // 一次性把pendingContent/pendingReasoning更新到DOM，而不是逐字符插入
+      this._writeDom();
+      this.pendingContent = "";
+      this.pendingReasoning = "";
+      this.flushScheduled = false;
+    })
+  }
+  _writeDom() { /* DOM更新逻辑 */ }
+}
+
+关键参数建议：全局信号量默认max=6；每一个 provider 可配置独立 max 并发，默认 4。
+实测坑：Electron renderer 页面 50 个 SSE ReadableStream 同时存活不会直接崩溃，但大量并发网络会触发操作系统 TCP 端口耗尽、服务商 429 限流，必须信号量排队。
+是否虚拟化？：50 席位同时可见 N 宫格，如果开启 50 格同时显示 DOM 节点数量巨大；建议 UI 支持分组折叠，不活动的席位格子设置display:none释放 DOM；如果用户同时打开全部 50 个可见，后期迭代再加虚拟滚动，第一版不必做。
+Q5 会话上下文管理，存储、截断、usage 统计
+一句话结论：会话元数据 + messages 历史：内存常驻当前激活席位；非激活席位按需从 JSON 文件懒加载，不要全部 50 席位完整消息常驻内存；第一版不引入 SQLite，JSON 文件足够；提供三种上下文策略：自动截断、摘要（可选高级功能）、用户手动裁剪；统一聚合 usage，兼容各协议 SSE 不一定返回 usage 块。
+成本：≈450 行；反例：不要把全部 50 席位完整 messages 全部放在内存，长会话 50 份大上下文会内存爆炸；不要假设 SSE 流一定返回 usage 字段。
+字段级会话存储结构
+javascript
+运行
+/** seat‑session.json 每个席位一个独立会话文件，放在appUserData/sessions/{seatId}.json */
+{
+  "seatId": "s‑001",
+  "messages": [
+    {"role":"system","content":"xxx"},
+    {"role":"user","content":"xxx"},
+    {"role":"assistant","content":"xxx","reasoning_content":"思考文本"}
+  ],
+  "usageAcc": {
+    "prompt_tokens":0,
+    "completion_tokens":0,
+    "total_tokens":0
+  },
+  "contextWindow": 128000, //该模型的上下文窗口
+  "createdAt": number,
+  "updatedAt": number
+}
+
+上下文超限策略：
+实时计算预估 token（简单估算：中文≈1 字 = 1.3token；英文 1 单词≈1token；不需要精准，仅用于 UI 告警）
+剩余 token 低于阈值：UI 显示橙色告警
+到达 95% 窗口：UI 弹窗提示，可选：①自动丢弃最早非 system 消息；②让用户手动编辑历史；③拒绝继续发送
+摘要作为高级可选功能，第一版不要实现，增加大量复杂度。
+usage 兼容处理：
+如果适配器 onDelta 收到usage事件 → 直接累加 usageAcc
+如果 SSE 全程没有 usage 块（Anthropic 旧 beta、部分中转）：降级做本地 token 估算填充 UI，打上(估算)标记展示给用户。
+对你草案薄弱点修正：草案打算全部 messages 内存常驻；50 个长会话会爆内存；改为懒加载：只有当前激活的席位完整 messages 在内存，其他席位磁盘 JSON 保存，切换席位再读入。SQLite 属于后期优化，v1 不需要引入，增加依赖。
+Q6 思考等级跨厂商统一抽象映射
+一句话结论：定义统一枚举 reasoning_level: "off" | "standard" | "max"；做映射表；模型不支持推理则 UI 整个思考等级控件置灰禁用；Claude 连续 budget_tokens 映射到三档会丢失精细控制，额外开放高级模式输入原始 budget_tokens 数字。
+成本≈220 行；维护负担：新厂商推理参数要更新映射表；反例：不要把统一参数直接透传给后端；不要直接把 Claude 的数字 budget_tokens 暴露给普通 UI。
+统一参数字段
+javascript
+运行
+/** @typedef ReasoningParam */
+{
+  "level": "off"|"standard"|"max",
+  "advancedBudget": null | number //当开启高级模式，直接传递原始数值，覆盖level映射结果
+}
+
+映射表
+表格
+统一 level	OpenAI‑chat reasoning_effort	Anthropic thinking.budget_tokens	Gemini thinkingConfig.thinkingLevel	DeepSeek‑Reasoner
+off	不传递该字段	null	null	使用普通 chat 模型
+standard	medium	1024	MEDIUM	reasoner 基础档位
+max	high	8192	HIGH	reasoner 高思考档位
+UI 降级规则：
+如果模型元数据support_reasoning=false → 整个思考等级控件置灰禁用，提示文字："该模型不支持思考输出"
+UI 提供复选框【高级思考配置】，打开后允许手动输入 budget_tokens 数值，覆盖 level 映射，专门给 Claude 精细调参场景。
+回答你的疑问：三档映射会丢失 Claude 连续预算能力，所以补充高级模式绕过映射。
+Q7 单机单用户最小权限模型；区分哪些是过度设计
+一句话结论：单机单用户不需要 RBAC 角色 / 管理员；最小权限模型 = 每席位独立布尔开关 + 每席位 token 硬上限；多用户、账号登录、全局角色全部是过度设计。
+成本≈150 行；反例：不要引入用户表、角色表、acl 权限，单机场景纯增加复杂度，无收益。
+字段级：席位 perm 对象
+javascript
+运行
+/** per seat permissions */
+{
+  perms:{
+    allowFiles: boolean, //允许上传文本/PDF附件
+    allowImages: boolean, //允许图片附件
+    allowEditSystemPrompt: boolean, //是否允许修改system prompt
+    maxSessionTotalTokens: number|null //本会话累计token硬上限，null=无上限
+  }
+}
+
+明确判定为过度设计（v1 不要做）
+用户登录、多账号、管理员 / 普通角色
+细粒度操作权限（只读席位，禁止发送消息）
+文件系统访问权限沙箱（Electron 本身已经有完整安全边界）
+Q8 对话界面布局；ASCII 示意图；和现有 N 宫格 webview 共存方案
+一句话结论：复用现有 N 宫格格子；格子两种模式互斥：webview 网页 AI / API 对话面板；点击格子切换模式；参数面板内嵌格子右侧固定 240px；50 席位依靠滚动 + 分组折叠；不新开独立浏览器窗口，不使用全局 Tab。
+成本：CSS+DOM 代码≈600 行；反例：不要为 API 席位搞一套完全独立窗口体系，会割裂现有的人工分发甲板群发通路。
+ASCII 布局（单个宫格单元格内部）
+plaintext
+┌──────────────────────────────────────────────┐
+│ 席位标题 [模型名] 🔔 思考等级:max       │  │
+├──────────────────────────────────────┬───────┤
+│                                      │上下文 │
+│ 对话消息滚动区域                     │用量条 │
+│ (content / reasoning折叠块)          │temp:0.7│
+│                                      │模型选择│
+│                                      │权限开关│
+├──────────────────────────────────────┴───────┤
+│ [+]添加文件/图片 │ 输入框................│发送│
+└──────────────────────────────────────────────┘
+
+单元格内部拆分：主体对话区 flex‑grow=1；右侧侧边栏固定宽度 240px；当格子尺寸过小（窗口缩小），右侧侧边栏折叠成弹窗弹出。
+与现有系统关系：
+原有 webview 和 API 对话面板互斥；同一个格子不能同时渲染 webview 和 API 会话；
+人工分发甲板群发接口保持不变，消息可以分发到任意激活 API 席位（最多 50）；
+50 席位宫格使用垂直 + 水平滚动，增加分组折叠 UI，一组折叠后 DOM 子节点隐藏，降低渲染压力。
+对你草案薄弱点批判：宫格内切换模式交互可行，但要注意：切换模式的时候必须移除 webview DOM 节点，webview 非常吃内存，不要只是设置 display:none 隐藏。
+Q9 附件统一抽象；图片 / PDF / 文本文件跨协议映射
+一句话结论：定义统一 Attachment 抽象层；附件分为文本、图片、二进制 PDF；适配器内部把统一 Attachment 翻译成各厂商请求体格式；PDF 绝大多数模型原生不支持，第一版默认做文本提取，把 PDF 文字内容注入 prompt，二进制 PDF 只传给明确支持的模型。
+成本≈300 行；反例：不要直接把原始 PDF 二进制 base64 无脑传给所有模型；大量 base64 图片会显著增大请求体，占用内存。
+附件抽象字段级
+javascript
+运行
+/** @typedef Attachment */
+{
+  type: "text_file" | "image" | "pdf",
+  name: string, //原始文件名
+  mimeType: string,
+  content: string | Uint8Array,
+  extractedText: string|null, //pdf提取出的文本；如果图片OCR后续可扩展
+  sizeBytes: number
+}
+
+各协议映射简表
+表格
+附件类型	openai‑chat	anthropic‑messages	gemini‑native
+image	image_url:{url:base64‑dataurl}	source:{type:"base64",media_type,data:base64}	inlineData:{mimeType,data:base64}
+text_file	直接拼接到 message.content	拼接 content	拼接 parts 文本
+pdf	大部分模型不支持二进制；使用 extractedText 拼 prompt	部分 claude 支持 pdf base64；优先提取文本兜底	gemini 支持 pdf inlineData
+业务规则：
+PDF 优先本地提取文本注入 prompt；只有当模型元数据标记supportPdfBinary=true，才发送二进制 base64 附件。
+单附件上限 4MB；50 席位场景大附件不要全部常驻内存，用完释放 Uint8Array 引用帮助 GC。
+§6 你的草案批判（靶子评审）
+✅ 优点：整体分层方向正确；模块划分合理，分离协议层、席位注册表、会话存储。
+❌ 三个薄弱点修正（你自己识别的三点）
+safeStorage 密钥存储：原草案没有处理safeStorage.isEncryptionAvailable()===false，必须增加拦截，不能静默落盘密钥。
+50 席位会话全部内存常驻：原草案内存全部加载所有会话，长会话会内存爆炸；改为：非激活席位 JSON 磁盘懒加载，不全部驻内存；第一版不引入 SQLite。
+宫格格子内部切换 webview/API 对话窗：可行，但必须销毁 webview 实例，不只是 css 隐藏；小窗口场景右侧参数栏需要折叠弹窗降级，防止布局错乱。
+额外修正草案问题：
+api‑registry.js：providers/seats json 存储放在app.getPath('userData')，不要再蹭读外部~/.dsh配置文件，彻底解耦外部 dsh 客户端。
+增加 concurrency‑semaphore 并发模块，草案中没有纳入。
+session‑store 会话存储每个席位独立文件，不要全部会话塞到一个大 json 文件（单文件损坏全部丢失）。
+建议实施顺序表
+表格
+步骤	任务	理由	预估代码行数
+Step1 基础设施：独立配置存储 + 密钥加密模块	core/api‑registry.js；safeStorage 密钥加解密；providers.json/seats.json 持久化；完全脱离 dsh 外部 yaml	所有上层功能依赖配置层；优先解决 G1 缺口	400
+Step2 协议适配器抽象层框架	core/protocols/ 接口契约；实现 openai‑chat 适配器迁移旧代码；baseURL normalize；统一 SSE 事件输出；实现 listModels 骨架	把旧硬编码 api‑adapter 重构为适配器模式；Q1 最高优先级；其他协议可以后续迭代接入	600
+Step3 席位管理模型，50 席位 CRUD 数据模型	seats 结构定义，权限 perm、reasoning 参数；设置面板 UI 原型（仅数据层，不做完整对话 UI）	定义 50 席位的数据约束，限制最大 50；补齐 G5 缺口	300
+Step4 并发信号量 + 渲染队列节流	concurrency‑semaphore 全局 + per‑provider 限流；SeatRenderQueue rAF 批量 DOM 刷新	解决 Q4 的 50 席位流式性能，防止 DOM 风暴、TCP 端口打爆	350
+Step5 会话存储会话上下文	session‑store，懒加载 JSON 会话文件；messages 存储、usage 累计、上下文窗口告警；Q5 完整逻辑	补齐 G3、G7，实现多轮会话	450
+Step6 思考等级映射 + 附件抽象层	Q6 推理参数映射；Q9 Attachment 附件抽象；图片文本 PDF 适配器转换逻辑	参数和附件是对话核心输入；先数据层再 UI	420
+Step7 设置界面完整 UI	提供方 CRUD、测试连接、拉取模型列表按钮；模型缓存逻辑 Q2；权限开关 UI	R1 R2 需求落地	500
+Step8 API 席位对话 UI（宫格内）	格子切换 webview/API 模式；输入框 + 附件 + 右侧参数面板 ASCII 布局实现；reasoning 展示；上下文用量 UI；归档对接 replies/*.md	R4‑R9 全部 UI 落地；对接原有分发甲板群发接口	800
+Step9 其余协议适配器迭代	anthropic‑messages、gemini‑native、openai‑responses（可选开关）	核心跑通之后再接入剩余原生协议，不要前期阻塞开发	700
+总预估代码量：约 4520 行；原有代码保留，增量新增模块；全程零第三方 npm 依赖，仅 Electron 内置 API。
+重要业务边界提醒
+openai‑responses 做功能开关，默认关闭，绝大多数中转网关不兼容；
+所有持久化 JSON 要做损坏容错 try‑catch，文件损坏时加载空配置而不是直接崩溃；
+每一个席位 SSE 会话销毁时，必须移除所有事件监听、AbortController 中断流、清空渲染队列，防止 renderer 内存泄漏。
+如果你需要，我可以下一步输出某一个模块完整可运行源码，比如适配器骨架 / 会话存储 / 并发信号量。
+如何处理SSE流中断？
+如何避免模型元数据过期失效？
+如何解决中转服务商部分接口不返回usage的问题？
+
+---
+### 2026-09-25 16:26:11 · 字节跳动-豆包 · 网页采集
+
+咨询案第 1 轮完整评审与输出
+环境约束：Electron33、原生 JS 无前端框架、尽量零 npm 依赖、单机 Windows11 单用户、最大 50 个 API 智能体席位；严格遵循每题：一句话结论 + 字段级设计 + 成本 + 反例 + 关键可运行代码；最后实施顺序；额外输出【你漏掉的风险点】；对你 §6 草案做批判修正。
+原始现状：已有 OpenAI‑chat SSE 流解析，仅支持单轮消息；蹭读外部 dsh yaml 配置；API 席位仅只读输出，无输入 / 会话 / 设置界面。
+前置：你漏掉的缺口 & 风险点（§4 缺口补充）
+表格
+遗漏项	影响说明
+SSE 流中断处理（AbortController 断开之后，残留 delta 缓冲区未清理）	切换席位、停止会话会出现脏消息乱入其他对话窗口
+模型元数据过期失效（缓存的 contextWindow 长期不刷新）	上下文截断策略算错 token，直接触发模型报错
+中转服务商部分接口不返回 usage，只返回 delta 内容	用量统计全部为 0，右侧上下文 UI 完全失效
+席位实例生命周期管理：50 席位打开 / 销毁，事件监听器没有解绑	renderer 内存泄漏，Electron 页面越跑越卡
+baseURL 尾部斜杠不一致（https://xxx/v1 vs https://xxx/v1/）	fetch 拼接路径 404，各适配器需要统一 normalize 端点
+reasoning_content 字段各厂商别名不一致：thinking_content / reasoning	思考内容漏解析
+大附件二进制内存膨胀：50 席位同时加载 PDF/base64 图片，renderer 堆内存暴涨	OOM 崩溃
+safeStorage：Windows 设备加密关闭、WSL 远程、mac 无钥匙串场景，safeStorage.isEncryptionAvailable() === false	密钥加密直接失效，原有方案会静默明文落盘
+Q1 多协议适配器设计
+问题：内置哪些适配器覆盖主流；中转站全部按 openai‑chat 兼容是否足够；字段级接口、差异清单。
+一句话结论：内置 4 适配器 openai‑chat / openai‑responses / anthropic‑messages / gemini‑native；所有中转站、one‑api/new‑api/openRouter 全部走 openai‑chat 适配器足够；openai‑responses 建议纳入但做可选开关；定义统一适配器接口契约，所有适配器必须实现同样方法签名，内部封装厂商差异。
+成本：总代码量≈800‑1100 行；维护负担：每新增厂商需要维护请求体映射、SSE 事件解析；性能开销几乎为 0，只是参数对象转换，无 IO。
+反例：不要把厂商差异散写在业务代码；不要强制中转使用 responses 协议，绝大多数中转仅实现 chat/completions。
+统一适配器接口契约（字段级，core/protocols/types.js）
+javascript
+运行
+/**
+ * @typedef Provider
+ * @property {string} id
+ * @property {string} protocol // "openai-chat"|"openai-responses"|"anthropic-messages"|"gemini-native"
+ * @property {string} name
+ * @property {string} baseURL //已经normalize去除尾部斜杠
+ * @property {string} apiKeyEnc //safeStorage加密字符串
+ */
+
+/**
+ * @typedef ChatParams
+ * @property {number} temperature
+ * @property {number|null} max_tokens
+ * @property {ReasoningParam} reasoning //Q6统一思考等级
+ * @property {Array<Attachment>} attachments //Q9附件抽象
+ */
+
+/**
+ * @typedef ListModelItem
+ * @property {string} id
+ * @property {number|null} context_window //上下文窗口tokens
+ * @property {boolean} multimodal //是否图文
+ * @property {boolean} support_reasoning //是否输出思考内容
+ * @property {string|null} raw //厂商原始model对象
+ */
+
+/**
+ * 适配器统一接口，所有协议必须实现
+ */
+const IAdapter = {
+  /**
+   * 获取模型列表
+   * @param {Provider} provider
+   * @returns {Promise<ListModelItem[]>}
+   */
+  async listModels(provider) {},
+
+  /**
+   * 流式对话入口
+   * @param {Provider} provider
+   * @param {string} modelId
+   * @param {Array<Message>} messages
+   * @param {ChatParams} params
+   * @param {AbortSignal} signal
+   * @param {Function} onDelta (event: {type:"content"|"reasoning"|"usage"|"error"|"done", payload})
+   * @returns {Promise<void>}
+   */
+  async chatStream(provider, modelId, messages, params, signal, onDelta) {},
+};
+
+各适配器核心差异清单
+表格
+适配器	接口路径	SSE 格式特殊点	关键请求体差异
+openai‑chat	${baseURL}/chat/completions	标准data: {...}；usage 仅出现在最后 chunk	messages 标准 OpenAI 格式；reasoning_effort顶层；附件image_url
+openai‑responses	${baseURL}/responses	SSE 事件名不是 chunk，是response.completed等；delta 结构完全不同	输入用input数组，不再是 messages；推理参数顶层；中转支持度差
+anthropic‑messages	${baseURL}/messages	event: content_block_delta；思考输出thinking_delta；默认不返回 usage，需要请求头anthropic‑beta: tokens‑usage‑2024‑07‑31	thinking:{budget_tokens}；图片用source:{type:"base64"}；最大 token 必填字段
+gemini‑native	${baseURL}/v1beta/models/{model}:streamGenerateContent	SSE 外层candidates[0].content.parts；思考放在thought字段；API key 放在 query 参数而不是 header Authorization	thinkingConfig对象；图片inlineData；没有 messages，用 contents 数组
+openai‑responses 建议：做配置开关，默认关闭；因为绝大多数中转网关没有实现 responses 接口，仅官方 OpenAI 可用。
+最小可运行工具函数：baseURL 标准化（所有适配器调用）
+javascript
+运行
+// normalizeBaseUrl.js 零依赖
+function normalizeBaseUrl(urlStr) {
+  const u = new URL(urlStr);
+  u.pathname = u.pathname.replace(/\/+$/, "");
+  return u.toString();
+}
+// test
+console.assert(normalizeBaseUrl("https://a.com/v1/") === "https://a.com/v1");
+
+Q2 模型列表自动拉取，缓存降级，元数据来源
+一句话结论：优先调用协议原生 listModels；拉取失败使用本地缓存；元数据（contextWindow/multimodal/support_reasoning）不要完全依赖 API 返回；采用「接口返回优先 + 内置静态兜底字典」；过期缓存 TTL=24h。
+成本：代码≈350 行；维护负担：静态元数据字典需要跟随新模型迭代更新；性能开销：单次网络请求；缓存落盘 JSON。
+反例：不要完全信任中转返回/v1/models，部分中转返回空数组、返回重复模型 id；不要每次打开设置页面都重拉模型列表。
+伪代码流程：
+plaintext
+listModelsFlow(provider):
+  1. 读取provider.modelCache，判断updatedAt是否在24h以内 && cache不为空
+      → 缓存有效，直接返回缓存
+  2. 发起适配器.listModels网络请求
+  3. 成功：写入provider.modelCache、updatedAt = Date.now()，持久化providers.json，返回转换后的ListModelItem[]
+  4. 网络失败 / 接口返回空列表：
+      if 本地缓存存在 → 返回过期缓存 + UI警告"模型列表来自缓存，可能过期"
+      else → 使用内置静态元数据字典，返回该协议内置默认模型列表 + UI强警告
+
+元数据来源优先级（从高到低）
+适配器 listModels 接口返回（如果厂商 API 提供）
+本地缓存（providers.json modelCache 字段）
+内置静态 JSON 兜底字典 static‑model‑meta.json（硬编码各知名模型窗口、多模态、推理能力）
+重要现实问题：Anthropic、Gemini 原生接口没有标准化返回 contextWindow 字段，所以必须兜底静态字典，不能只靠 API。
+字段扩展（providers.json 新增）
+javascript
+运行
+{
+  "id": "xxx",
+  "modelCache": [/* ListModelItem[] */],
+  "modelCacheUpdatedAt": 1780000000000, // unix ms
+  "modelCacheTtlMs": 86400000 //24h
+}
+
+Q3 密钥本地存储选型：safeStorage vs keytar vs yaml 明文
+一句话结论：单机 Electron 单用户场景优先选择 safeStorage；但必须做可用性判断；当isEncryptionAvailable()===false直接禁止保存密钥，绝不降级明文存储；不推荐 keytar，不允许明文 yaml。
+成本：代码≈120 行，零 npm 依赖（safeStorage 是 Electron 内置模块）；维护负担低。
+反例：绝对不能在 safeStorage 不可用的时候自动 fallback 明文写磁盘；不要用 keytar：keytar 需要额外 npm 包；Windows 部分企业策略禁用系统凭据服务，keytar 也会失效，且打包 electron‑builder 处理 keytar 容易踩坑。
+可运行最小代码片段（主进程！safeStorage 仅主进程调用，renderer 不能直接访问）
+javascript
+运行
+// main process
+const { safeStorage } = require("electron");
+
+function encryptSecret(plaintext) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("ENCRYPTION_UNAVAILABLE：当前系统不支持加密，禁止保存密钥");
+  }
+  const buf = safeStorage.encryptString(plaintext);
+  return buf.toString("base64");
+}
+
+function decryptSecret(base64Enc) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("ENCRYPTION_UNAVAILABLE");
+  }
+  const buf = Buffer.from(base64Enc, "base64");
+  return safeStorage.decryptString(buf);
+}
+
+业务规则：UI 层面，如果加密不可用：弹窗警告；只允许临时内存使用密钥，拒绝持久化存储密钥。
+你的草案薄弱点修正：你原先没有处理isEncryptionAvailable失败分支，会出现静默明文漏洞。
+Q4 50 席位并发流式输出，信号量限流，DOM 渲染节流
+一句话结论：两层限流：全局 HTTP 信号量（默认 6） + 每个 provider 独立二级信号量；渲染层采用「每个席位独立消息队列 + requestAnimationFrame 合并批量 DOM 刷写」；50 席位不需要立刻上完整虚拟列表，但要强制队列节流；DOM 不做每 delta 直接 appendChild。
+成本：代码≈400 行；内存开销：每个席位维护 delta 队列；50 席位同时全流式极端场景，内存峰值会升高；延迟：信号量排队会带来请求排队延迟。
+反例：不要无限制同时开启 50 个 fetch SSE 流；不要每收到一个 delta 就操作 DOM；不要全局单一信号量忽略服务商独立 rate‑limit。
+字段级数据结构
+javascript
+运行
+/** 全局并发信号量状态 core/concurrency‑semaphore.js */
+const ConcurrencyState = {
+  global: { max:6, running:0, queue:[] },
+  perProvider: new Map(), // providerId → {max: number, running:0, queue:[]}
+};
+
+/** 每个席位渲染队列对象（renderer进程） */
+class SeatRenderQueue {
+  constructor(seatId) {
+    this.seatId = seatId;
+    this.pendingContent = "";
+    this.pendingReasoning = "";
+    this.flushScheduled = false;
+  }
+  appendContent(text){ this.pendingContent += text; }
+  appendReasoning(text){ this.pendingReasoning += text; }
+  // rAF批量刷DOM，合并多次delta
+  flush() {
+    if(this.flushScheduled) return;
+    this.flushScheduled = true;
+    requestAnimationFrame(()=>{
+      // 一次性把pendingContent/pendingReasoning更新到DOM，而不是逐字符插入
+      this._writeDom();
+      this.pendingContent = "";
+      this.pendingReasoning = "";
+      this.flushScheduled = false;
+    })
+  }
+  _writeDom() { /* DOM更新逻辑 */ }
+}
+
+关键参数建议：全局信号量默认max=6；每一个 provider 可配置独立 max 并发，默认 4。
+实测坑：Electron renderer 页面 50 个 SSE ReadableStream 同时存活不会直接崩溃，但大量并发网络会触发操作系统 TCP 端口耗尽、服务商 429 限流，必须信号量排队。
+是否虚拟化？：50 席位同时可见 N 宫格，如果开启 50 格同时显示 DOM 节点数量巨大；建议 UI 支持分组折叠，不活动的席位格子设置display:none释放 DOM；如果用户同时打开全部 50 个可见，后期迭代再加虚拟滚动，第一版不必做。
+Q5 会话上下文管理，存储、截断、usage 统计
+一句话结论：会话元数据 + messages 历史：内存常驻当前激活席位；非激活席位按需从 JSON 文件懒加载，不要全部 50 席位完整消息常驻内存；第一版不引入 SQLite，JSON 文件足够；提供三种上下文策略：自动截断、摘要（可选高级功能）、用户手动裁剪；统一聚合 usage，兼容各协议 SSE 不一定返回 usage 块。
+成本：≈450 行；反例：不要把全部 50 席位完整 messages 全部放在内存，长会话 50 份大上下文会内存爆炸；不要假设 SSE 流一定返回 usage 字段。
+字段级会话存储结构
+javascript
+运行
+/** seat‑session.json 每个席位一个独立会话文件，放在appUserData/sessions/{seatId}.json */
+{
+  "seatId": "s‑001",
+  "messages": [
+    {"role":"system","content":"xxx"},
+    {"role":"user","content":"xxx"},
+    {"role":"assistant","content":"xxx","reasoning_content":"思考文本"}
+  ],
+  "usageAcc": {
+    "prompt_tokens":0,
+    "completion_tokens":0,
+    "total_tokens":0
+  },
+  "contextWindow": 128000, //该模型的上下文窗口
+  "createdAt": number,
+  "updatedAt": number
+}
+
+上下文超限策略：
+实时计算预估 token（简单估算：中文≈1 字 = 1.3token；英文 1 单词≈1token；不需要精准，仅用于 UI 告警）
+剩余 token 低于阈值：UI 显示橙色告警
+到达 95% 窗口：UI 弹窗提示，可选：①自动丢弃最早非 system 消息；②让用户手动编辑历史；③拒绝继续发送
+摘要作为高级可选功能，第一版不要实现，增加大量复杂度。
+usage 兼容处理：
+如果适配器 onDelta 收到usage事件 → 直接累加 usageAcc
+如果 SSE 全程没有 usage 块（Anthropic 旧 beta、部分中转）：降级做本地 token 估算填充 UI，打上(估算)标记展示给用户。
+对你草案薄弱点修正：草案打算全部 messages 内存常驻；50 个长会话会爆内存；改为懒加载：只有当前激活的席位完整 messages 在内存，其他席位磁盘 JSON 保存，切换席位再读入。SQLite 属于后期优化，v1 不需要引入，增加依赖。
+Q6 思考等级跨厂商统一抽象映射
+一句话结论：定义统一枚举 reasoning_level: "off" | "standard" | "max"；做映射表；模型不支持推理则 UI 整个思考等级控件置灰禁用；Claude 连续 budget_tokens 映射到三档会丢失精细控制，额外开放高级模式输入原始 budget_tokens 数字。
+成本≈220 行；维护负担：新厂商推理参数要更新映射表；反例：不要把统一参数直接透传给后端；不要直接把 Claude 的数字 budget_tokens 暴露给普通 UI。
+统一参数字段
+javascript
+运行
+/** @typedef ReasoningParam */
+{
+  "level": "off"|"standard"|"max",
+  "advancedBudget": null | number //当开启高级模式，直接传递原始数值，覆盖level映射结果
+}
+
+映射表
+表格
+统一 level	OpenAI‑chat reasoning_effort	Anthropic thinking.budget_tokens	Gemini thinkingConfig.thinkingLevel	DeepSeek‑Reasoner
+off	不传递该字段	null	null	使用普通 chat 模型
+standard	medium	1024	MEDIUM	reasoner 基础档位
+max	high	8192	HIGH	reasoner 高思考档位
+UI 降级规则：
+如果模型元数据support_reasoning=false → 整个思考等级控件置灰禁用，提示文字："该模型不支持思考输出"
+UI 提供复选框【高级思考配置】，打开后允许手动输入 budget_tokens 数值，覆盖 level 映射，专门给 Claude 精细调参场景。
+回答你的疑问：三档映射会丢失 Claude 连续预算能力，所以补充高级模式绕过映射。
+Q7 单机单用户最小权限模型；区分哪些是过度设计
+一句话结论：单机单用户不需要 RBAC 角色 / 管理员；最小权限模型 = 每席位独立布尔开关 + 每席位 token 硬上限；多用户、账号登录、全局角色全部是过度设计。
+成本≈150 行；反例：不要引入用户表、角色表、acl 权限，单机场景纯增加复杂度，无收益。
+字段级：席位 perm 对象
+javascript
+运行
+/** per seat permissions */
+{
+  perms:{
+    allowFiles: boolean, //允许上传文本/PDF附件
+    allowImages: boolean, //允许图片附件
+    allowEditSystemPrompt: boolean, //是否允许修改system prompt
+    maxSessionTotalTokens: number|null //本会话累计token硬上限，null=无上限
+  }
+}
+
+明确判定为过度设计（v1 不要做）
+用户登录、多账号、管理员 / 普通角色
+细粒度操作权限（只读席位，禁止发送消息）
+文件系统访问权限沙箱（Electron 本身已经有完整安全边界）
+Q8 对话界面布局；ASCII 示意图；和现有 N 宫格 webview 共存方案
+一句话结论：复用现有 N 宫格格子；格子两种模式互斥：webview 网页 AI / API 对话面板；点击格子切换模式；参数面板内嵌格子右侧固定 240px；50 席位依靠滚动 + 分组折叠；不新开独立浏览器窗口，不使用全局 Tab。
+成本：CSS+DOM 代码≈600 行；反例：不要为 API 席位搞一套完全独立窗口体系，会割裂现有的人工分发甲板群发通路。
+ASCII 布局（单个宫格单元格内部）
+plaintext
+┌──────────────────────────────────────────────┐
+│ 席位标题 [模型名] 🔔 思考等级:max       │  │
+├──────────────────────────────────────┬───────┤
+│                                      │上下文 │
+│ 对话消息滚动区域                     │用量条 │
+│ (content / reasoning折叠块)          │temp:0.7│
+│                                      │模型选择│
+│                                      │权限开关│
+├──────────────────────────────────────┴───────┤
+│ [+]添加文件/图片 │ 输入框................│发送│
+└──────────────────────────────────────────────┘
+
+单元格内部拆分：主体对话区 flex‑grow=1；右侧侧边栏固定宽度 240px；当格子尺寸过小（窗口缩小），右侧侧边栏折叠成弹窗弹出。
+与现有系统关系：
+原有 webview 和 API 对话面板互斥；同一个格子不能同时渲染 webview 和 API 会话；
+人工分发甲板群发接口保持不变，消息可以分发到任意激活 API 席位（最多 50）；
+50 席位宫格使用垂直 + 水平滚动，增加分组折叠 UI，一组折叠后 DOM 子节点隐藏，降低渲染压力。
+对你草案薄弱点批判：宫格内切换模式交互可行，但要注意：切换模式的时候必须移除 webview DOM 节点，webview 非常吃内存，不要只是设置 display:none 隐藏。
+Q9 附件统一抽象；图片 / PDF / 文本文件跨协议映射
+一句话结论：定义统一 Attachment 抽象层；附件分为文本、图片、二进制 PDF；适配器内部把统一 Attachment 翻译成各厂商请求体格式；PDF 绝大多数模型原生不支持，第一版默认做文本提取，把 PDF 文字内容注入 prompt，二进制 PDF 只传给明确支持的模型。
+成本≈300 行；反例：不要直接把原始 PDF 二进制 base64 无脑传给所有模型；大量 base64 图片会显著增大请求体，占用内存。
+附件抽象字段级
+javascript
+运行
+/** @typedef Attachment */
+{
+  type: "text_file" | "image" | "pdf",
+  name: string, //原始文件名
+  mimeType: string,
+  content: string | Uint8Array,
+  extractedText: string|null, //pdf提取出的文本；如果图片OCR后续可扩展
+  sizeBytes: number
+}
+
+各协议映射简表
+表格
+附件类型	openai‑chat	anthropic‑messages	gemini‑native
+image	image_url:{url:base64‑dataurl}	source:{type:"base64",media_type,data:base64}	inlineData:{mimeType,data:base64}
+text_file	直接拼接到 message.content	拼接 content	拼接 parts 文本
+pdf	大部分模型不支持二进制；使用 extractedText 拼 prompt	部分 claude 支持 pdf base64；优先提取文本兜底	gemini 支持 pdf inlineData
+业务规则：
+PDF 优先本地提取文本注入 prompt；只有当模型元数据标记supportPdfBinary=true，才发送二进制 base64 附件。
+单附件上限 4MB；50 席位场景大附件不要全部常驻内存，用完释放 Uint8Array 引用帮助 GC。
+§6 你的草案批判（靶子评审）
+✅ 优点：整体分层方向正确；模块划分合理，分离协议层、席位注册表、会话存储。
+❌ 三个薄弱点修正（你自己识别的三点）
+safeStorage 密钥存储：原草案没有处理safeStorage.isEncryptionAvailable()===false，必须增加拦截，不能静默落盘密钥。
+50 席位会话全部内存常驻：原草案内存全部加载所有会话，长会话会内存爆炸；改为：非激活席位 JSON 磁盘懒加载，不全部驻内存；第一版不引入 SQLite。
+宫格格子内部切换 webview/API 对话窗：可行，但必须销毁 webview 实例，不只是 css 隐藏；小窗口场景右侧参数栏需要折叠弹窗降级，防止布局错乱。
+额外修正草案问题：
+api‑registry.js：providers/seats json 存储放在app.getPath('userData')，不要再蹭读外部~/.dsh配置文件，彻底解耦外部 dsh 客户端。
+增加 concurrency‑semaphore 并发模块，草案中没有纳入。
+session‑store 会话存储每个席位独立文件，不要全部会话塞到一个大 json 文件（单文件损坏全部丢失）。
+建议实施顺序表
+表格
+步骤	任务	理由	预估代码行数
+Step1 基础设施：独立配置存储 + 密钥加密模块	core/api‑registry.js；safeStorage 密钥加解密；providers.json/seats.json 持久化；完全脱离 dsh 外部 yaml	所有上层功能依赖配置层；优先解决 G1 缺口	400
+Step2 协议适配器抽象层框架	core/protocols/ 接口契约；实现 openai‑chat 适配器迁移旧代码；baseURL normalize；统一 SSE 事件输出；实现 listModels 骨架	把旧硬编码 api‑adapter 重构为适配器模式；Q1 最高优先级；其他协议可以后续迭代接入	600
+Step3 席位管理模型，50 席位 CRUD 数据模型	seats 结构定义，权限 perm、reasoning 参数；设置面板 UI 原型（仅数据层，不做完整对话 UI）	定义 50 席位的数据约束，限制最大 50；补齐 G5 缺口	300
+Step4 并发信号量 + 渲染队列节流	concurrency‑semaphore 全局 + per‑provider 限流；SeatRenderQueue rAF 批量 DOM 刷新	解决 Q4 的 50 席位流式性能，防止 DOM 风暴、TCP 端口打爆	350
+Step5 会话存储会话上下文	session‑store，懒加载 JSON 会话文件；messages 存储、usage 累计、上下文窗口告警；Q5 完整逻辑	补齐 G3、G7，实现多轮会话	450
+Step6 思考等级映射 + 附件抽象层	Q6 推理参数映射；Q9 Attachment 附件抽象；图片文本 PDF 适配器转换逻辑	参数和附件是对话核心输入；先数据层再 UI	420
+Step7 设置界面完整 UI	提供方 CRUD、测试连接、拉取模型列表按钮；模型缓存逻辑 Q2；权限开关 UI	R1 R2 需求落地	500
+Step8 API 席位对话 UI（宫格内）	格子切换 webview/API 模式；输入框 + 附件 + 右侧参数面板 ASCII 布局实现；reasoning 展示；上下文用量 UI；归档对接 replies/*.md	R4‑R9 全部 UI 落地；对接原有分发甲板群发接口	800
+Step9 其余协议适配器迭代	anthropic‑messages、gemini‑native、openai‑responses（可选开关）	核心跑通之后再接入剩余原生协议，不要前期阻塞开发	700
+总预估代码量：约 4520 行；原有代码保留，增量新增模块；全程零第三方 npm 依赖，仅 Electron 内置 API。
+重要业务边界提醒
+openai‑responses 做功能开关，默认关闭，绝大多数中转网关不兼容；
+所有持久化 JSON 要做损坏容错 try‑catch，文件损坏时加载空配置而不是直接崩溃；
+每一个席位 SSE 会话销毁时，必须移除所有事件监听、AbortController 中断流、清空渲染队列，防止 renderer 内存泄漏。
+如果你需要，我可以下一步输出某一个模块完整可运行源码，比如适配器骨架 / 会话存储 / 并发信号量。
+今天 16:05
+如何处理SSE流中断？
+如何避免模型元数据过期失效？
+如何解决中转服务商部分接口不返回usage的问题？

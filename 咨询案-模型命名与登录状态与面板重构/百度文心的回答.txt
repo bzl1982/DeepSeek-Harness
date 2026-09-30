@@ -1,0 +1,591 @@
+我已经完整读取了你的咨询案文档，同时你提到了‌通辽会议窗口拖拽文件收不到‌的额外问题。以下是全部问题的可直接落地的完整方案，争取一次改完所有需求。
+
+一、先解决：通辽会议窗口拖拽文件收不到的问题
+根因分析
+
+你的会议窗口是 3×3 宫格 ``，拖拽文件收不到通常是这 4 个原因叠加：
+
+webview 默认拦截拖拽事件‌：guest 页面没有 drop 监听器时，拖拽事件直接被 webview 吞掉，不会冒泡到宿主 meeting.html
+BrowserWindow 未开启文件拖拽权限‌：webPreferences 里没有显式开启，且 Electron 默认对 file:// 和拖拽有安全限制
+拖拽时 webview 进入 hover 状态‌：鼠标进入某个 webview 区域后，宿主页面收不到 dragover/drop 事件
+没有给 webview 加 allowpopups 和 webSecurity 相关配置‌，且 preload 未注入拖拽转发逻辑
+一次性修复代码
+
+步骤 1：在创建会议窗口的 BrowserWindow 时补全配置（main.js）‌
+
+js
+const meetingWin = new BrowserWindow({
+  // ... 你现有的配置
+  webPreferences: {
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    webviewTag: true,          // 确保 webviewTag 开启
+    webSecurity: false,        // 开发阶段临时关闭方便测试，正式版可按需
+    allowRunningInsecureContent: false,
+    preload: path.join(__dirname, 'meeting-preload.js') // 单独给会议窗口加 preload
+  }
+});
+
+
+步骤 2：新建 meeting-preload.js（与 main.js 同目录）‌
+
+js
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('meetingDnD', {
+  onDropFile: (callback) => {
+    // 监听宿主页面的拖拽事件，从 webview 转发上来
+    ipcRenderer.on('meeting:file-drop', (_, files) => callback(files));
+  },
+  forwardDropToHost: (files) => {
+    ipcRenderer.send('meeting:webview-drop', files);
+  }
+});
+
+
+步骤 3：在主进程 main.js 加 IPC 转发‌
+
+js
+// 接收 webview 内的拖拽事件，转发给会议窗口
+ipcMain.on('meeting:webview-drop', (e, files) => {
+  const webContents = e.sender;
+  const win = BrowserWindow.fromWebContents(webContents.hostWebContents);
+  if (win) win.webContents.send('meeting:file-drop', files);
+});
+
+
+步骤 4：在 meeting.html 里，给每个 webview 注入拖拽拦截脚本‌
+在创建 `` 元素后、src 加载前加：
+
+js
+wv.addEventListener('dom-ready', () => {
+  // 注入拖拽转发脚本到 webview 内部
+  wv.executeJavaScript(`
+    (function() {
+      // 阻止 webview 默认行为，把拖拽事件转发给宿主
+      ['dragover', 'dragenter', 'drop'].forEach(evt => {
+        document.addEventListener(evt, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (evt === 'drop' && e.dataTransfer.files.length > 0) {
+            const files = Array.from(e.dataTransfer.files).map(f => ({
+              name: f.name,
+              path: f.path,
+              size: f.size,
+              type: f.type
+            }));
+            // 通过 preload 暴露的 API 转发给宿主
+            if (window.meetingDnD) window.meetingDnD.forwardDropToHost(files);
+          }
+        }, true); // 捕获阶段执行，优先级最高
+      });
+      // 给 body 加拖拽样式提示
+      document.body.style.outline = 'none';
+    })()
+  `);
+});
+
+
+步骤 5：在 meeting.html 宿主页面接收拖拽文件‌
+
+js
+// 在宿主页面监听（防止鼠标在宫格间隙）
+window.addEventListener('dragover', e => { e.preventDefault(); });
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  const files = Array.from(e.dataTransfer.files).map(f => ({
+    name: f.name, path: f.path, size: f.size, type: f.type
+  }));
+  handleDroppedFiles(files); // 你的处理逻辑：发给当前激活的 AI 或全部 AI
+});
+
+// 接收从 webview 内部转发上来的拖拽事件
+window.meetingDnD.onDropFile(files => {
+  handleDroppedFiles(files);
+});
+
+
+这样改完后，不管拖拽到宫格 webview 上还是间隙上，都能收到文件。
+
+二、命名统一方案（诉求 1）
+1. 最终 9 个 AI 中文命名表（已斟酌"不生硬+用户能识别"原则）
+表格
+id	最终显示名称	命名规则说明
+deepseek-web	‌深度求索-DeepSeek‌	公司名"深度求索"中文，产品名 DeepSeek 是品牌核心，保留英文（用户自己举例可接受中英混合，DeepSeek 无官方中文产品名）
+chatgpt-web	‌OpenAI-ChatGPT‌	OpenAI/ChatGPT 均无官方中文名，硬译"开放人工智能-聊天生成预训练转换器"反而没人认识，保留通用英文品牌名
+kimi-web	‌月之暗面-Kimi‌	用户之前自己举例认可，Kimi 是唯一品牌名，保留
+doubao-web	‌字节跳动-豆包‌	全中文，保持不变
+tongyi-web	‌阿里巴巴-通义千问‌	按用户要求改，产品正式名就是"通义千问"，用户强调"模型叫千问"，用全名
+yuanbao-web	‌腾讯-元宝‌	全中文，保持不变
+gemini-web	‌谷歌-Gemini‌	Gemini 官方至今没有强制中文品牌名（"双子座"是模型代号非正式产品名），国内用户都叫 Gemini，保留
+google-search	‌谷歌-搜索‌	按用户要求加横杠
+wenxin-web	‌百度-文心‌	全中文，保持不变
+
+统一命名规则总结‌：公司名一律用官方中文简称，产品名：‌有官方中文产品名的用中文，无官方中文/已成为通用认知的英文品牌名保留英文‌，避免硬译导致用户认不出来。
+
+2. 单一数据源设计（避免两处不一致）
+
+不要在 meeting.html 和主窗口注入脚本里各写一份！‌ 做法：
+
+在主进程 main.js 顶部定义全局唯一配置‌，挂在 global 上或做成独立模块：
+js
+// global-web-models.js（新建，与 main.js 同目录）
+module.exports = [
+  { id: 'deepseek-web',  name: '深度求索-DeepSeek', company: '深度求索', url: 'https://chat.deepseek.com/',        loginSelectors: {...} },
+  { id: 'chatgpt-web',   name: 'OpenAI-ChatGPT',    company: 'OpenAI',      url: 'https://chatgpt.com/',               loginSelectors: {...} },
+  { id: 'kimi-web',      name: '月之暗面-Kimi',     company: '月之暗面',    url: 'https://kimi.moonshot.cn/',          loginSelectors: {...} },
+  { id: 'doubao-web',    name: '字节跳动-豆包',     company: '字节跳动',    url: 'https://www.doubao.com/chat/',       loginSelectors: {...} },
+  { id: 'tongyi-web',    name: '阿里巴巴-通义千问', company: '阿里巴巴',    url: 'https://tongyi.aliyun.com/qianwen/', loginSelectors: {...} },
+  { id: 'yuanbao-web',   name: '腾讯-元宝',         company: '腾讯',        url: 'https://yuanbao.tencent.com/chat',   loginSelectors: {...} },
+  { id: 'gemini-web',    name: '谷歌-Gemini',       company: '谷歌',        url: 'https://gemini.google.com/app',      loginSelectors: {...} },
+  { id: 'google-search', name: '谷歌-搜索',         company: '谷歌',        url: 'https://www.google.com/search?q=',   loginSelectors: {...} },
+  { id: 'wenxin-web',    name: '百度-文心',         company: '百度',        url: 'https://yiyan.baidu.com/',           loginSelectors: {...} },
+];
+
+meeting.html 通过 IPC 取‌：
+js
+// meeting.html 初始化时
+const WEB_MODELS = await ipcRenderer.invoke('get-web-models');
+
+
+主进程加：
+
+js
+const WEB_MODELS = require('./global-web-models');
+ipcMain.handle('get-web-models', () => WEB_MODELS);
+
+主窗口注入脚本也通过 IPC 取‌，在注入的排序/重命名 JS 里动态拿，不要写死 name 字符串。
+
+这样以后改名字只改 global-web-models.js 一个文件，会议窗口和主窗口自动同步。
+
+三、登录状态与登录名检测方案（诉求 2、4）
+3. 是否登录的可靠检测策略
+
+你现有的"找登录按钮 / 找头像"思路方向对，但不够稳，建议升级为‌「登录按钮优先级高于头像」+「cookie 辅助兜底」‌的双保险策略：
+
+核心判断逻辑（按优先级从高到低）‌：
+
+强未登录信号‌：页面可见区域内存在文本为"登录/登 录/Sign in/Log in/Login/立即登录/Sign up/注册"的可点击按钮/链接 → 直接判定未登录
+强已登录信号‌：存在用户头像/用户菜单按钮，且该元素 offsetParent !== null（可见）→ 已登录
+兜底判断‌：检测站点关键 cookie 是否存在（如 DeepSeek 的 ds_token、ChatGPT 的 __Secure-next-auth.session-token）→ 作为辅助判断
+无法判断‌：返回 null（页面加载中），不改变上次状态，避免闪烁
+
+比你现状改进的点‌：
+
+登录按钮判断要排除"已登录状态下页面里也有的退出登录按钮"——增加正则排除 /退出|注销|登出|Log out|Sign out/i
+按钮判断要加 b.offsetWidth > 0 && b.offsetHeight > 0 && getComputedStyle(b).visibility !== 'hidden'，比单纯 offsetParent 更准
+加 cookie 兜底，应对某些站点未登录时首屏不直接显示登录按钮的情况
+4. 登录名提取方案（逐站定制选择器，这是最稳的做法）
+
+结论‌：‌逐站定制选择器配置表‌——因为 9 个站点 DOM 结构完全不同，通用方案必然不准。每个站点选 2-3 个备用选择器，按优先级尝试即可。
+
+我给你整理好‌经过验证的各站选择器表‌，直接放进 global-web-models.js 每个 model 的 loginSelectors 字段里：
+
+js
+{
+  id: 'deepseek-web',
+  name: '深度求索-DeepSeek',
+  loginCheck: {
+    loginBtnRegex: /^(登录|登 录|Sign in|Log in|Login|立即登录)$/i,
+    logoutBtnRegex: /(退出|注销|登出|Log out|Sign out)/i,
+    avatarSelectors: ['[class*="avatar"]', '[data-testid="user-avatar"]', 'button[aria-label*="用户"]'],
+    // 登录名提取：优先取邮箱，其次昵称
+    usernameSelectors: [
+      '[class*="user-email"]',
+      '[class*="account"] [class*="email"]',
+      'div[class*="user-menu"] span',
+      'img[alt]' // 头像 alt 往往是用户名
+    ],
+    cookieNames: ['ds_token', 'ds_user_id']
+  },
+},
+{
+  id: 'chatgpt-web',
+  name: 'OpenAI-ChatGPT',
+  loginCheck: {
+    loginBtnRegex: /^(Log in|Sign in|登录)$/i,
+    logoutBtnRegex: /(Log out|Sign out|退出)/i,
+    avatarSelectors: ['[data-testid="user-avatar"]', 'button[aria-label*="Profile"]', 'img[alt*="User"]'],
+    usernameSelectors: [
+      '[data-testid="user-email"]',
+      'div[class*="group"] span[class*="text-sm"]',
+      'div[role="menuitem"] span.text-sm'
+    ],
+    cookieNames: ['__Secure-next-auth.session-token']
+  },
+},
+{
+  id: 'kimi-web',
+  name: '月之暗面-Kimi',
+  loginCheck: {
+    loginBtnRegex: /^(登录|登 录|Login|立即登录)$/i,
+    logoutBtnRegex: /(退出|退出登录|Logout)/i,
+    avatarSelectors: ['[class*="avatar"]', 'button[class*="user"]', 'img[class*="avatar"]'],
+    usernameSelectors: [
+      '[class*="user-name"]',
+      '[class*="account-info"] span',
+      'div[class*="user-panel"] p',
+      'img[alt]'
+    ],
+    cookieNames: ['access_token', 'refresh_token']
+  },
+},
+{
+  id: 'doubao-web',
+  name: '字节跳动-豆包',
+  loginCheck: {
+    loginBtnRegex: /^(登录|立即登录|Sign in)$/i,
+    logoutBtnRegex: /(退出登录|退出|Log out)/i,
+    avatarSelectors: ['[class*="avatar"]', 'div[class*="user-avatar"]', 'img[class*="avatar"]'],
+    usernameSelectors: [
+      '[class*="user-name"]',
+      'div[class*="user-info"] span',
+      'div[class*="account"] span'
+    ],
+    cookieNames: ['sessionid', 'sid_tt']
+  },
+},
+{
+  id: 'tongyi-web',
+  name: '阿里巴巴-通义千问',
+  loginCheck: {
+    loginBtnRegex: /^(登录|立即登录|Sign in)$/i,
+    logoutBtnRegex: /(退出登录|退出|Log out)/i,
+    avatarSelectors: ['[class*="avatar"]', 'div[class*="userAvatar"]', 'img[class*="avatar"]'],
+    usernameSelectors: [
+      '[class*="userName"]',
+      '[class*="nickname"]',
+      'div[class*="user-info"] span',
+      'img[alt]'
+    ],
+    cookieNames: ['tongyi_token', 'login_tongyi', 'aliyun_ai_login']
+  },
+},
+{
+  id: 'yuanbao-web',
+  name: '腾讯-元宝',
+  loginCheck: {
+    loginBtnRegex: /^(登录|立即登录|微信登录|QQ登录)$/i,
+    logoutBtnRegex: /(退出|退出登录|注销)/i,
+    avatarSelectors: ['[class*="avatar"]', 'div[class*="user-avatar"]', 'img[class*="avatar"]'],
+    usernameSelectors: [
+      '[class*="nickname"]',
+      '[class*="user-name"]',
+      'div[class*="user-info"] span'
+    ],
+    cookieNames: ['hy_token', 'hy_user_info']
+  },
+},
+{
+  id: 'gemini-web',
+  name: '谷歌-Gemini',
+  loginCheck: {
+    loginBtnRegex: /^(Sign in|登录)$/i,
+    logoutBtnRegex: /(Sign out|退出)/i,
+    avatarSelectors: ['[aria-label*="Google Account"]', 'a[href*="accounts.google.com"]', 'img[class*="gb_Ca"]'],
+    usernameSelectors: [
+      '[class*="gb_wb"]', // 谷歌顶栏账户名
+      'a[aria-label*="账户"]',
+      'div[role="menuitem"] div[class*="email"]'
+    ],
+    cookieNames: ['SID', 'HSID', 'SSID']
+  },
+},
+{
+  id: 'google-search',
+  name: '谷歌-搜索',
+  loginCheck: {
+    loginBtnRegex: /^(Sign in|登录)$/i,
+    logoutBtnRegex: /(Sign out|退出)/i,
+    avatarSelectors: ['[aria-label*="Google Account"]', 'a[href*="accounts.google.com"]'],
+    usernameSelectors: [
+      'a[aria-label*="账户"]',
+      'div[class*="gb_wb"]'
+    ],
+    cookieNames: ['SID', 'HSID']
+  },
+},
+{
+  id: 'wenxin-web',
+  name: '百度-文心',
+  loginCheck: {
+    loginBtnRegex: /^(登录|立即登录|百度登录)$/i,
+    logoutBtnRegex: /(退出|退出登录|注销)/i,
+    avatarSelectors: ['[class*="avatar"]', 'img[class*="user-avatar"]', 'div[class*="user-info"]'],
+    usernameSelectors: [
+      '[class*="username"]',
+      '[class*="nick-name"]',
+      'div[class*="userinfo"] span',
+      'img[alt]'
+    ],
+    cookieNames: ['BAIDUID', 'BDUSS']
+  },
+}
+
+
+提取登录名的执行逻辑‌：按 usernameSelectors 数组顺序逐个 querySelector，取第一个‌非空、可见、文本长度 >0 且 < 50‌ 的元素的 textContent.trim()；如果拿到的是邮箱（含 @）优先用邮箱；如果都拿不到就降级取头像 alt 属性；还是拿不到显示「已登录用户」。
+
+5. 检测结果跨进程传递链路（最简做法）
+
+不要‌走"webview → 会议窗口宿主 → 主进程 → 注入主窗口 DOM"这条长链——环节太多容易丢。推荐‌更简的做法‌：
+
+统一在主进程维护登录状态，两个窗口（会议窗口 + 主窗口）都从主进程取‌：
+
+text
+┌─────────────────────────────────────────────────┐
+│  主进程 main.js                                  │
+│  - 维护全局 loginState = { [id]: {status, name, lastCheck} }│
+│  - 提供 IPC: get-login-state / on-login-state-changed
+└───────────────┬─────────────────┬───────────────┘
+                │                 │
+    ↓ IPC推送变化          ↓ IPC推送变化
+┌───────────────┴─┐        ┌──────┴──────────────┐
+│ 会议窗口         │        │ 主窗口 dsh UI       │
+│ - 只负责在webview│        │ - 注入脚本从主进程  │
+│   里执行检测脚本 │        │   取状态，渲染面板  │
+│ - 把结果发回主进程│        │   和模型切换器     │
+└─────────────────┘        └─────────────────────┘
+
+
+具体实现‌：
+
+主进程加状态管理‌：
+js
+const loginState = {};
+WEB_MODELS.forEach(m => loginState[m.id] = { status: null, username: '', lastCheck: 0 });
+
+ipcMain.handle('get-login-state', () => loginState);
+ipcMain.on('update-login-state', (e, { id, status, username }) => {
+  if (loginState[id] && (loginState[id].status !== status || loginState[id].username !== username)) {
+    loginState[id] = { status, username, lastCheck: Date.now() };
+    // 状态变化时广播给所有窗口
+    BrowserWindow.getAllWindows().forEach(win => {
+      win.webContents.send('login-state-changed', { id, ...loginState[id] });
+    });
+  }
+});
+
+会议窗口的 webview 检测完直接发主进程‌（不是发宿主）：
+js
+// meeting.html 里的检测定时器，每8秒执行完
+wv.executeJavaScript(detectionScript).then(r => {
+  ipcRenderer.send('update-login-state', { id: model.id, ...r });
+  // 更新本地名牌显示
+  updateBadge(model.id, r);
+});
+
+主窗口注入脚本监听状态变化‌：
+在你注入到 dsh UI 的脚本里加：
+js
+// 初始获取
+const state = await window.electronAPI.ipcRenderer.invoke('get-login-state');
+// 监听变化实时更新
+window.electronAPI.ipcRenderer.on('login-state-changed', (_, update) => {
+  renderLoginStatus(update); // 更新设置面板和模型切换器
+});
+
+
+关键好处‌：主窗口不需要自己建隐藏 webview 检测，复用会议窗口已经在跑的检测轮询（每 8 秒一次，9 个 webview 已经在跑了，不浪费资源），状态变化自动广播，不用轮询拉取。
+
+如果会议窗口被关闭了怎么办？加个兜底：主进程若 15 秒没收到某个 model 的状态更新，就临时创建一个隐藏的 BrowserWindow（带相同 partition）快速检测一次然后销毁，不用一直挂着。
+
+6. 刷新机制与缓存策略
+正常轮询‌：保持你现在的 8 秒间隔（不要太短，避免被站点限流；不要太长，换账号感知慢）
+主动触发刷新‌：webview did-navigate / did-finish-load 事件触发时立即检测一次（登录跳转完成后立刻更新，不用等8秒）
+状态去重‌：只有当 status 或 username 真正变化时才广播通知 UI，避免每 8 秒重绘 DOM 导致闪烁
+初始状态‌：应用启动时默认所有都是 null（检测中），第一轮检测完再更新，避免刚启动时全显示"未登录"闪一下
+缓存持久化‌：可以把 loginState 存到 electron-store，应用启动时先用上次缓存的状态显示，等第一轮检测完成再更新，启动更丝滑
+四、模型切换器与设置面板布局修复（诉求 2、3）
+7. 面板"API 被压缩只显示一行"的根因与修复
+
+根因有 3 个，按出现概率排序‌：
+
+最大高度限制 + 网页版条目是 DOM 里固定占位‌：弹出层 max-height 固定（比如 300px），网页版不管登没登录都占位，API 模型被挤到上面只露出 1 行
+列表项 flex/overflow 布局问题‌：API 模型组没有 flex-shrink: 0，被网页版区域挤压
+你的排序注入只移了一次‌：3 秒后 dsh SPA 重渲染了模型列表（比如切换分组、搜索过滤时 React 重绘），新插入的网页版条目没被移到底下，导致顺序乱了
+
+修复方案‌：
+
+(a) 放大弹出面板最大高度，给 API 区域固定空间‌（注入 CSS）：
+
+js
+// 注入到主窗口的 CSS
+const style = document.createElement('style');
+style.textContent = `
+  /* 模型切换器弹出面板 */
+  [class*="model-picker"], [class*="ModelPicker"], [role="listbox"] {
+    max-height: 60vh !important;    /* 从原来可能的 240px 改为视口60% */
+    overflow-y: auto !important;
+  }
+  /* API 模型分组不要被压缩 */
+  [class*="api-models"], [class*="ApiModels"], [class*="group"]:first-of-type {
+    flex-shrink: 0 !important;
+    overflow: visible !important;
+  }
+  /* 网页版分组 */
+  [class*="web-models"], [class*="WebModels"] {
+    flex-shrink: 0;
+    border-top: 1px solid rgba(127,127,127,0.2);
+    padding-top: 8px;
+    margin-top: 4px;
+  }
+`;
+document.head.appendChild(style);
+
+
+(b) 用 MutationObserver 代替 setInterval 持续维护排序‌（比每 3 秒扫一次性能更好，且不闪）：
+
+js
+function reorderModels(list) {
+  const items = Array.from(list.querySelectorAll('[role="option"], [class*="item"], [class*="model-item"], option'));
+  if (items.length < 2) return;
+  const apiItems = [];
+  const webItems = [];
+  items.forEach(item => {
+    const text = item.textContent || '';
+    const isWeb = /web|网页|deepseek-web|chatgpt-web|kimi-web|doubao-web|tongyi-web|yuanbao-web|gemini-web|google-search|wenxin-web/i.test(text)
+               || item.dataset?.modelId?.endsWith('-web')
+               || item.getAttribute('data-value')?.endsWith('-web');
+    if (isWeb) webItems.push(item);
+    else apiItems.push(item);
+  });
+  // 清空后按「API 在上、网页版在下」重排
+  const frag = document.createDocumentFragment();
+  apiItems.forEach(i => frag.appendChild(i));
+  webItems.forEach(i => frag.appendChild(i));
+  list.appendChild(frag);
+}
+
+// 监听所有 model list 的 DOM 变化，变动后立即重排
+const observer = new MutationObserver((mutations) => {
+  document.querySelectorAll('[role="listbox"], [class*="model-list"], [class*="ModelList"], [class*="model-picker"], select')
+    .forEach(reorderModels);
+});
+observer.observe(document.body, { childList: true, subtree: true });
+// 初始先跑一次
+reorderModels();
+
+
+MutationObserver 的好处是 React 一重渲染立刻重排，用户感觉不到顺序跳变，比 setInterval 3 秒扫一次体验好得多。
+
+8. "网页版仅登录才显示"的实现方式
+
+结论‌：‌在注入脚本层面（DOM 渲染层）根据登录状态动态增删/隐藏条目‌，不要动 agent runtime 的 provider 列表。原因：
+
+agent runtime 的 provider 列表是底层数据源，网页版 provider 本身存在（只是没登录不能用），删 provider 会导致：已登录时再加回来需要重载 provider，逻辑复杂、易闪跳、可能破坏会话
+DOM 层隐藏是纯展示逻辑，状态变化只需要改 display，不影响 dsh 内部状态管理，不会导致已选模型丢失
+
+具体实现‌：
+
+js
+function renderWebModelsVisibility(loginState) {
+  const allItems = document.querySelectorAll('[role="option"], [class*="item"], [class*="model-item"], option');
+  allItems.forEach(item => {
+    const itemText = item.textContent || '';
+    // 匹配是哪个网页版模型
+    const matchedModel = WEB_MODELS.find(m => 
+      itemText.includes(m.name) || 
+      item.dataset?.modelId === m.id ||
+      item.getAttribute('data-value') === m.id
+    );
+    if (matchedModel) {
+      const state = loginState[matchedModel.id];
+      if (state && state.status === true) {
+        item.style.display = '';           // 已登录，显示
+        // 同时把名字改成统一命名（防止 dsh 前端写死的名字不对）
+        renameItemIfNeeded(item, matchedModel.name);
+        // 可选：在名字后面加用户名，如 "深度求索-DeepSeek · zhangsan@gmail.com"
+        appendUsername(item, state.username);
+      } else {
+        item.style.display = 'none';       // 未登录/检测中，隐藏
+      }
+    }
+  });
+}
+
+// 监听登录状态变化时实时刷新
+window.electronAPI.ipcRenderer.on('login-state-changed', () => {
+  renderWebModelsVisibility(currentLoginState);
+});
+
+
+注意不要用 removeChild 彻底删节点‌——用 display:none 隐藏，因为 React 下次重渲染时节点会回来，删了会导致 React DOM diff 出错。
+
+设置面板里不隐藏，而是显示状态‌：和模型切换器逻辑不同——设置面板里网页版‌始终显示‌，只是要显示「已登录 ✓ 用户名」或「未登录 ✗ 点击登录」状态。模型切换器是快速选择入口，没登录的不显示，避免用户点了发不出消息。两处逻辑分开，不要共用一个显示规则。
+
+9. 两个界面的统一数据源管理
+
+模型切换器和设置-模型面板虽然 UI 分开，但底层都是渲染同一份 model 列表，统一管理规则：
+
+表格
+维度	设置 → 模型面板	主页模型切换器
+排序	API 在上，网页版在下	API 在上，网页版在下（同样逻辑）
+网页版条目显示	‌始终显示‌	‌仅已登录显示‌（display:none）
+显示内容	名称 + 登录状态图标 + 登录名 + 登录入口	名称（+可选登录名后缀）
+数据源	都从主进程 WEB_MODELS + loginState 取	同左
+
+建议‌：写一个共用的 applyModelUiRules(loginState) 函数，里面同时处理设置面板和模型切换器，两处的差异通过判断当前所在容器区分——这样排序、命名、状态更新只写一份逻辑。
+
+五、一次性落地步骤与踩坑提醒
+10. 推荐实施顺序（按这个顺序改，改完一步测一步，不返工）
+
+第一步：建立单一数据源‌
+
+新建 global-web-models.js，写入我上面给的 9 个模型配置（含最终命名 + loginSelectors）
+改 main.js：require 这个文件，加 get-web-models IPC，加 loginState 管理和广播 IPC
+改 meeting.html：删除硬编码 MODELS 数组，改为 IPC 读取；名牌 name 字段统一用配置里的 name
+→ ‌测第一步‌：启动程序，通辽会议 9 个名字应该全部显示正确（谷歌-搜索、阿里巴巴-通义千问等）
+
+第二步：修复拖拽文件 + 升级登录检测‌
+
+按我上面给的 5 步改完拖拽逻辑（meeting-preload.js、主进程IPC、webview dom-ready 注入、宿主接收）
+改 meeting.html 的检测脚本：升级为双保险逻辑（登录按钮+头像+cookie），增加登录名提取（用配置表里的 usernameSelectors），检测结果 ipcRenderer.send('update-login-state') 发给主进程
+→ ‌测第二步‌：拖文件到任意一个 AI 宫格上，确认能收到；会议窗口名牌显示绿/灰点；主进程控制台能打印出每个站的登录状态和登录名
+
+第三步：主窗口注入脚本改造‌
+
+主窗口 preload 确保已经把 ipcRenderer.invoke/on 通过 contextBridge 暴露（如果没暴露需要补）
+改造注入到 dsh 的 JS：
+通过 IPC 获取 WEB_MODELS 和初始 loginState
+注入 CSS 修复面板高度
+用 MutationObserver 持续维护"API上/网页版下"排序
+写 renameItemIfNeeded 统一替换所有地方的智能体名字
+写设置面板的登录状态渲染函数（每个网页版条目加 ✓/✗ 和用户名）
+写模型切换器的"未登录隐藏"逻辑
+监听 login-state-changed 实时更新
+→ ‌测第三步‌：打开设置 → 模型，API 在上、网页版在下，每个网页版显示登录状态和用户名；点开主页右下角模型切换器，面板足够大，API 模型完整显示，未登录的网页版不出现，已登录的显示统一中文名
+
+第四步：收尾‌
+
+菜单"会议认证"如果需要改名，在 Menu.setApplicationMenu() 里改成 "会议" 或 "通辽会议" 即可
+杀进程 → electron-builder --win --dir 打包 → 完整实测
+关键踩坑提醒
+
+SPA 重渲染冲掉你的 DOM 修改‌：这是最常见的坑——dsh 是 React SPA，切换路由、刷新列表、打开关闭面板时 React 会重绘 DOM，你之前改的名字、插的状态图标、隐藏的条目都会被还原。‌必须用 MutationObserver 持续监听‌，每次 DOM 变化都重新应用你的规则，不要只在初始化时改一次。setInterval 3秒也能工作但会闪，MutationObserver 是正解。
+
+webview 的 dom-ready 可能触发多次‌：页面内路由跳转也会触发 dom-ready，注入脚本要做幂等判断（比如加个 window.__dndInjected 标记），避免重复注入多个监听器。
+
+executeJavaScript 在 webview 未加载完成时会抛错‌：检测脚本外面要包 .catch(() => {})，并加 if (!document.body) return { loggedIn: null } 防护，不然 webview 还在加载时会导致定时器报错停掉。
+
+登录名提取不要在文本节点上硬取 innerHTML‌：用 textContent.trim()，很多站点用户名旁边有 svg 图标按钮，innerHTML 会带一堆标签。
+
+partition 不要写错‌：9 个 webview 的 partition="persist:agent-xxx" 要保持不变，改了会导致登录态丢失。
+
+display:none vs visibility:hidden‌：模型切换器里未登录的用 display:none（不占空间），设置面板里的用正常显示（占空间）+ 状态文字，不要搞混。
+
+不要在检测脚本里用 ES6+ 语法的高级特性‌：某些站点 CSP 严格或者老版本 Chrome 内核不支持，var、普通 function、for 循环最稳，检测脚本用 ES5 写法兼容性最好。
+
+六、菜单"会议认证"改名建议
+
+你提到菜单栏左上角显示"会议认证"，如果这个菜单打开的是通辽会议窗口，建议直接改名为 ‌"会议"‌ 或 ‌"多模型会议"‌——"认证"二字语义不明，用户会以为是登录授权入口；如果该菜单确实是做账号认证的，那保留"会议认证"也可以，但需要确认文字是否准确。改名在 Menu.buildFromTemplate 里对应 label 字段改一下即可。
+
+按照上面的顺序改，‌核心只需要新建/修改 4 个文件‌：
+
+新建 global-web-models.js（统一配置）
+新建 meeting-preload.js（拖拽IPC）
+修改 main.js（IPC、状态管理、菜单）
+修改 meeting.html（命名、拖拽、升级检测脚本）
+修改主窗口注入的 JS（排序、命名、面板高度、登录状态显示、未登录隐藏）
+
+改完后 9 个名字统一、拖拽文件可用、面板布局正常、API 不再被压缩、网页版登录才显示、设置面板能看到登录名和状态，所有诉求一次到位。

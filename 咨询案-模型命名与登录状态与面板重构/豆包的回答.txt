@@ -1,0 +1,177 @@
+# 咨询案补充：通辽会议窗口 webview 拖拽文件上传失效
+
+> 
+> 追加需求：**把本地文件拖拽到通辽会议各个 webview 的聊天输入框，网页AI收不到文件，拖拽视觉反馈正常，但松开后无附件上传行为**，该问题加入本次“一次搞定”任务清单。
+
+## 现象
+
+1. 鼠标从 Windows 文件管理器把文件拖进 3×3 webview 的聊天输入区域；
+2. 页面会出现浏览器标准拖拽悬浮高亮（dragover 生效）；
+3. drop 松开鼠标之后，**网页完全没有拿到文件，不触发上传，无报错、无附件出现**；
+4. 直接在网页内点“选择文件”按钮上传文件是正常的。> 
+> 环境约束不变：Electron 33.2.0，`sandbox:true`，每个 `<webview>` 使用独立 `persist:agent‑xxx` partition，preload 只有 contextBridge+ipcRenderer，不开启 nodeIntegration。
+
+## 根因分析（Electron ≥32 关键变更）
+
+1. **sandbox webview 内，拖拽得到的 File 对象丢失原生 `.path` 属性**
+ Chromium sandbox 渲染进程不再把本地磁盘路径挂载到 `File.path`；网页（DeepSeek/豆包/Kimi等）上传组件依赖 `File.path` 读取本地文件，现在拿不到路径，上传静默失败。> 
+> 旧写法 `file.path` 已废弃，sandbox 环境必须使用 `webUtils.getPathForFile(file)` 获取磁盘路径，该API只能在 preload 脚本调用，guest网页JS无法访问。
+2. `<webview>` 边界事件隔离
+ dragover/drop DOM事件虽然下发到guest页面，但跨进程 File 对象经过结构化克隆，磁盘路径元信息被剥离，第三方网页（远程域名）JS拿不到真实本地文件路径。
+3. 不是 `navigateOnDragDrop` 问题：该配置只控制“拖拽文件是否跳转页面”，当前现象不会跳转，已经是 `navigateOnDragDrop:false`。
+
+> 
+> 关键点：**远程网页（[https://xxx）的JS不能直接调用](https://xxx%EF%BC%89%E7%9A%84JS%E4%B8%8D%E8%83%BD%E7%9B%B4%E6%8E%A5%E8%B0%83%E7%94%A8) `webUtils`，只能由 webview 的 preload 脚本介入修复 File 对象**。
+
+## 可行的两套方案（按推荐优先级）
+
+### 方案A：webview preload 拦截drop，修补 File 对象（推荐，侵入最小，不改动原有meeting.html业务）
+
+给每一个通辽会议的 `<webview>` 挂载统一 preload 脚本 `webview‑drop‑fix.preload.js`。
+
+> 
+> ⚠️注意：webview标签上写 `preload="绝对file路径"`，asar打包需要正确解析路径。
+
+**preload脚本核心逻辑：**
+
+```
+const { contextBridge, webUtils } = require('electron');
+
+// 劫持guest页面document的drop事件
+document.addEventListener('drop', async (ev) => {
+  if (!ev.dataTransfer || !ev.dataTransfer.files) return;
+  // 对每个拖拽得到的File对象，读取真实磁盘路径保存到自定义只读属性
+  const files = Array.from(ev.dataTransfer.files);
+  for(const f of files){
+    try{
+      const realPath = webUtils.getPathForFile(f);
+      // 给File挂载一个只读自定义属性，远程网页JS可以读到
+      Object.defineProperty(f, '_electron_real_path', {
+        value: realPath,
+        writable:false, configurable:true
+      });
+    }catch(e){
+      // 非磁盘文件会抛异常，忽略
+    }
+  }
+}, true); // capture=true，在网页业务脚本之前捕获drop
+```
+
+> 
+> 短板：**各个第三方网页的上传组件并不会主动读取 `_electron_real_path`，仅仅挂载自定义属性，大部分网站依旧失效**。
+> → 该方案只能拿到路径，不能“欺骗”浏览器File对象，远程网页无法替换File内部的私有磁盘句柄。
+
+### 方案B（完整可用方案）：preload拦截drop事件，IPC把文件路径传回会议窗口主渲染进程，模拟网页input file上传（生产落地首选）
+
+原理：
+
+1. webview preload 在捕获阶段拦截 `drop`；调用 `webUtils.getPathForFile` 获取全部拖拽文件本地磁盘路径；
+2. 通过 `ipcRenderer` 将文件名、磁盘完整路径数组发送给**通辽会议窗口（meeting.html宿主渲染进程）**；
+3. meeting.html收到IPC消息，调用对应webview的 `executeJavaScript`，往网页DOM注入一套“模拟选择文件”逻辑：找到页面type="file"的input，用DataTransfer/FileList模拟用户点击选择本地文件，触发网页原生上传逻辑。
+
+优点：
+
+- 不需要关闭sandbox，安全约束保留，不破坏现有的partition登录隔离；
+- 完全模拟用户点击上传按钮，第三方网页原有上传JS不需要做任何修改；
+- 兼容全部9个AI网页，不需要逐个站点特殊适配。
+
+伪代码示意：
+
+#### ① webview‑drop‑fix.preload.js（挂载给每个webview）
+
+```
+const { ipcRenderer, webUtils } = require('electron');
+document.addEventListener('drop', async (ev) => {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const items = [];
+  for(const f of Array.from(ev.dataTransfer.files)){
+    try {
+      const p = webUtils.getPathForFile(f);
+      if(p) items.push({ name:f.name, path:p, size:f.size, type:f.type });
+    }catch(err){ /* 内存blob跳过 */ }
+  }
+  if(items.length>0){
+    // webview内部发送，携带webview的guestInstanceId标识
+    ipcRenderer.sendToHost('webview‑file‑drop', { files: items });
+  }
+}, true);
+```
+
+> 
+> `ipcRenderer.sendToHost`：专门用于webview向宿主页面meeting.html发送消息，**不经过主进程main.js，开销更小**。
+
+#### ② meeting.html（宿主页面，接收来自webview的drop消息）
+
+```
+// 监听来自任意webview的sendToHost事件
+window.addEventListener('ipc-message', async (event)=>{
+  if(event.channel !== 'webview‑file‑drop') return;
+  const { files } = event.args[0];
+  const wv = event.target; // 当前触发drop的那个<webview> DOM对象
+  if(!files.length) return;
+  // 注入脚本到webview内部，模拟<input type="file">选择本地文件
+  await wv.executeJavaScript(`
+    (async function(fileMetas){
+      // 寻找聊天框对应的file input，兼容不同网站
+      let input = document.querySelector('input[type="file"]');
+      if(!input) return;
+      const dt = new DataTransfer();
+      // 注意：这里网页JS无法直接从磁盘读文件，所以不能new File(path)；
+      // 策略：触发input.click之后，用注入脚本的方式把文件列表给到input。
+      // 备选方案：通过input.files setter，Chromium安全限制不允许网页JS直接设置本地磁盘FileList。
+    })(${JSON.stringify(files)})
+  `);
+})
+```
+
+> 
+> 重要Chromium安全限制：**远程网页JS不能凭空构造指向磁盘真实路径的File对象，即使知道路径，也不能直接给input.files赋值**。
+> 所以executeJavaScript内部JS不能直接构造磁盘File。
+
+### 方案B‑Final 修正实现（绕过安全限制）
+
+因为guest网页JS无法构造磁盘FileList，**不能在executeJavaScript内部构造文件**，需要换路径：
+
+1. preload拿到磁盘文件路径数组，通过 `sendToHost` 传给meeting.html宿主；
+2. **宿主（meeting.html，受信任本地页面，非远程网页）** 读取本地文件为 Blob；
+3. 将 blob + 文件名，序列化为二进制数据，传给webview guest；
+4. guest页面拿到blob对象，构造File(blob, filename)，赋值给上传input，触发change事件。
+
+> 
+> 代价：大文件会完整读入内存，适合普通文档、图片；超大文件会有内存压力，这是webview跨沙盒拖拽文件的固有代价。
+
+### 方案C（备选兜底，不推荐，牺牲安全）
+
+关闭webview的sandbox：`sandbox:false`，恢复旧版 `File.path`。
+❌不建议：破坏整个webview的安全隔离，9个第三方网页运行在非沙盒渲染进程，存在远程网页访问本地系统的安全风险，与项目现有安全设计冲突。
+
+## 本次任务新增条目（追加到原文档任务拆分）
+
+> 
+> 原文档D部分：一次性落地任务切分，追加第4大模块
+
+### D‑4 通辽会议窗口 webview 文件拖拽修复
+
+1. 为全部9个 `<webview>` 增加统一preload脚本 `webview‑drop‑fix.preload.js`；确认asar打包后preload路径解析正常；
+2. preload捕获drop事件，调用`webUtils.getPathForFile`获取磁盘路径，收集文件元信息，`ipcRenderer.sendToHost`回传给宿主meeting.html；
+3. meeting.html监听`ipc‑message`事件，区分来自哪个webview，读取本地文件blob；
+4. 将blob数据传入对应webview，在guest内构造Blob→File对象，找到页面`input[type="file"]`，赋值files，触发`change`事件，模拟用户选择文件上传；
+5. 测试覆盖9个网页：图片、txt、pdf；验证拖拽上传成功；验证“点击上传按钮”原有功能不受影响；
+6. 边界处理：空文件、超大文件内存告警；非磁盘来源拖拽（剪贴板blob）直接跳过。
+
+### 易踩坑清单（新增）
+
+1. preload脚本路径，asar打包后webview preload经常路径失效，必须用绝对file协议路径；
+2. `webUtils` 只能在preload中调用，远程guest网页JS调用直接报错；
+3. `ipcRenderer.sendToHost` 只在webview preload可用；主进程IPC拿不到webview实例标识；
+4. **远程网页JS禁止构造磁盘File对象**，不要试图在executeJavaScript中用`new File(path)`，不会生效；
+5. 部分AI网页input[type="file"]是动态渲染（React SPA），拖拽的时候DOM还不存在；注入脚本需要增加轮询等待input出现；
+6. 部分网页会阻止冒泡drop事件；preload监听必须设置 `capture:true`，保证比网页业务脚本更早捕获drop事件。
+
+## 和原有整体项目的依赖关系
+
+- 该bug修复独立于命名、登录状态检测、模型面板重构；可优先完成，也可以跟其他功能并行开发；
+- preload脚本是webview附加逻辑，**不会干扰现有登录状态检测的executeJavaScript轮询逻辑**。
+
+如果你需要，我可以把**完整可复制的preload+meeting.html代码片段**直接写出来，也可以把这一整段追加合并进最开始那份完整咨询案文档，输出完整md。

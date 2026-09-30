@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>五家方案评价与选型</title>
+</head>
+<body>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: #0b0e14; color: #e6e6e6; padding: 24px; margin: 0; }
+  h1 { font-size: 20px; color: #4da3ff; margin: 0 0 6px; }
+  .sub { font-size: 12px; color: #8b98a9; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #121820; border: 1px solid #2a3a4a; border-radius: 10px; padding: 14px 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .score { font-size: 12px; color: #4ade80; font-weight: 600; white-space: nowrap; }
+  .score.mid { color: #facc15; }
+  .score.na { color: #8b98a9; }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: #1d2836; color: #8fc7ff; border: 1px solid #5a7a9e; white-space: nowrap; }
+  .tag.off { color: #8b98a9; border-color: #3a4a5a; background: #181f2b; }
+  .tag.win { color: #4ade80; border-color: #2f6b4a; background: #12302a; }
+  ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; color: #c8d0dc; }
+  .btn { font-size: 13px; }
+  .drag { font-size: 13px; }
+  .footer { margin-top: 18px; background: #0f2233; border: 1px solid #2f6b4a; border-radius: 10px; padding: 14px 16px; font-size: 13px; line-height: 1.8; color: #c8d0dc; }
+  .footer b { color: #4ade80; }
+  .footer code { background: #1a2a3a; padding: 1px 6px; border-radius: 4px; color: #8fc7ff; font-size: 12px; }
+  .pill { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; margin-right: 6px; }
+  .pill.g { background: #12302a; color: #4ade80; border: 1px solid #2f6b4a; }
+</style>
+<h1>五家方案评价与选型（通辽会议按钮 UI + webview 拖拽排序）</h1>
+<div class="sub">依据五份咨询回答逐项评价；★=推荐强度（按钮 / 拖拽两题分别评定）。KIMI 初版为空文件，后补传内容。</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>谷歌搜索 <span class="score na">未答两题 ★</span></h2>
+    <div class="btn"><span class="pill g">按钮</span><span class="tag off">无方案</span></div>
+    <div class="drag" style="margin-top:6px"><span class="pill g">拖拽</span><span class="tag off">无方案</span></div>
+    <ul>
+      <li>整个回答跑题：讲的是「消息广播」改用 insertText + sendInputEvent（属于另一旧需求）</li>
+      <li>唯一可取：长期建议引入 Playwright-Core / API 混合模式，与本项目现状距离较远</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>KIMI <span class="score">按钮 ★★★★★ · 拖拽 ★★★★★</span></h2>
+    <div class="btn"><span class="pill g">按钮</span><span class="tag win">cloneNode+保活</span></div>
+    <div class="drag" style="margin-top:6px"><span class="pill g">拖拽</span><span class="tag win">setIgnoreMouseEvents</span></div>
+    <ul>
+      <li>按钮：cloneNode(true)+MutationObserver，<b>补了最关键的保活</b>——React 重渲染删掉克隆节点后自动补回；还点破方案C消失根因（手动 padding 破坏 flex + 单次注入不可恢复）</li>
+      <li>拖拽：提出<b>进程级穿透 setIgnoreMouseEvents</b>（WebContents API，比 CSS 更底层），直接补在现有遮罩外即可；并指出不要开 forward:true、按 getType()==='webview' 过滤</li>
+      <li>承认 Pointer Events 手动拖拽为更稳选项；架构上建议远期迁 BrowserView</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>DP <span class="score">按钮 ★★★★★ · 拖拽 ★★★★★</span></h2>
+    <div class="btn"><span class="pill g">按钮</span><span class="tag win">cloneNode+Observer</span></div>
+    <div class="drag" style="margin-top:6px"><span class="pill g">拖拽</span><span class="tag win">PointerEvents+穿透</span></div>
+    <ul>
+      <li>按钮：cloneNode(true) 完整继承 class/CSS 变量/主题；MutationObserver 替代轮询；布局处理（flex column 直接插 / 横向用 wrapper 包）</li>
+      <li>拖拽：Pointer Events + <code>html[data-dragging] webview{pointer-events:none}</code> + setPointerCapture + overlay，附真实 PR 佐证；边界处理最全（窗口外松手/Esc/捕获/性能）</li>
+      <li>备选：SortableJS（handle:'.np-label'）；退路：点选交换/方向键</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>GEMINI <span class="score">按钮 ★★★★★ · 拖拽 ★★★★★</span></h2>
+    <div class="btn"><span class="pill g">按钮</span><span class="tag win">cloneNode+Observer</span></div>
+    <div class="drag" style="margin-top:6px"><span class="pill g">拖拽</span><span class="tag win">PointerEvents+镜像</span></div>
+    <ul>
+      <li>按钮：与 DP 同结论（cloneNode+Observer+布局策略），并解释 computedStyle 失效根因（CSS 变量/currentColor/主题类名遗漏）</li>
+      <li>拖拽：Pointer Events + pointer-events:none + setPointerCapture + 拖拽镜像(avatar) + elementFromPoint 实时算目标 + 实时 DOM 交换动画</li>
+      <li>给出方案对比表，明确「真实鼠标 100% 可用」的实现路径</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>GPT <span class="score">按钮 ★★★★★ · 拖拽 ★★★★★</span></h2>
+    <div class="btn"><span class="pill g">按钮</span><span class="tag win">cloneNode+Observer</span></div>
+    <div class="drag" style="margin-top:6px"><span class="pill g">拖拽</span><span class="tag win">PointerEvents+slots</span></div>
+    <ul>
+      <li>按钮：cloneNode + MutationObserver + 清 data-reactid，判断最工程化</li>
+      <li>拖拽：Pointer Capture 方案之外，<b>额外提出 slots 映射架构</b>——9 个 webview DOM 不动，只改 slot.providerId 再 render，登录态不丢、页面不刷新、GPU 压力低</li>
+      <li>给出「按钮 30 分钟 / 拖拽半天 / 改数据模型」的分步落地排期，最接近商业级多窗口编排器</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>选型结论（已实施）</h2>
+    <div class="btn"><span class="pill g">按钮</span><span class="tag win">cloneNode+持久保活</span></div>
+    <div class="drag" style="margin-top:6px"><span class="pill g">拖拽</span><span class="tag win">PointerEvents+双穿透</span></div>
+    <ul>
+      <li><b>按钮</b>：采用五家共识 cloneNode(true)+MutationObserver；按 KIMI 修正为「持久监听保活」（重渲染删了自动补回）+ 清理内联背景防底色残留 + flex-column/wrapper 布局保证上下罗列、图标同线</li>
+      <li><b>拖拽</b>：采用 DP/GEMINI/GPT 的 Pointer Events + 全屏 overlay + setPointerCapture，叠加 KIMI 的进程级 setIgnoreMouseEvents 双保险；Esc 取消、5px 阈值、目标高亮齐全</li>
+      <li><b>GPT slots 映射</b>：本次未用（DOM 移动不重载 webview，当前 insertBefore 已满足），留作下一步架构演进</li>
+    </ul>
+  </div>
+</div>
+
+<div class="footer">
+  <b>验证结果（Electron 无头模拟真实事件链）</b>：9 格创建 ✓｜5px 内不误触 ✓｜拖拽触发后 data-dragging + 遮罩 + 进程穿透 IPC ✓｜目标格高亮 ✓｜松手正确交换（deepseek 移至第 2 格）✓｜拖完全量清理 ✓｜Esc 取消 ✓。语法校验通过，已重新打包启动（0:20 构建）。
+</div>
+</body>
+</html>

@@ -1,0 +1,111 @@
+你提到的微软开源多人AI对话交流项目，正是大名鼎鼎的 [Microsoft AutoGen](https://github.com/microsoft/autogen)（其最新的演进版本为 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)）。
+这是一个专门用来做多智能体（Multi-Agent）对话与协同的架构。你的“通辽会议”想法非常超前，而由于你的系统是网页版（模拟用户行为/抓取DOM/逆向WebSocket），直接接入基于API设计的微软框架确实存在较大鸿沟。
+为你深度剖析该项目的工作原理，并给出一套能真正落地的“网页版AI转API网关”的接入方案。
+------------------------------
+## 一、 微软项目的核心工作原理
+微软框架（以 AutoGen / Agent Framework 为代表）之所以能让多个AI顺畅地开会，核心在于其事件驱动的消息总线和群聊编排机制：
+
+   1. 统一的消息接口（Conversable / Agent）：每个AI都被抽象为一个 Agent。它们有统一的输入（Receive）和输出（Send）规范，所有的对话本质上都是结构化的 JSON 消息传递。
+   2. 群聊管理器（GroupChatManager）：这是“通辽会议”的主持人。它维护一个公共的房间上下文（发言历史），并根据设定的路由规则（如轮询、随机、或由一个“主席LLM”根据当前话题动态指定下一个该谁发言）来决定谁来回答。
+   3. 会话持久化与状态管理（Agent Session）：提供多轮对话的上下文存储（Memory），确保AI在发言时不仅知道用户说了什么，还知道前面8个AI分别说了什么。
+
+------------------------------
+## 二、 核心难点：网页版（Web-based） vs 接口版（API-based）
+微软的框架初衷是面向标准的 无状态API（如 OpenAI 接口、Ollama 接口等）。调用时，传入 Prompt，立刻返回文本。
+而你的“通辽会议”是网页版封装（通常基于浏览器自动化如 Puppeteer/Playwright，或者逆向了前端 WebSocket/Fetch 接口）。这带来了三大冲突：
+
+* 
+* 无状态 vs 有状态：API 每次都要传历史记录；网页版自带上下文（通过浏览器 Cookie、Session 挂载），不需要传历史。
+* 同步阻塞 vs 异步长轮询/流式：网页版输入后，需要等待 DOM 渲染或 WebSocket 异步推流，没有标准的单次 HTTP Response。
+* 高并发与反爬限制：9个网页版AI同时高频并发，极易触发服务商的滑动验证码或封禁。
+* 
+
+------------------------------
+## 三、 落地接入方案：构建“网页转API适配层”
+为了克服困难，我们不直接修改微软的框架源码（保持其纯洁度以方便升级），而是在你的网页版系统与微软框架之间，加一层“网关适配层”（Web-to-API Gateway）。
+## 1. 总体架构图
+
+【微软 Agent Framework (群聊控制中心)】
+      │ (发出标准的标准化 API 请求)
+      ▼
+【自建 Web-to-API 路由网关 (Python FastAPI / Node.js)】
+      │ (将 API 格式转化为各网页版AI的驱动信号)
+      ├──► [DeepSeek 网页适配器] ──► Puppeteer / 逆向接口 ──► 驱动浏览器发送/接收
+      ├──► [Kimi 网页适配器]     ──► Puppeteer / 逆向接口 ──► 驱动浏览器发送/接收
+      └──► [其他 网页适配器]     ──► ...
+
+## 2. 第一步：将 9 个网页版 AI 标准化封装（Python 伪代码）
+在网关中，为每一个网页版 AI 编写一个 Adapter。无论是用 Selenium/Playwright 还是逆向接口，都必须暴露一个符合 OpenAI 规范的统一函数：
+
+import asynciofrom fastapi import FastAPI, HTTPExceptionfrom pydantic import BaseModel
+app = FastAPI()
+class ChatRequest(BaseModel):
+    model: str  # 对应通辽会议中的某一个AI，如 "deepseek_web", "kimi_web"
+    messages: list
+
+@app.post("/v1/chat/completions")async def web_ai_chat_provider(request: ChatRequest):
+    # 1. 提取最后一句用户/其他AI说的话（因为网页版自己带历史，我们通常只需要投喂最新的一句）
+    latest_message = request.messages[-1]["content"]
+    ai_name = request.model
+    
+    # 2. 调度你现有的通辽会议底层（假设你封装了控制浏览器的函数）
+    try:
+        # 这里调用你现有的底层逻辑，比如驱动第 N 个网页同框组件发送问题
+        # web_harness 负责在对应的网页输入、点击发送、并等待回答结束（通过DOM判断或流结束）
+        ai_response_text = await your_web_harness.send_and_wait_reply(ai_name, latest_message)
+        
+        # 3. 包装成标准的 OpenAI API 格式返回给微软框架
+        return {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": ai_response_text
+                }
+            }]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+## 3. 第二步：在微软框架中注册这 9 个“伪API”智能体
+现在你的 9 个网页AI已经被包装成了本地的 9 个标准 API。我们可以直接用微软的 Python SDK 将它们聚拢到“通辽会议”：
+
+# 确保安装了最新微软框架：pip install agent-frameworkfrom agent_framework.models import OpenAIChatClientfrom agent_framework.agents import ChatAgentfrom agent_framework.conversations import GroupChat, GroupChatManager
+# 1. 创建统一的客户端，指向我们刚刚写好的本地网关local_gateway_client = OpenAIChatClient(
+    api_key="mock-key", 
+    base_url="http://localhost:8000/v1"  # 指向我们的Web转API网关
+)
+# 2. 初始化9个会议成员（通过 model 参数区分驱使哪个网页AI）ai_members = []ai_names = ["DeepSeek", "Kimi", "ChatGLM", "Doubao", "Qwen", "Baichuan", "Minimax", "Spark", "Yanyi"]
+for name in ai_names:
+    agent = ChatAgent(
+        name=name,
+        client=local_gateway_client,
+        model=f"{name.lower()}_web",  # 对应网关里的 request.model
+        instructions=f"你是通辽会议的智囊团成员【{name}】。请保持你的独立观点，与其他AI辩论。"
+    )
+    ai_members.append(agent)
+# 3. 构建多智能体群聊group_chat = GroupChat(
+    agents=ai_members, 
+    messages=[], 
+    max_round=15,
+    # 关键：选择发言选择策略。'auto' 代表由主持人LLM决定谁接下来发言，也可以用 'round_robin'（轮询）
+    speaker_selection_method="auto" 
+)
+manager = GroupChatManager(group_chat=group_chat, client=local_gateway_client)
+
+## 4. 第三步：解决文件/图片分发难题
+你在描述中提到“发文件问题，9个人都可以收到，暂时还有很多BUG”。利用这套架构可以彻底修复这个问题：
+
+* 
+* 统一拦截：当用户在通辽会议前端上传文件时，文件首先被上传到你的网关服务器，生成一个本地或局域网可访问的临时 URL/本地绝对路径。
+* Agent Skills (智能体技能扩展)：利用微软框架提供的 Agent Skills / Tools 机制。在分发消息给 9 个 Agent 之前，网关检测到有文件输入，触发网页自动化脚本中的 upload_file() 函数，让 9 个网页同框组件同时执行浏览器“点击上传-选择刚刚下载的临时文件”。
+* 确保 9 个网页全部上传成功且解析完毕后，网关再统一放行“发送”指令。这样可以完美解决网页版因网络延迟、DOM还未加载完导致的文件丢失 Bug。
+* 
+
+------------------------------
+## 四、 避坑指南：必须注意的细节
+
+   1. 会话隔离与刷新：网页版 AI 的最大问题是长对话后会变慢或报错。建议在网关层加入 reset_session 机制。当微软框架结束一场“通辽会议”时，网关收到信号，自动驱动 9 个网页浏览器刷新页面（或者点击“新对话”按钮），清空网页端缓存。
+   2. 延迟与超时控制（Timeout）：9个网页版AI开会，如果遇到某一个服务商卡顿或出验证码，会导致整场会议锁死。必须在 FastAPI 网关中对每个 AI 设置 asyncio.wait_for(..., timeout=30)。如果某 AI 30秒内没吐出网页字样，网关直接返回："【系统提示：该AI由于网络原因暂时闭麦。】"，确保会议能继续开下去。
+
+你想先从包装其中哪一个具体的网页版AI（比如 DeepSeek 还是 Kimi）的 API 转换层开始调通，还是希望我帮你把微软框架中处理文件/多模态输入的具体 Tools 注册代码写得更详细一些？
+

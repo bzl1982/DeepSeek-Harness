@@ -1,0 +1,471 @@
+下面按你 §0 的 Q1–Q9 做评审，先给结论、再给字段级设计、成本、反例和可运行代码。Q1/Q4/Q6/Q7 按你的要求加重。最后补“你漏掉的”和 §6 方案批判、实施顺序。
+
+整体立场先说：你的 §6 方向基本对，但三处要改——①密钥解密只放主进程、renderer 不碰明文；②50 席别全部常驻内存全量历史，用“内存LRU+JSONL落盘”；③对话窗别 50 个格子全做成富编辑器，用“宫格缩略+聚焦展开+右侧 inspect”混合，比纯原地互换更扛性能。
+
+---
+
+## Q1 多协议适配器：内置哪些、字段级接口
+
+**一句话结论**：默认内置 4 个原生适配器 `openai-chat` / `openai-responses` / `anthropic-messages` / `gemini-native`，再加 `ollama` 本地；one-api/new-api/OpenRouter/各类中转统一走 `openai-chat` 兼容层，但允许每个 provider 覆盖 `protocol` 和 `listModels` 行为。不要为“所有协议”写 N 套完全独立请求构造器。
+
+### 1.1 统一 Provider 配置字段
+
+```ts
+ProviderConfig {
+  id: string;                 // uuid，主键
+  name: string;               // 展示名，如 "agne-官方"
+  protocol: 'openai-chat'|'openai-responses'|'anthropic-messages'|'gemini-native'|'ollama'|'custom';
+  baseURL: string;            // 去尾斜杠，如 https://api.agne.com/v1
+  authScheme: 'bearer'|'x-api-key'|'none'|'custom-header';
+  apiKeyEnc?: string;         // safeStorage 密文，主进程解密后使用
+  defaultHeaders?: Record<string,string>; // 中转站特殊头
+  modelsCache?: ModelInfo[];
+  modelsFetchedAt?: number;   // 时间戳，TTL 判断
+  modelsSource: 'auto'|'static-catalog'|'manual'; // 拉取失败降级用
+  capabilitiesOverride?: Partial<ModelCapability>; // 人工覆盖元数据
+  rateLimit?: { rpm?:number; concurrent?:number; tpm?:number };
+  timeoutMs: number;          // 默认 60000，流式可更长
+  proxy?: string;             // 可选 http/https proxy
+}
+```
+
+### 1.2 适配器统一接口（方法签名）
+
+```ts
+ModelInfo {
+  id: string;                 // 真实模型名，如 gpt-5-mini / claude-opus-4 / gemini-2.5-pro
+  displayName?: string;
+  contextWindow: number;      // 输入+输出总窗口，未知填 0 由目录补
+  maxOutput: number;
+  multimodal: { text:true; image:boolean; pdf:boolean; audio:boolean };
+  reasoning: { supported:boolean; modes?:('off'|'low'|'medium'|'high'|'auto')[]; budgetable?:boolean; nativeParam?:string };
+  functionCalling: boolean;
+  streaming: boolean;
+  ownedBy?: string;
+  raw?: any;                  // 原厂响应，便于排错
+}
+
+ChatMessage {
+  role: 'system'|'user'|'assistant'|'tool';
+  parts: Array<
+    {type:'text'; text:string} |
+    {type:'image'; mime:string; dataBase64:string} |
+    {type:'file'; mime:string; dataBase64?:string; textExtracted?:string} |
+    {type:'reasoning'; text:string; providerMeta?:any} // 回显思维链用，不主动发
+  >;
+  toolCalls?: any[];
+  toolCallId?: string;
+}
+
+ChatParams {
+  temperature?: number;
+  maxTokens?: number;
+  reasoning?: { mode:'off'|'low'|'medium'|'high'|'auto'; budgetTokens?:number };
+  stop?: string[];
+  tools?: any[];
+  seatPerms: SeatPerms;       // Q7，附件/系统提示词开关在这里截
+}
+
+// 标准化流式事件
+AdapterEvent =
+  {type:'delta'; text:string} |
+  {type:'reasoning_delta'; text:string} |
+  {type:'usage'; usage:NormalizedUsage} |
+  {type:'toolcall'; data:any} |
+  {type:'error'; code:'AUTH'|'RATE'|'SERVER'|'TIMEOUT'|'BAD_MODEL'|'UNSUPPORTED'; message:string} |
+  {type:'done'};
+
+interface ProtocolAdapter {
+  listModels(p: ProviderConfig, opts?:{force?:boolean; signal?:AbortSignal}): Promise<ModelInfo[]>;
+  chatStream(args:{
+    provider: ProviderConfig; model: string; messages: ChatMessage[];
+    params: ChatParams; signal?:AbortSignal;
+    onEvent:(e:AdapterEvent)=>void;
+  }): Promise<void>;
+  // 可选：countTokens 用于精确截断，Anthropic 有 count_tokens，其他可估算
+  countTokens?(provider:ProviderConfig, model:string, messages:ChatMessage[]):Promise<number>;
+}
+```
+
+### 1.3 各协议差异点清单
+
+- **openai-chat（含全量中转）**
+  - 端点 `POST {baseURL}/chat/completions`，SSE；`messages` 用 role/content`，多模态 content 数组 `image_url`；reasoning 模型用 `reasoning_effort=low|medium|high`（部分模型还支持 none/minimal/xhigh/max）；usage 通常在最后一块，需要 `stream_options.include_usage=true`；Responses 是新接口但 Chat 仍长期可用。
+  - 中转站差异：很多只实现 `/chat/completions`，不实现 `/v1/models` 或返回空；有的用 `model` 别名而不是真实名。
+- **openai-responses**
+  - `POST {baseURL}/responses`，input 可为字符串/消息数组，系统提示走 `instructions`；推理用 `reasoning.effort` + `reasoning.context`；可 `previous_response_id` 做服务端多轮；流式是强类型事件 `response.output_text.delta` 等；更适合 o 系/gpt-5 与 agent 工具。
+  - 成本：比 chat 多写 200–300 行事件映射；中转基本不支持，官方 OpenAI/部分代理才支持。新项目可接入，但别把它设成“所有 provider 默认”。
+- **anthropic-messages**
+  - `POST {baseURL}/messages`，头 `x-api-key`+`anthropic-version`，system 单独传不参与 messages；内容块结构；扩展思考老模型 `thinking={type:'enabled',budget_tokens:N}`（最小 1024，且 <max_tokens），新模型改 `adaptive`+`output_config.effort=low|medium|high|xhigh|max`，部分新模型不再接受 temperature/top_p； 流式思考走 `thinking_delta`、正文 `text_delta`，usage 在 `message_delta`/最终事件给 `input_tokens/output_tokens`。
+  - PDF/文件：新 Claude 可用 document/content 或文件工具，按版本测；不要假设所有中转都透传 thinking。
+- **gemini-native**
+  - `POST {baseURL}/models/{model}:streamGenerateContent?alt=sse&key=...` 或 `:generateContent`；parts 结构；图片/PDF 用 `inlineData{bytes, mimeType}`；系统指令走 `systemInstruction` 或 `generationConfig.systemInstruction`；思考 2.5 用 `thinkingConfig.thinkingBudget`（0关/-1自动/N），3.x 用 `thinkingLevel=MINIMAL|LOW|MEDIUM|HIGH` 且部分型号不能全关； usage 在 `usageMetadata.promptTokenCount/candidatesTokenCount/thoughtsTokenCount`。
+  - 模型列表 `GET /v1beta/models` 能拿到 input/outputTokenLimit、supportedGenerationMethods，多模态可按方法名推断。
+- **ollama**
+  - `POST {baseURL}/api/chat`（OpenAI 风格但不完全一样）、`/api/tags` 列模型、`/api/show` 拿细节；无密钥；本地推理并发受显存限制，信号量要小（1–4）。reasoning 取决于本地模型，用 `think` 或模型自带参数，不统一强求。
+
+**成本**：4 原生适配器合计约 600–1000 行；加 responses 再 200–300 行；中转统一 openai-chat 几乎零额外成本。若引入官方 SDK（openai/anthropic/google-generativeai）可省 30–50% 代码，但增加 3 个依赖、Electron 打包体积和版本耦合——你零依赖倾向下用 fetch 更可控。
+
+**反例**：别给每个中转站写独立适配器“因为返回格式略有不同”——应先走 openai-chat，只在 `/models`、auth 头、reasoning 参数三处做 provider override；否则 50 个中转＝50 套维护地狱。也别一上来全量上 Responses，老模型和大部分中转用 Chat 更稳。
+
+可运行最小 openai-chat 流式适配器（Node 18+，零依赖）：
+
+```js
+// openaiChatAdapter.js
+export const openaiChatAdapter = {
+  async listModels(p, opts = {}) {
+    const res = await fetch(`${p.baseURL}/models`, {
+      headers: { Authorization: `Bearer ${opts.apiKey}` },
+      signal: opts.signal,
+    });
+    if (!res.ok) throw new Error('LIST_MODELS_FAIL_' + res.status);
+    const j = await res.json();
+    return (j.data || []).map((m) => ({
+      id: m.id,
+      contextWindow: 0, // 由静态目录补
+      maxOutput: 0,
+      multimodal: { text: true, image: false, pdf: false, audio: false },
+      reasoning: { supported: /o[0-9]|reasoning|gpt-5/i.test(m.id) },
+      functionCalling: true,
+      streaming: true,
+      ownedBy: m.owned_by,
+      raw: m,
+    }));
+  },
+
+  async chatStream({ provider, model, messages, params, apiKey, onEvent, signal }) {
+    const body = {
+      model,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.parts.map((pt) =>
+          pt.type === 'text'
+            ? { type: 'text', text: pt.text }
+            : pt.type === 'image'
+            ? { type: 'image_url', image_url: { url: `data:${pt.mime};base64,${pt.dataBase64}` } }
+            : { type: 'text', text: pt.textExtracted || '' }
+        ),
+      })),
+      max_tokens: params.maxTokens,
+      temperature: params.temperature,
+    };
+    if (params.reasoning?.mode && /o[0-9]|gpt-5|reasoning/i.test(model)) {
+      const map = { off: 'none', low: 'low', medium: 'medium', high: 'high', auto: 'medium' };
+      body.reasoning_effort = map[params.reasoning.mode] || 'medium';
+    }
+    const res = await fetch(`${provider.baseURL}/chat/completions`, {
+      method: 'POST',
+      signal,
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { onEvent({ type: 'error', code: res.status === 401 ? 'AUTH' : 500, message: await res.text() }); return; }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines) {
+        const s = line.trim();
+        if (!s.startsWith('data:')) continue;
+        const payload = s.slice(5).trim();
+        if (payload === '[DONE]') { onEvent({ type: 'done' }); continue; }
+        let j; try { j = JSON.parse(payload); } catch { continue; }
+        for (const c of j.choices || []) {
+          const d = c.delta || {};
+          if (d.content) onEvent({ type: 'delta', text: d.content });
+          if (d.reasoning_content) onEvent({ type: 'reasoning_delta', text: d.reasoning_content });
+        }
+        if (j.usage) onEvent({ type: 'usage', usage: {
+          promptTokens: j.usage.prompt_tokens, completionTokens: j.usage.completion_tokens,
+          reasoningTokens: j.usage.reasoning_tokens ?? 0, totalTokens: j.usage.total_tokens } });
+      }
+    }
+  },
+};
+```
+
+---
+
+## Q2 模型列表自动拉取与元数据降级
+
+**一句话结论**：动态拉列表只用于“拿到 id 集合”，上下文窗口/多模态/推理能力不要信各厂 `/models`，用“动态 id＋静态目录 JSON＋provider 人工覆盖＋缓存 TTL”三层合并。
+
+流程：
+
+1. 按 protocol 调对应 listModels；成功→与静态目录 merge。
+2. 静态目录 `catalog.json` 键用模型名前缀正则：`{"pattern":"gpt-5.*","contextWindow":...,"maxOutput":...,"multimodal":{"image":true,"pdf":false},"reasoning":{"supported":true,"modes":["off","low","medium","high"]}}`。
+3. 写入 `providers.json.modelsCache` 与 `modelsFetchedAt`，TTL 建议 24h；中转可缩短到 1h 因为别名常变。
+4. 失败顺序：网络/401→用上次缓存；无缓存→用 catalog 按 provider 已知前缀猜；再不行→留空并只允许用户在设置里手填 model id（manual 模式）。
+
+各厂 `/v1/models` 差异：
+
+- OpenAI：`data[].id/owned_by/created`，无 contextWindow、无多模态标记、无推理标记。
+- Anthropic：`GET /v1/models` 返回 id/display_name/created_at，能力字段弱，窗口还要查文档/常量。
+- Gemini：`inputTokenLimit/outputTokenLimit/supportedGenerationMethods`，可推断是否支持 generateContent、是否多模态；但是否支持思考仍按模型系列配。
+- Ollama：`/api/tags` 只给名字和尺寸，细节用 `/api/show`。
+
+**成本**：listModels 各 20–60 行；catalog 维护是长期负担，但比运行时猜测稳。初期 catalog 只覆盖你实际用的 agne/google/deepseek/anthropic/openai 即可，别一开始就录 500 个模型。
+
+**反例**：别写“拉到什么模型就全量信任其 capabilities”，中转常返回 `gpt-4` 伪 id 但实际路由到别的东西；也别每次发消息都拉模型列表，会把中转打挂并泄露 key 请求频率。
+
+缓存合并伪代码（可改成 Node）：
+
+```js
+async function refreshModels(provider, apiKey, ttlMs=86400000){
+  const fresh = Date.now() - (provider.modelsFetchedAt||0) < ttlMs && provider.modelsCache?.length;
+  if (fresh) return provider.modelsCache;
+  try {
+    const dyn = await adapterFor(provider.protocol).listModels(provider,{apiKey});
+    const merged = dyn.map(d => ({...catalogLookup(d.id), ...d, ...provider.capabilitiesOverride}));
+    provider.modelsCache = merged; provider.modelsFetchedAt = Date.now();
+    return merged;
+  } catch(e){
+    if (provider.modelsCache?.length) return provider.modelsCache;      // 降级1：缓存
+    const fromCatalog = catalogByProvider(provider).map(x=>({id:x.id,...x})); // 降级2：静态
+    if (fromCatalog.length) return fromCatalog;
+    return [];                                                         // 降级3：手动录入
+  }
+}
+```
+
+---
+
+## Q3 密钥本地存储
+
+**一句话结论**：单机 Windows11 单用户，主进程用 Electron `safeStorage` 加密落 JSON，配合 `isEncryptionAvailable()` 检测；不可用时代替方案用用户口令派生密钥的 Web Crypto AES-GCM，而不是明文 YAML。keytar 可作为可选项，不必强制。
+
+推荐存储分层：
+
+```ts
+providers.json（非机密）: {id,name,protocol,baseURL,authScheme,modelsCache,...,apiKeyEnc?:string}
+credentials.json（仅密文，主进程目录，权限600）: {providerId: "<safeStorage密文>"}
+settings.yaml（非机密UI偏好）：模型排序、窗口布局等
+```
+
+主进程 safeStorage 示例（Electron 主进程，不可在 renderer 跑）：
+
+```js
+// main.js 伪片段
+const { safeStorage, app } = require('electron');
+const fs = require('fs'); const path = require('path');
+const dir = path.join(app.getPath('userData'),'creds'); fs.mkdirSync(dir,{recursive:true});
+const file = path.join(dir,'credentials.json');
+
+function saveKey(providerId, plain){
+  if(!safeStorage.isEncryptionAvailable()) throw new Error('NO_SAFE_STORAGE');
+  const enc = safeStorage.encryptString(plain).toString('utf8');
+  const db = fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};
+  db[providerId]=enc; fs.writeFileSync(file,JSON.stringify(db));
+}
+function loadKey(providerId){
+  if(!safeStorage.isEncryptionAvailable()) throw new Error('NO_SAFE_STORAGE');
+  const db = fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};
+  return db[providerId]?safeStorage.decryptString(Buffer.from(db[providerId],'utf8')):null;
+}
+```
+
+无 Electron 时可跑的 Node 兜底（用户口令派生，测试用）：
+
+```js
+// node 18+ 纯跑：node keytest.mjs
+import crypto from 'node:crypto';
+const enc=(pt,pass)=>{const s=crypto.randomBytes(16);const k=crypto.scryptSync(pass,s,32);
+  const c=crypto.createCipheriv('aes-256-gcm',k,s);const e=Buffer.concat([c.update(pt),c.final()]);
+  return s.toString('hex')+':'+e.toString('hex')+':'+c.getAuthTag().toString('hex');};
+const dec=(blob,pass)=>{const[s,e,t]=blob.split(':');const k=crypto.scryptSync(pass,Buffer.from(s,'hex'),32);
+  const c=crypto.createDecipheriv('aes-256-gcm',k,Buffer.from(s,'hex'));c.setAuthTag(Buffer.from(t,'hex'));
+  return Buffer.concat([c.update(Buffer.from(e,'hex')),c.final()]).toString();};
+const b=enc('sk-test','pw');console.log('dec=',dec(b,'pw'));
+```
+
+成本：safeStorage 接入 30–50 行；口令兜底 40 行。维护低。
+
+反例/坑：
+- safeStorage 在 Windows 走 DPAPI，保护“别的 Windows 用户”但不保护“同用户下的恶意进程/木马”；别把它当绝对安全，renderer 绝不持有明文。
+- Linux 无 libsecret 会退到 basic_text（近似明文），你虽是 Win11 不受影响，但打包跨平台时要检测并改口令方案。
+- 别把密钥写进会被 git 跟踪的 yaml、别在日志 printf、别发到 webview。
+
+---
+
+## Q4 50 席位并发与渲染
+
+**一句话结论**：全局信号量默认 8–12、按 provider 二级并发（OpenAI 官方可高些、Anthropic 按 rpm 折、Gemini 中、Ollama 1–4）；渲染用“每席缓冲＋rAF/定时器合帧＋只追加增量”，50 路不全量重绘，可视区域外不挂载编辑器。
+
+### 4.1 信号量（Node 可跑，零依赖）
+
+```js
+class Semaphore {
+  constructor(n){this.n=n;this.q=[];}
+  async run(fn){
+    if(this.n>0){this.n--;try{return await fn();}finally{this.n++;this._drain();}}
+    return new Promise(res=>this.q.push(res)).then(()=>{this.n--;return (async()=>{try{return await fn();}finally{this.n++;this._drain();}})());
+  }
+  _drain(){while(this.n>0&&this.q.length){this.n--;this.q.shift()();}}
+}
+// 全局+按provider
+const globalSem=new Semaphore(10);
+const perProvider=new Map(); // providerId->Semaphore
+function providerSem(id,rpm){
+  if(!perProvider.has(id)){
+    const conc=rpm?Math.max(1,Math.min(10,Math.round(rpm/20))):3; // 经验折算
+    perProvider.set(id,new Semaphore(conc));
+  } return perProvider.get(id);
+}
+async function sendSeat(seat,req){
+  return globalSem.run(()=>providerSem(seat.providerId,seat.provider.rateLimit?.rpm)
+    .run(()=>seat.adapter.chatStream(req)));
+}
+```
+
+经验值：50 席“同时发”但模型方 rate limit 不同，全局 10 避免本机文件句柄/解析阻塞；若全走本地 Ollama 全局也要降到 2–4。每个 provider 的 concurrent 可从 `rateLimit.rpm` 估算，也可在设置里手填。
+
+### 4.2 渲染节流（浏览器/renderer 片段）
+
+```js
+// 每席一个缓冲器
+class SeatViewBuffer {
+  constructor(onFlush){this.text='';this.reason='';this.onFlush=onFlush;this.t=null;}
+  pushDelta(t){this.text+=t;this._schedule();}
+  pushReason(t){this.reason+=t;this._schedule();}
+  _schedule(){if(this.t)return;const tick=()=>requestAnimationFrame(()=>{
+    this.t=null;if(this.text||this.reason)this.onFlush({text:this.text,reason:this.reason});
+  });this.t=setTimeout(tick,16);} // 16~33ms 合帧
+}
+// onFlush 里只做文本节点 append，不重建消息DOM
+function onFlush(seatEl,chunk){
+  seatEl.querySelector('.msg-body').appendChild(document.createTextNode(chunk.text));
+  if(chunk.reason&&seatEl.querySelector('.reason')) seatEl.querySelector('.reason').appendChild(document.createTextNode(chunk.reason));
+  // 用量/滚动单独节油
+}
+```
+
+成本：信号量 30 行；rAF 合帧 20 行；若上虚拟列表（50 卡全展开）要再加 150–300 行。收益：50 路流 DOM 更新从“每块一次 layout”降到“每帧每席一次追加”，CPU 可降数倍。
+
+反例：
+- 别每条 token 直接 `innerHTML+=` 或 React setState 全量重渲——50 流会卡死。
+- 别把全局并发设 50：本机 outbound 连接、 provider 限流、SSE 解析都会反噬；也别按“席位数”而不是“provider rate limit”限流，因为 50 席可能 30 个同属一个中转，瞬间把中转限流打满。
+- 50 个格子全挂 contenteditable 富编辑器＝内存和输入焦点灾难；用虚拟滚动或仅聚焦席位的编辑器挂载。
+
+---
+
+## Q5 会话历史、截断与 usage 统一
+
+**一句话结论**：每席内存保留“最近 N 轮”＋JSONL 落盘全量；接近窗口上限先做“系统提示+早期用户轮”截断，再提供摘要；usage 统一成 NormalizedUsage，各协议在最后事件/专用字段补。
+
+存储字段：
+
+```ts
+SessionStore {
+  seatId:string;
+  messages:ChatMessage[];           // 内存热数据，LRU 上限比如 40 轮
+  file:string;                      // replies/api/<seatId>.jsonl，每行一条 message 或 usage
+  estimatedTokens:number;           // 本地估算，用于截断触发
+  usage:NormalizedUsage;            // 累计
+  policy:{maxMessagesInContext:number; summarizerModel?:string; truncateFrom:'oldest'|'system-keep'; warnRatio:number};
+}
+NormalizedUsage {promptTokens; completionTokens; reasoningTokens; cacheReadTokens; cacheWriteTokens; totalTokens; lastUpdated;}
+```
+
+截断流程：发请求前算 `projected = estimatedTokens(history)+newInput+maxTokens+reasonBudget`；若 `projected>contextWindow*warnRatio(0.8)` →先丢最老非系统轮；仍超→调用摘要模型把老轮压缩成一条 `system/assistant summary`；仍超→拒绝发送并在 UI 标红。50 席不需要立即 SQLite；JSONL 追加＋内存 LRU 足够。只有当你要做“跨席全文检索/报表”再上 SQLite。
+
+各协议 usage 差异统一：
+- OpenAI chat：末段 `usage{prompt_tokens,completion_tokens,reasoning_tokens?}`（要 `include_usage`）；Responses：completed 事件聚合。
+- Anthropic：流式 `message_delta.usage` 给 `output_tokens`，开始有 `input_tokens`，思考 token 计入 output；新模型还有 cache_read/write。
+- Gemini：`usageMetadata.promptTokenCount/candidatesTokenCount/thoughtsTokenCount/totalTokenCount`。
+
+合并函数：
+
+```js
+function addUsage(acc,part){
+  acc.promptTokens+=part.promptTokens??part.promptTokenCount??0;
+  acc.completionTokens+=part.completionTokens??part.candidatesTokenCount??0;
+  acc.reasoningTokens+=part.reasoningTokens??part.thoughtsTokenCount??0;
+  acc.cacheReadTokens+=part.cacheReadTokens??0;
+  acc.cacheWriteTokens+=part.cacheWriteTokens??0;
+  acc.totalTokens=acc.promptTokens+acc.completionTokens+acc.reasoningTokens;
+  acc.lastUpdated=Date.now();return acc;
+}
+```
+
+成本：JSONL 落盘 30 行、LRU 50 行、截断 80 行、摘要 60 行。反例：别把 50 席全量多轮永久放内存不落盘——崩溃即丢；也别用 tiktoken 精确算 Claude/Gemini，用近似 tokenizer 或各厂 countTokens 接口更准。
+
+---
+
+## Q6 思考等级跨厂商映射
+
+**一句话结论**：内部只存 5 档 `off/low/medium/high/auto`＋可选 `budgetTokensOverride`；按模型元数据映射到各厂原参；不支持思考的模型直接隐藏控件，只支持开关的模型不显示三档。
+
+映射表：
+
+```ts
+统一档位 -> 各厂
+off:
+  openai-chat: reasoning_effort=none（o系/gpt-5支持；普通模型不传）
+  openai-responses: reasoning.effort=none
+  anthropic-legacy: 不传 thinking
+  anthropic-new: thinking省略（按模型默认；部分新模型默认无思考）
+  gemini-2.5: thinkingBudget=0（Flash 可；Pro 不一定能全关）
+  gemini-3: thinkingLevel=MINIMAL 或省略（部分型号不能彻底 off）
+  deepseek: 选 chat 模型而非 reasoner
+low:
+  openai: effort=low
+  anthropic-legacy: budget≈max(1024,maxTokens*0.1)
+  anthropic-new: adaptive+output_config.effort=low
+  gemini-2.5: budget≈1024~2048 或 -1 小; gemini-3: MINIMAL/LOW
+  deepseek: reasoner+低思维或仍用 chat
+medium:
+  openai: medium
+  anthropic-legacy: budget≈maxTokens*0.3; anthropic-new: effort=medium
+  gemini: 2.5 budget≈4096/-1; 3: MEDIUM/LOW
+high:
+  openai: high
+  anthropic-legacy: budget≈maxTokens*0.6（仍<maxTokens，最小1024）; new: effort=high/xhigh
+  gemini: 2.5 budget≈8192~0.6*max; 3: HIGH
+auto:
+  openai: 不传 effort 或 medium; responses: 不传让模型定
+  anthropic-new: adaptive; legacy: 给中档budget
+  gemini: thinkingBudget=-1
+```
+
+统一参数对象：
+
+```ts
+SeatReasoning {mode:'off'|'low'|'medium'|'high'|'auto'; budgetTokens?:number; showToUser:boolean;}
+```
+
+映射函数示例：
+
+```js
+function mapReasoning(protocol,model,seat){
+  const r=seat; const out={};
+  if(!seat.mode||seat.mode==='off'){
+    if(/o[0-9]|gpt-5/.test(model)) return protocol==='openai-responses'?{reasoning:{effort:'none'}}:{reasoning_effort:'none'};
+    return {}; // 普通模型不传思考
+  }
+  if(protocol==='openai-chat') return {reasoning_effort:{low:'low',medium:'medium',high:'high',auto:'medium'}[seat.mode]};
+  if(protocol==='openai-responses') return {reasoning:{effort:{low:'low',medium:'medium',high:'high',auto:'medium',off:'none'}[seat.mode]}};
+  if(protocol==='anthropic-messages'){
+    if(/(opus-4-[5-9]|sonnet-4-[5-9]|haiku-4-5|adaptive)/.test(model))
+      return {thinking:{type:'adaptive'}, output_config:{effort:{low:'low',medium:'medium',high:'high',auto:'medium'}[seat.mode]}};
+    const budget=seat.budgetTokens||1024;
+    return {thinking:{type:'enabled',budget_tokens:budget}};
+  }
+  if(protocol==='gemini-native'){
+    if(/gemini-3/.test(model)) return {thinkingConfig:{thinkingLevel:{low:'LOW',medium:'MEDIUM',high:'HIGH',auto:'HIGH',off:'MINIMAL'}[seat.mode]}};
+    const b=seat.budgetTokens??(seat.mode==='high'?8192:seat.mode==='medium'?4096:1024);
+    return {thinkingConfig:{thinkingBudget:seat.mode==='off'?0:(seat.mode==='auto'?-1:b)}};
+  }
+  return {};
+}
+```
+
+UI 降级：
+- `ModelInfo.reasoning.supported=false` →隐藏思考控件。
+- 只支持 on/off（如某些中转、本地模型）→显示“启用推理”开关，不显示 low/medium/high。
+- 支持 budget →高级里显示预算数字；支持 effort

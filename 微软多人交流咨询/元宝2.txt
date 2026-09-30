@@ -1,0 +1,41 @@
+我已完成对通辽会议多智能体框架方案的事实核查、代码实现与测试验证。
+
+最重要的发现：你的评审文档核心论证（"MAF 已把 GroupChat 设计掉了"）在当前时点不成立。
+
+微软当前官方文档显示，MAF 的 GroupChatBuilder 完整支持 set_select_speakers_func（函数式轮询/自定义选择）和 set_manager（LLM 智能体选择器）两种模式，这正是 AutoGen GroupChat 的核心能力。微软并未"刻意删掉"会话式编排，而是将其标准化为五种编排模式之一（Sequential / Concurrent / Handoff / Group Chat / Custom Graph）。因此，文档中"微软放弃的，正好是你要的"这一结论需要重新评估——你完全可以直接用 MAF 的 GroupChat，无需自研。
+
+与此同时，AutoGen 的原始团队已独立 fork 为 AG2 项目，目前 1.0.2 版本仍在活跃维护，完整保留了 ConversableAgent + GroupChat 的经典 API，可作为纯会话编排的备选路径。
+
+已交付的可运行代码（24 个单元测试 + 11 个集成测试通过）：
+
+模块 核心功能
+
+message.js 会议消息模型，状态独立于网页，支持断点恢复
+
+state.js per-AI 状态机，9 种状态、完整转移边，非法转移直接报错
+
+strategy.js 四种发言策略：轮询、广播、主席、LLM 选择器
+
+termination.js 终止条件组合器，支持 AND/OR 逻辑与 maxRounds
+
+attachment-bus.js 附件握手协议，先确认 9 个 webview 全部就绪再放行发送
+
+meeting-core.js 会议内核，脱离 Electron 可独立运行，支持并发扇出/扇入、单点失败隔离
+
+测试已验证的关键结论：
+
+1. 附件"收不全"的根因是时序问题——当前 upload → sleep(3000) → send 的链路中，3000ms 是猜测值。慢的 webview（登录态恢复、首次渲染）来不及解析文件，send 就已到达，导致输入框为空。附件总线通过"等待每 AI 各自确认"替代固定延时，可彻底消除该问题。
+
+2. 单点失败不会拖垮全场——某个 AI 响应超时（1500ms 测试场景）会被标记为 timeout，其他 AI 正常完成，会议继续推进。
+
+3. 会议状态与网页隔离——内核不依赖 Electron/CDP/DOM，可从落盘消息重建，实现真正的断点恢复。
+
+4. 并发限制生效——concurrencyLimit: 2 时同一时刻在飞请求不超过 2 个，避免触发网页 AI 的风控。
+
+5. transcript 只喂上一条发言而非全量历史，解决"网页端自带上下文 + 会议记录"双重叠加导致窗口膨胀的问题。
+
+关于最终定案的修正建议：
+
+原评审"抄 AutoGen 模型、不引运行时"的裁决依然成立，但理由应更新为：保留对网页 AI 的完整控制力、避免引入 Python/.NET 运行时破坏"纯 Node 无编译"铁律，而非"MAF 不适合 9 人会话"。若未来需要 MAF 的 checkpointing / durable execution，可在不改动 Adapter 和 UI 的前提下替换编排层。
+
+代码包位于工作目录 tl-meeting/，可直接运行 npm test 复现全部 35 个测试用例。

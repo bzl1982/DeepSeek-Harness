@@ -1,0 +1,163 @@
+已经成功收到了！ 这是一个非常典型且硬核的 Electron 聚合客户端（AI 矩阵轰炸） 的自动化控制问题。
+各大 AI 厂商的网页前端框架（React、Vue、Svelte 等）为了防自动化脚本（如 Puppeteer、Playwright），以及处理多行文本逻辑，对原生 DOM 的输入和事件进行了深度代理（如绑定了合成事件 SyntheticEvent），因此简单的 value = text、click() 极易失效。
+为了帮你彻底解决这个“AI 会议”广播不稳定的痛点，我把目前这 9 家 AI 网页版的底层 DOM 结构、状态触发机制以及最佳适配方案为你梳理出来：
+------------------------------
+## 一、 核心痛点攻克：如何让 React/Vue 认你的输入？
+很多网站你填了字，按钮却不亮，或者第二轮失效，是因为你只改变了 DOM，没有改变框架内部的 State。
+## 1. 对于 textarea（如 DeepSeek、ChatGPT、Kimi、通义千问等）
+必须绕过 React/Vue 的 Setter 拦截，手动触发 input 事件。通用最强注入代码：
+
+function setNativeValue(element, value) {
+  const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
+  const prototype = Object.getPrototypeOf(element);
+  const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+  
+  if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+    prototypeValueSetter.call(element, value);
+  } else if (valueSetter) {
+    valueSetter.call(element, value);
+  } else {
+    element.value = value;
+  }
+  // 必须加 bubbles: true 让 React 捕获到冒泡
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+## 2. 对于 contenteditable 元素（如 豆包、Gemini）
+不能直接改 innerText，要模拟完整的输入流或利用 document.execCommand（最稳妥，能完美触发内部状态）：
+
+function setEditableContent(element, text) {
+  element.focus();
+  // 选定所有内容并用命令替换，能完美触发框架的 Selection 和 State 更新
+  document.execCommand('selectAll', false, null);
+  document.execCommand('insertText', false, text);
+}
+
+------------------------------
+## 二、 9 大 AI 网页版精准选择器与发送策略 (2026年最新适配)
+针对你提到的 9 个 webview，以下是逐一击破的特征码和发送策略：
+## 1. DeepSeek (深度求索)
+
+* 输入框：其实它是一个 textarea，但它套在了很多层自定义组件里。
+* 选择器：#chat-input 或 textarea[placeholder*="解"]、textarea[placeholder*="Message"]
+* 发送按钮：右下角的圆圈图标，经常是 div 伪装的按钮。
+* 选择器：div[class*="send-button"]，或者直接对 textarea 触发 Enter 键（不加 Shift）。
+
+## 2. ChatGPT (OpenAI)
+
+* 输入框：#prompt-textarea（这是一个 contenteditable 的 div，带有 role="textbox"）。
+* 发送按钮：button[data-testid="send-button"]。
+* 策略：使用上面的 setEditableContent 注入，然后点击该 button 即可。
+
+## 3. Kimi (月之暗面)
+
+* 输入框：一个大 div 下包裹的 textarea。
+* 选择器：.chat-input textarea 或 textarea[placeholder*="Kimi"]
+* 发送按钮：是一个带有发送图标的 button 或 div。由于图标是 SVG，文本匹配会失效。
+* 选择器：button[class*="send"], div[class*="send-btn"]。
+
+## 4. 豆包 (字节跳动)
+
+* 输入框：绝对是一个 contenteditable="true" 的 div。
+* 选择器：[data-testid="chat_input_input"] 或 div[contenteditable="true"]
+* 发送按钮：button[data-testid="chat_input_send_button"]。
+* 警告：你提到的“创建项目”弹窗，可以在 DOM 加载完后通过判断其 aria-hidden 或特定 class 强制将其 style.display = 'none'。
+
+## 5. 通义千问 (阿里)
+
+* 输入框：textarea 元素。
+* 选择器：textarea[placeholder*="千问"]
+* 发送按钮：包裹着 SVG 的 div 或 button。
+* 选择器：div[class*="send-icon"], button[class*="submit"]。
+
+## 6. 腾讯元宝 (腾讯)
+
+* 输入框：textarea 或者是带有 role="textbox" 的 div。
+* 发送按钮：带有特定的 class 或标签。
+* 策略：你提到目前 GPT/元宝最稳定，可沿用当前逻辑，但建议加上 setNativeValue 兜底。
+
+## 7. Gemini (Google)
+
+* 输入框：重点！ Gemini 经常使用 Shadow DOM，普通 document.querySelector 根本穿透不过去！
+* 如何查找：需要递归查找 shadowRoot。
+   * 核心选择器：在穿透 shadow 后，寻找 gmat-text-input 或 div[contenteditable="true"]。
+* 发送按钮：button[aria-label*="Send"] 同样可能在 shadow DOM 内。
+
+## 8. 百度文心一言 (百度)
+
+* 输入框：第二轮失效是因为其输入框动态重构了解析组件（React Key 刷新导致原绑定的 DOM 失效）。
+* 选择器：每次发送前，必须重新执行获取最新的元素：div[class*="input-box"] textarea。
+* 发送按钮：div[class*="send-btn"]。
+
+## 9. Google 搜索
+
+* AI对话模式：默认进入普通的 google.com 只是网页搜索 [1]。若要直接进入其 AI（Gems/Search Labs）模式，你的 webview URL 应该直接加载：https://google.com 或者在搜索参数中带上 AI 标识。
+
+------------------------------
+## 三、 终极降维打击方案：不再苦哈哈找元素
+如果你不想每一个 AI 变版都去维护一套选择器，推荐两套在 Electron 下极度稳定的高级自动化做法：
+## 方案 A：Electron 的键盘事件直接模拟（最推荐，彻底免去挑元素、找按钮的痛苦）
+既然你的 9 个 webview 都各占一格，你可以利用 Electron 的 webview.focus() 配合模拟真实的操作系统按键输入。
+
+   1. 当用户在底部输入框点击发送时：
+   2. 循环 9 个 webview：
+   * 执行 webview.focus() 让当前 AI 获得焦点。
+      * 调用 webview.sendInputEvent 模拟全选删除旧文字（Ctrl+A -> Backspace）。
+      * 调用 webview.insertText(text) 像打字机一样把文本硬塞进去（这会直接触发浏览器底层的输入事件，100% 触发 React/Vue 状态更新）。
+      * 延时 50ms，调用 webview.sendInputEvent 发送一个 Enter 按键事件。
+   
+// 伪代码示例async function broadcastMessage(text) {
+  for (const webview of allWebviews) {
+    webview.focus();
+    // 强制聚焦到它的输入框（可以通过一次简单的 click 页面中心或最后可见输入框兜底）
+    webview.executeJavaScript(`
+      const input = document.querySelector('textarea, [contenteditable="true"]');
+      if(input) input.focus();
+    `);
+    
+    // 清空并写入
+    webview.insertText(text); 
+    
+    // 模拟按下 Enter
+    webview.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+    webview.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+  }
+}
+
+## 方案 B：借鉴 Playwright/Puppeteer 的底层逻辑
+在 webview 中注入一段“万能寻找器”，Playwright 之所以稳，是因为它内置了 locator('internal:role=textbox') 的机制。
+你可以写一个强力的递归寻框函数，专门穿透 Shadow DOM 和 iframe：
+
+function findDeepInput(root = document) {
+  // 1. 尝试直接找
+  const input = root.querySelector('textarea:not([type="hidden"]), div[contenteditable="true"], [role="textbox"]');
+  if (input && input.offsetParent !== null) return input;
+
+  // 2. 穿透 Shadow DOM
+  const allElements = root.querySelectorAll('*');
+  for (const el of allElements) {
+    if (el.shadowRoot) {
+      const found = findDeepInput(el.shadowRoot);
+      if (found) return found;
+    }
+  }
+
+  // 3. 穿透 Iframe
+  const iframes = root.querySelectorAll('iframe');
+  for (const iframe of iframes) {
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      const found = findDeepInput(doc);
+      if (found) return found;
+    } catch (e) { /* 跨域限制安全忽略 */ }
+  }
+  return null;
+}
+
+------------------------------
+为了帮你的客户端（DeepSeek Harness）把逻辑调得更精细，你可以告诉我：
+
+* 目前在多路并发回复时，你的右下角发送按钮变灰/等待框架响应是怎么处理的？
+* 需不需要我为你写一段完整的、可以直接注入到 webview preload.js 里的多网适配发送脚本？
+
+

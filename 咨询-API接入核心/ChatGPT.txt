@@ -1,0 +1,2570 @@
+### 2026-09-25 16:04:21 · OpenAI-ChatGPT · 网页采集
+
+(function vTe(e,t){e?.addEventListener(`input`,()=>{performance.mark(t)},{once:!0})})(document.currentScript?.parentElement,"composer.first-prompt-input");window.__oai_logHTML?window.__oai_logHTML():window.__oai_SSR_HTML=window.__oai_SSR_HTML||Date.now();requestAnimationFrame((function(){window.__oai_logTTI?window.__oai_logTTI():window.__oai_SSR_TTI=window.__oai_SSR_TTI||Date.now()}))
+
+---
+### 2026-09-25 16:04:23 · OpenAI-ChatGPT · 网页采集
+
+# 咨询案（第 1 轮）· API 接入核心：多协议模型接入 + 50 智能体席位 + 对话界面设计
+
+> 这份稿子是给外部 AI 读的，自包含，不需要任何前置上下文。
+> 提问者是单人开发者，正在做一个 Electron 桌面应用「多 AI 会议测试台」（内部名 meeting-lab）：
+> 一个窗口里并排跑 9 个网页版 AI（webview），外加若干 API 模型席位，人工编排多 AI 协作。
+> 本轮核心疑问是：**从零设计"API 接入核心"（设置界面 + 多协议 + 模型列表拉取 + 50 席位对话界面），
+> 请给字段级设计与可运行代码，并明确成本与反例。**
+
+---
+
+### §0 你只需要回答这 9 个问题
+
+| # | 问题 | 期望产出 |
+|---|------|---------|
+| Q1 | 多协议支持：内置哪几个协议适配器才算"覆盖全世界主流"？OpenAI Chat Completions / OpenAI Responses / Anthropic Messages / Google Gemini 原生 / Ollama / 其他？中转站（one-api、new-api、OpenRouter 等）统一按 OpenAI 兼容处理是否足够？ | 一个协议适配器的**字段级接口设计**（方法签名 + 返回结构），每个协议列"差异点清单" |
+| Q2 | 模型列表自动拉取：`GET /v1/models` 各协议的响应差异？拉取失败/中转站返回异常列表时的降级策略？模型的**上下文窗口大小、多模态能力、是否支持推理**这些元数据没有统一 API，从哪拿最靠谱？ | 拉取+缓存+降级的流程图或伪代码；元数据表的来源建议 |
+| Q3 | 密钥本地存储：Electron `safeStorage` 加密后存本地文件，vs 明文 YAML，vs keytar（系统凭据管理器）？单机单用户场景哪个最稳？ | 明确推荐一种 + 理由 + "什么时候不该用"的反例 |
+| Q4 | **50 个席位**的并发与性能：50 个会话同时流式输出的 UI 渲染（DOM 更新风暴）怎么扛？50 个并发 HTTP 流要不要本地信号量限流？信号量多大合适（考虑各家 rate limit 不同）？ | 并发控制与渲染节流的字段级设计 + 每方案成本（内存/延迟） |
+| Q5 | 会话上下文管理：多轮历史存哪（内存/JSON/SQLite）？接近上下文窗口上限时的策略（截断 / 摘要 / 用户手动）？SSE 的 usage 字段各协议差异（有的最后一块才有、有的要另发请求）怎么统一累计？ | 存储结构字段级设计 + 上下文用量计算方案 |
+| Q6 | **思考等级跨厂商映射**：OpenAI `reasoning_effort`(low/medium/high)、DeepSeek 用不同模型（reasoner）、Claude `thinking.budget_tokens`、Gemini `thinkingConfig`。统一的"思考等级"参数怎么抽象映射到各家？模型不支持时 UI 是隐藏还是置灰？ | 映射表（统一参数 → 各协议请求体字段）+ UI 降级建议 |
+| Q7 | 权限管理：提问者说的"权限管理"在单机场景合理拆解为哪些维度？（候选：能力开关——文件上传/图片/联网/编辑系统提示词；配额——每席位 token 上限；还是别的？） | 最小可用权限模型的字段级设计，**明确指出哪些维度是过度设计** |
+| Q8 | 对话界面布局：现有测试台是「顶部三排控制区 + N 宫格（每格一个 webview）」。50 个 API 席位的**对话窗**怎么摆？点开席位格子在格子内变成对话窗？还是独立对话面板？还是 Tab？输入框带"+"（添加文件/图片）、右侧栏（上下文用量/思考等级/模型选择器）的布局给个 ASCII 示意。 | 布局示意 + 与现有宫格的关系方案 + 理由 |
+| Q9 | 附件注入的协议差异：图片（OpenAI `image_url` base64 / Anthropic `image source` / Gemini `inlineData`）、文本文件、**PDF**（各家支持差异大）——统一的附件抽象怎么设计？ | 附件抽象的字段级设计 + 每协议的映射表 |
+
+**硬性要求（对每个回答生效）：**
+1. 每个建议必须说**成本**（代码量级、维护负担、性能开销）；
+2. 每个建议必须给**"什么时候不该这么做"的反例**；
+3. 结论必须给**字段级设计**（字段名+类型+语义），不要只给概念；
+4. 关键结论给出**可运行的 Node.js 最小代码**（能粘贴运行验证，不要伪代码）；
+5. Q1、Q4、Q6、Q7 是提问者最想先定的，请优先保证质量。
+
+---
+
+### §1 一句话现状
+
+API 通道已有"能发单条消息收流式回复"的最小内核（OpenAI 兼容协议硬编码），但**没有设置界面、没有多协议、没有模型列表拉取、没有多轮会话、没有对话 UI、席位数量跟着配置文件走（当前 3 家 3 席）**——提问者说"API 接入核心没写"，指的就是这整一层。
+
+### §2 现状事实清单（已核对源码，供你了解上下文，不需要重复回答）
+
+技术栈：Electron 33 + 原生 JS（无前端框架），主窗口 renderer 有 Node 集成（可直接 `require`），`<webview>` 跑 9 个网页版 AI。
+
+1. **协议内核已有一个**：`adapters/api-adapter.js`（397 行）实现了 OpenAI `/chat/completions` + SSE 流解析：
+   - 请求体硬编码 `{ model, messages:[{role:'user',content}], stream:true }`（L159-165）——**单条消息，无历史**；
+   - SSE 手动解析，`delta.content || delta.reasoning_content` 都会累积（L219-224）；
+   - 附件内联：图片转 base64 data URL、文本类直接拼进 prompt，单文件上限 4MB，PDF/docx 明确报 `UNSUPPORTED_FORMAT_FOR_API`（L39-51, L100-142）；
+   - 错误分类 AUTH_FAILED / RATE_LIMITED / SERVER_ERROR（L184-195）；
+   - 超时用 AbortController（L167-168）。
+2. **配置只读、来源单一**：`adapters/dsh-config.js`（329 行）从 DSH 客户端的 `~/.dsh/settings.yaml` + `.credentials.yaml` 读提供方（L219-293）；内置端点表只有 4 家（deepseek / agne / google / openai，L194-199）；模型列表来自 yaml 的 `models` 字段或硬编码 DEFAULT_MODELS（L251-253）——**没有 /v1/models 拉取**。这个目录属于另一个客户端程序，meeting-lab 只是"蹭读"。
+3. **席位机制**：shell/index.html L534-545，`API_CANDIDATES` = 每个有密钥的提供方取**第一个模型**生成一个候选席位（当前实测 agne/google/deepseek 共 3 席）；灯箱点亮才入会；API 席位格子是只读输出区（`.txt`），**没有输入框、没有会话历史**。
+4. **发送通路已接**：人工分发甲板可对 API 席位发文本（`rawAdapter.sendText`，L1352-1353）。
+5. **归档已有**：网页版 AI 的回复已自动归档到 `replies/<席位名>.md`（一个窗口一个文件、追加式）；API 席位的回复尚未接归档。
+6. **当前实测可用提供方**：agne（12 模型）、google（gemini-3.6-flash 等）、deepseek（chat/reasoner），密钥都在本地凭据文件里。
+
+### §3 用户的真实场景 / 原话
+
+用户原话（照录）：
+
+> "我们的API接入核心不是没写呢？因为我没看见API的设置界面。要兼容全世界的主流模型，官方API,自定义API，中转API，可以自动下载模型列表那种，反正所有协议都支持，可以添加50个对话窗口，相当于50个智能体，设计一个对话界面，输入框里有添加文件和图片的十字，还有权限管理，右侧是上下文使用情况，思考等级，模型选择器，还有什么技术要求，规格要求，你写一个求助案，我咨询回来给你，不用你思考。"
+
+拆成需求表（逐条标注现状能否承接）：
+
+| # | 需求 | 现状 |
+|---|------|------|
+| R1 | 设置界面：添加/编辑官方 API、自定义 API、中转 API | ❌ 完全没有，配置只能手改另一个程序的 yaml |
+| R2 | 自动下载模型列表 | ❌ 无 /v1/models 拉取 |
+| R3 | "所有协议都支持" | ⚠️ 只有 OpenAI 兼容一种，硬编码 |
+| R4 | 最多 50 个对话窗口（50 个智能体） | ❌ 现在每提供方 1 席、无法增删；无 50 席管理 |
+| R5 | 对话界面：输入框带"+"（加文件/图片） | ❌ API 席位无输入框 |
+| R6 | 权限管理 | ❌ 无（含义待澄清 → Q7） |
+| R7 | 右侧：上下文使用情况 | ❌ 无多轮会话、无 usage 累计 |
+| R8 | 思考等级 | ⚠️ 能收 reasoning_content，但发不了任何思考参数 |
+| R9 | 模型选择器 | ⚠️ 模型列表静态，无切换 UI |
+| R10 | 人工分发甲板仍要能群发这 50 席 | ✅ 通路已接（需扩展到新席位管理） |
+
+### §4 我识别出的缺口（供证伪或确认）
+
+| # | 缺口 | 证据 | 影响 |
+|---|------|------|------|
+| G1 | 无独立配置存储与设置界面，蹭读别的程序的配置文件 | dsh-config.js L224-242 只读 ~/.dsh | R1 完全空白；用户改配置要动另一个软件 |
+| G2 | 协议抽象层不存在，OpenAI 兼容硬编码在 397 行单文件里 | api-adapter.js L174 `fetch(url + '/chat/completions')` | R3：Anthropic/Gemini 原生无法接入 |
+| G3 | 无多轮会话：每次请求 messages 只有一条 user | api-adapter.js L161 | R7：上下文用量无从谈起 |
+| G4 | 模型列表静态且"每家只取第一个模型" | index.html L537-541 | R2/R9：12 模型的 agne 只能当 1 席 |
+| G5 | 无 50 席位的创建/命名/分组/持久化管理 | 无任何相关代码 | R4 |
+| G6 | 无对话 UI（输入框/附件/参数栏） | API 席位格子只有只读 .txt | R5/R7/R8/R9 |
+| G7 | usage 未落库（SSE 里解析了但只透传不累计） | api-adapter.js L225 | R7 的数据基础 |
+
+**请特别审查**：以上缺口有没有我**看漏的**（比如并发限流、密钥轮换、流式中断续传）？有的话在回答里单列"你漏掉的"。
+
+### §5 问题清单（展开版：我的倾向 + 我的疑问）
+
+- **Q1 协议范围**：我倾向内置 4 个适配器：`openai-chat`（覆盖 95% 中转站）、`anthropic-messages`、`gemini-native`、`openai-responses`（OpenAI 新接口 + 推理模型 o 系/gpt-5 系好像都在往这迁）。疑问：OpenAI Responses API 是否值得现在支持？中转站对 `/v1/models` 的实现是否普遍可靠？
+- **Q4 并发**：我倾向"全局信号量默认 6 并发 + 按提供方二级限流（各自 rate limit）"，渲染用"每席位队列 + rAF 合帧"。疑问：50 路流式同时更新 DOM，是否必须虚拟化？Electron renderer 一个页面 50 个流有没有实测坑？
+- **Q6 思考等级**：我倾向统一为三档 `off/standard/max`，映射到各家；不支持思考的模型直接隐藏该控件。疑问：Claude 的 budget_tokens 是连续值，硬压成三档是否丢能力？
+- **Q7 权限**：我倾向最小设计 = 每席位 4 个开关（允许传文件 / 允许传图片 / 允许编辑系统提示词 / 每会话 token 上限）。疑问：单机单用户搞"角色/管理员"是不是过度设计？
+- **Q8 布局**：我倾向"席位格子点击后原地变成对话窗（复用宫格，保持每格等大）+ 参数栏收进格子右侧 240px"，避免引入第二套窗口体系。疑问：50 席时宫格滚动 + 分组折叠是否够用？
+
+### §6 我的初步草案（请当靶子批判——方向错了请直接推翻，不要只做增量修补）
+
+```text
+┌─ shell/index.html（renderer，有 Node 集成）
+│   ├─ 设置面板（新）: 提供方 CRUD + 密钥输入 + 「拉取模型列表」按钮 + 测试连接
+│   ├─ 席位管理（新）: 最多 50 个 api 席位；每席 = { provider, model, 系统提示词, 参数, 权限 }
+│   └─ 对话窗（新）: 宫格格子内切换「网页view ⇄ API对话窗」；输入框+➕附件；右侧参数栏
+│        （上下文用量条 / 思考等级 / temperature / 模型选择器）
+│
+├─ core/api-registry.js（新）: 提供方与席位的持久化（JSON 文件 + 密钥 safeStorage 加密）
+│     providers.json: [{ id, name, protocol, baseURL, apiKeyEnc, modelCache[], updatedAt }]
+│     seats.json:     [{ seatId, providerId, model, systemPrompt, params{temp,maxTokens,
+│                       reasoning}, perms{files,images}, title, createdAt }]
+│
+├─ core/protocols/（新）: 协议适配器接口
+│     listModels(provider) → [{ id, contextWindow?, multimodal? }]
+│     chatStream(provider, seat, messages, params, { onDelta, signal })
+│       → 统一事件: delta / usage / done / error
+│     内置: openai-chat / openai-responses / anthropic-messages / gemini-native
+│
+└─ core/session-store.js（新）: 每席位多轮历史（messages 内存 + 落盘 JSON），
+      usage 累计（prompt/completion/total 分列），接近上限时触发策略（截断/提醒）
+```
+
+我自认为的三个薄弱点（请重点攻击）：
+1. 密钥用 Electron safeStorage 加密存 JSON——safeStorage 在 Windows DPAPI 不可用时的降级？
+2. 50 席 × 多轮历史全放内存会不会爆？要不要立刻上 SQLite？
+3. 对话窗塞进宫格格子（和 webview 互斥显示）会不会把交互搞复杂？
+
+### §7 交付格式要求
+
+1. 按 §0 的 Q1~Q9 编号回答；每题先给**一句话结论**，再给依据与代码。
+2. 所有代码：Node.js 18+ / Electron 33 环境可运行，标注"需要哪个 npm 包"（尽量零依赖，fetch 内置）。
+3. 最后给一张**建议实施顺序表**（每步：做什么 / 为什么是这个顺序 / 大致代码量）。
+4. 如果你认为我的 §6 方案**方向就错了**（例如应该直接上 OpenRouter 统一网关、或用现成库如 LiteLLM / openai 官方 SDK），请直接推翻并给出你的方案——不要客气。
+
+### 附：技术栈（供参考，不影响设计建议）
+- Electron 33（Chromium 130，Node 内置 fetch/AbortController/ReadableStream 可用）
+- 前端原生 JS + CSS，无框架、无构建步骤；单文件 shell/index.html（约 2000 行）
+- 现有代码零 npm 运行时依赖（除 Electron 本体）；倾向保持零依赖或只用极成熟的包
+- 单机 Windows 11，单用户，无需多用户/网络服务
+
+---
+### 2026-09-25 16:04:39 · OpenAI-ChatGPT · 网页采集
+
+我会把这轮当作一次“架构定版审查”：先把协议、并发、思考参数、权限四个最关键的地基定死，再补会话、附件和 UI。
+
+---
+### 2026-09-25 16:04:57 · OpenAI-ChatGPT · 网页采集
+
+已经确认一个关键点：你草案里的“统一模型元数据”不能完全靠 /models；Anthropic 现在已经暴露能力元数据，而 OpenAI 的模型接口仍主要是基础身份信息，所以必须有自己的能力注册/覆盖层。
+
+---
+### 2026-09-25 16:07:30 · OpenAI-ChatGPT · 网页采集
+
+这轮我会直接按“可落地架构定版”来回答。先给你一个总判断：
+
+你的 §6 方向没有根本性错误，但有 4 个地方我会明确推翻：不要把“模型元数据”当成 /models 的必然产物；不要用 off/standard/max 做唯一思考抽象；不要把 50 个 API 席位的格子直接变成 50 个独立聊天窗；不要把密钥安全降级为明文。
+
+另外，OpenAI Responses API 现在值得做：官方当前已经把 Responses 作为推荐主接口，并且最新模型能力表同时列出 Responses 与 Chat Completions；但第三方中转仍应默认走 OpenAI-compatible Chat Completions。
+OpenAI Developers
++1
+
+Q1｜多协议支持：到底内置哪些协议？
+一句话结论
+
+V1 内置 5 个适配器：openai-chat、openai-responses、anthropic-messages、gemini-native、ollama；所有 one-api / new-api / OpenRouter / 大量中转站默认归入 openai-chat，不要为每个中转站写适配器。
+
+OpenRouter 官方就是直接提供 /api/v1/chat/completions，而且明确支持把 OpenAI SDK 指向它的 baseURL；new-api 也明确按请求头提供 OpenAI / Anthropic / Gemini 等格式。
+OpenRouter
++2
+OpenRouter
++2
+
+但“协议一样”不等于“能力一样”，所以必须把协议适配和模型能力分开。
+
+我建议的协议层
+core/
+└─ protocols/
+   ├─ openai-chat.js
+   ├─ openai-responses.js
+   ├─ anthropic-messages.js
+   ├─ gemini-native.js
+   └─ ollama.js
+
+未来再加：
+
+azure-openai.js
+bedrock.js
+vertex.js
+mistral-native.js
+
+不要现在一次性实现。
+
+统一接口
+
+我建议直接定成下面这个接口：
+
+JavaScript
+/**
+ * ProtocolAdapter
+ *
+ * provider = 连接配置
+ * model = 模型元数据
+ * request = 一次生成请求
+ */
+
+class ProtocolAdapter {
+  get id() {
+    throw new Error('not implemented');
+  }
+
+  /**
+   * @returns Promise<{
+   *   ok: boolean,
+   *   latencyMs: number,
+   *   server?: string,
+   *   error?: {
+   *     code: string,
+   *     message: string
+   *   }
+   * }>
+   */
+  async testConnection(provider, signal) {
+    throw new Error('not implemented');
+  }
+
+  /**
+   * @returns Promise<{
+   *   models: ModelInfo[],
+   *   nextCursor?: string|null,
+   *   source: 'remote',
+   *   fetchedAt: string
+   * }>
+   */
+  async listModels(provider, options = {}) {
+    throw new Error('not implemented');
+  }
+
+  /**
+   * 可选。
+   * 某些协议有官方 token counting API。
+   */
+  async countTokens(provider, request, signal) {
+    return null;
+  }
+
+  /**
+   * 可选。
+   * 对需要先上传文件的协议使用。
+   */
+  async uploadAttachment(provider, attachment, signal) {
+    throw new Error('NOT_SUPPORTED');
+  }
+
+  /**
+   * 核心接口
+   *
+   * 返回 AsyncIterable<NormalizedEvent>
+   */
+  async *streamChat(provider, request, signal) {
+    throw new Error('not implemented');
+  }
+}
+统一请求结构
+
+不要把 messages 直接做成 OpenAI 格式。
+
+应该是你自己的格式：
+
+JavaScript
+{
+  requestId: "req_xxx",
+  sessionId: "sess_xxx",
+  seatId: "api-17",
+
+  model: {
+    id: "gpt-6-sol"
+  },
+
+  systemPrompt: "You are the architecture reviewer.",
+
+  messages: [
+    {
+      id: "msg_1",
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "帮我审查这个架构"
+        },
+        {
+          type: "attachment",
+          attachmentId: "att_abc"
+        }
+      ],
+      createdAt: "2026-09-25T08:00:00Z"
+    }
+  ],
+
+  parameters: {
+    temperature: null,
+    topP: null,
+    maxOutputTokens: 8000,
+
+    reasoning: {
+      mode: "level",
+      level: "high"
+    }
+  },
+
+  tools: {
+    mode: "none"
+  }
+}
+
+协议适配器再转换。
+
+统一事件结构
+
+这个尤其重要。
+
+不要让 renderer 知道：
+
+OpenAI delta
+Anthropic content_block_delta
+Gemini candidates
+Ollama message.content
+
+renderer 只认识：
+
+JavaScript
+{
+  type: "text-delta",
+  requestId: "req_123",
+  seatId: "api-17",
+  seq: 31,
+  text: "这是新增文本"
+}
+
+完整定义：
+
+JavaScript
+{
+  type:
+    "text-delta" |
+    "reasoning-delta" |
+    "tool-call" |
+    "usage" |
+    "done" |
+    "error",
+
+  requestId: string,
+  sessionId: string,
+  seatId: string,
+
+  seq: number,
+  ts: number,
+
+  text?: string,
+
+  usage?: {
+    inputTokens?: number,
+    outputTokens?: number,
+    reasoningTokens?: number,
+    cachedInputTokens?: number,
+    totalTokens?: number
+  },
+
+  finishReason?: string,
+
+  error?: {
+    code: string,
+    message: string,
+    retryable: boolean,
+    status?: number
+  },
+
+  rawType?: string
+}
+各协议真正的差异
+Adapter	主要接口	最大差异
+openai-chat	/v1/chat/completions	OpenAI-compatible，覆盖中转站最多
+openai-responses	/v1/responses	新输入结构、reasoning、file/input item、response events
+anthropic-messages	/v1/messages	content block、thinking、system 独立字段
+gemini-native	generateContent / streamGenerateContent	contents/parts 结构、inlineData、thinking config
+ollama	/api/chat	本地 HTTP、JSON streaming、模型能力需 /api/show
+Azure	OpenAI 风格但鉴权/URL不同	后续做
+Bedrock	AWS SigV4 + event stream	单独 adapter
+Vertex	Google auth + endpoint	单独 adapter
+
+OpenAI 当前官方文档把 Responses 放在推荐路径上，并且新的输入可以直接使用文本、图像、文件等 input items。
+OpenAI Developers
++2
+OpenAI Developers
++2
+
+Anthropic 的 Messages API 也是独立结构，不应该强行“伪装成 OpenAI”。
+Claude Platform
+
+Q1 最小可运行代码：OpenAI-compatible SSE
+
+下面这个可以直接保存为 test-openai-chat.mjs。
+
+npm：0 个。
+
+JavaScript
+const baseURL =
+  process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+
+const apiKey = process.env.OPENAI_API_KEY;
+const model = process.env.OPENAI_MODEL || "gpt-5";
+
+if (!apiKey) {
+  throw new Error("Missing OPENAI_API_KEY");
+}
+
+async function* streamChat() {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => controller.abort(), 120000);
+
+  try {
+    const response = await fetch(
+      `${baseURL.replace(/\/$/, "")}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: "请用三句话介绍一下通辽会议。"
+            }
+          ],
+          stream: true,
+          stream_options: {
+            include_usage: true
+          }
+        }),
+        signal: controller.signal
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`HTTP ${response.status}: ${body}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      buffer += decoder.decode(value, {
+        stream: true
+      });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+
+        if (!line.startsWith("data:")) continue;
+
+        const payload = line.slice(5).trim();
+
+        if (payload === "[DONE]") {
+          return;
+        }
+
+        const json = JSON.parse(payload);
+
+        if (json.usage) {
+          yield {
+            type: "usage",
+            usage: {
+              inputTokens: json.usage.prompt_tokens,
+              outputTokens: json.usage.completion_tokens,
+              totalTokens: json.usage.total_tokens,
+              reasoningTokens:
+                json.usage.completion_tokens_details
+                  ?.reasoning_tokens
+            }
+          };
+        }
+
+        const delta = json.choices?.[0]?.delta;
+
+        if (!delta) continue;
+
+        if (delta.content) {
+          yield {
+            type: "text-delta",
+            text: delta.content
+          };
+        }
+
+        if (delta.reasoning_content) {
+          yield {
+            type: "reasoning-delta",
+            text: delta.reasoning_content
+          };
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+for await (const event of streamChat()) {
+  console.log(event);
+}
+
+OpenAI 的 Chat Completions streaming 可以通过 stream_options.include_usage 得到最后一个 usage chunk；Responses 则使用自己的 streaming event 类型。
+OpenAI Developers
++1
+
+成本
+
+V1 五个 adapter 大约：
+
+接口 + registry                 250~400 LOC
+OpenAI Chat                     180~300
+OpenAI Responses                220~350
+Anthropic                       220~350
+Gemini                          220~350
+Ollama                          150~250
+
+大约 1,200~2,000 LOC。
+
+维护重点不是“代码有多少”，而是厂家 API 改动。
+
+什么时候不该这么做
+
+不要为了追求“协议大全”一口气加入 Bedrock、Vertex、Azure、Mistral、Cohere、xAI 原生协议。
+
+反例：
+
+一个只用 3 个 API 的单机用户，结果一次性写 12 个 adapter，后面任何一次协议变更都会增加测试矩阵，开发量反而超过核心会议系统。
+
+Q2｜模型列表自动拉取与模型元数据
+一句话结论
+
+模型列表必须“远端拉取 + 本地缓存 + 手工模型补充”，而 context window / multimodal / reasoning 不能全部相信 /models，必须采用“API → 官方模型目录 → 本地 override”的分层元数据。
+
+现在的差异已经非常明显：
+
+OpenAI /models 主要给模型身份信息，例如 id / created / owned_by；模型能力要去官方模型目录查看。
+OpenAI Developers
++1
+
+Anthropic 当前 /v1/models 已经直接返回 capabilities、max_input_tokens、max_tokens 等丰富信息。
+Claude Platform
+
+Gemini 的 models.list 也专门提供模型信息、token limits、支持功能和分页。
+Google AI for Developers
+
+Ollama 则是 /api/tags + /api/show。
+GitHub
+
+统一 ModelInfo
+
+建议：
+
+JavaScript
+{
+  id: "gpt-6-sol",
+
+  displayName: "GPT-6 Sol",
+
+  providerId: "openai-main",
+  protocol: "openai-responses",
+
+  contextWindow: 1050000,
+  maxOutputTokens: 128000,
+
+  modalities: {
+    input: ["text", "image", "file"],
+    output: ["text"]
+  },
+
+  capabilities: {
+    streaming: true,
+    vision: true,
+    pdf: true,
+    tools: true,
+    structuredOutput: true,
+
+    reasoning: true,
+
+    reasoningLevels: [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+
+  pricing: {
+    inputPerMillion: null,
+    outputPerMillion: null
+  },
+
+  source: "api",
+  confidence: "high",
+
+  fetchedAt: "2026-09-25T08:20:00Z",
+
+  raw: {}
+}
+
+注意这几个字段：
+
+source:
+  api
+  official-catalog
+  local-override
+  inferred
+
+confidence:
+  high
+  medium
+  low
+
+这是非常值得加的。
+
+模型缓存流程
+点击“拉取模型”
+        │
+        ▼
+adapter.listModels()
+        │
+        ├─ HTTP失败 ───────► 旧缓存继续可用
+        │
+        ├─ HTTP 200 + 合法列表
+        │                     │
+        │                     ▼
+        │                normalize
+        │                     │
+        │                     ▼
+        │                enrich metadata
+        │                     │
+        │                     ▼
+        │                原子写缓存
+        │
+        └─ HTTP 200 + 空/异常
+                              │
+                              ▼
+                         不覆盖旧缓存
+一个很容易被忽略的反例
+
+中转站：
+
+http
+HTTP 200
+{
+  "data": []
+}
+
+如果你直接：
+
+JavaScript
+models = remote.data;
+save(models);
+
+用户原来有 30 个模型，瞬间变成 0 个。
+
+正确策略：
+
+JavaScript
+if (remoteModels.length === 0 && cachedModels.length > 0) {
+  markAsSuspicious();
+  keepCache();
+}
+
+而且：
+
+旧模型即使已经从远端消失，也不要立刻从席位删除。
+
+应该：
+
+AVAILABLE
+STALE
+UNAVAILABLE
+MANUAL
+
+让原来的席位继续存在，只是提示“模型当前不可用”。
+
+成本
+
+约：
+
+model-registry       250~400 LOC
+cache                 150~250
+metadata enrichment   150~250
+
+总计 550~900 LOC。
+
+什么时候不该这么做
+
+如果你只是做一个“一次性 API 调试器”，模型列表每天刷新一次没有意义。
+
+但你的通辽会议是长期运行的 50 智能体系统，这个缓存层是值得的。
+
+Q3｜密钥怎么存？
+一句话结论
+
+Windows 11 单机单用户：推荐 Electron.safeStorage + 本地 JSON；不推荐明文 YAML，也不推荐为了“更专业”引入已归档的 keytar。
+
+Electron 当前官方文档说明 Windows 上 safeStorage 使用 DPAPI；其保护边界是“同一 Windows 用户仍有较强访问能力”，并不是防本机同用户恶意进程的绝对保险。
+Electron
+
+另外，原始 node-keytar 仓库已经在 2022 年归档，当前 v7.9.0 也是老项目。
+GitHub
++1
+
+所以你这个项目没必要再背一个 native addon。
+
+我建议的结构
+
+不要：
+
+JSON
+{
+  "apiKeyEnc": "xxxx"
+}
+
+塞进 provider 本身。
+
+改成：
+
+providers.json
+credentials.enc.json
+sessions/
+attachments/
+providers.json
+JavaScript
+{
+  "id": "provider_openai",
+  "name": "OpenAI 官方",
+
+  "protocol": "openai-responses",
+
+  "baseUrl": "https://api.openai.com/v1",
+
+  "credentialId": "cred_001",
+
+  "models": [],
+
+  "createdAt": "...",
+  "updatedAt": "..."
+}
+credentials.enc.json
+JavaScript
+{
+  "version": 1,
+
+  "credentials": {
+    "cred_001": {
+      "type": "api-key",
+      "cipher": "electron-safe-storage",
+      "data": "BASE64...",
+      "updatedAt": "..."
+    }
+  }
+}
+最重要的一条
+
+safeStorage 不可用时，不要自动降级到明文。
+
+流程应该：
+
+safeStorage available
+        │
+        ├─ yes → 保存
+        │
+        └─ no
+            │
+            ├─ 已存在密钥 → 本次可临时内存使用
+            │
+            └─ 新增密钥 → 禁止持久化
+                         提示“安全存储不可用”
+
+不要：
+
+JavaScript
+if (!safeStorageAvailable) {
+    fs.writeFileSync("api-key.txt", key);
+}
+Electron 33 的兼容问题
+
+Electron 当前官方文档已经推荐异步 encryptStringAsync/decryptStringAsync，但你的项目现在锁的是 Electron 33，所以我建议：
+
+先做一层 SecretStore 抽象，不让业务代码直接调用 safeStorage。
+
+这样：
+
+JavaScript
+const secretStore = new SecretStore();
+
+await secretStore.set("cred_001", apiKey);
+
+以后 Electron 升级后内部换 async，不需要动 registry。
+
+Electron 33 可用的最小实现
+JavaScript
+const { app, safeStorage } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+
+class SecretStore {
+  constructor() {
+    this.file = path.join(
+      app.getPath("userData"),
+      "credentials.enc.json"
+    );
+  }
+
+  ensureReady() {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error(
+        "CREDENTIAL_STORAGE_UNAVAILABLE"
+      );
+    }
+  }
+
+  load() {
+    if (!fs.existsSync(this.file)) {
+      return {
+        version: 1,
+        credentials: {}
+      };
+    }
+
+    return JSON.parse(
+      fs.readFileSync(this.file, "utf8")
+    );
+  }
+
+  save(data) {
+    const tmp = `${this.file}.tmp`;
+
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify(data, null, 2),
+      "utf8"
+    );
+
+    fs.renameSync(tmp, this.file);
+  }
+
+  set(id, secret) {
+    this.ensureReady();
+
+    const data = this.load();
+
+    const encrypted =
+      safeStorage.encryptString(secret);
+
+    data.credentials[id] = {
+      type: "api-key",
+      cipher: "electron-safe-storage",
+      data: encrypted.toString("base64"),
+      updatedAt: new Date().toISOString()
+    };
+
+    this.save(data);
+  }
+
+  get(id) {
+    this.ensureReady();
+
+    const data = this.load();
+    const record = data.credentials[id];
+
+    if (!record) return null;
+
+    const buffer = Buffer.from(
+      record.data,
+      "base64"
+    );
+
+    return safeStorage.decryptString(buffer);
+  }
+}
+
+npm：0。
+
+成本
+
+约 100~200 LOC。
+
+什么时候不该这么做
+
+如果以后你要做：
+
+同一账号跨 20 台电脑同步 API key
+
+那 safeStorage + 本地文件 就不够了。
+
+但你的现状是单机单用户，完全没有必要上云凭据中心。
+
+Q4｜50 席并发 + 50 路流式 DOM
+一句话结论
+
+50 路流可以做，但“50 路 HTTP 全开 + 每个 token 立即改 DOM”不能做；我建议全局 8 个生成并发、默认单 provider 2 个，并且只对消息内容做 20~30 FPS 合帧。
+
+你的 6 并发方向对，但我会把默认值调整成：
+
+globalMaxInFlight = 8
+
+providerMaxInFlight = 2
+
+credentialMaxInFlight = 2
+
+seatMaxInFlight = 1
+
+这不是死规则，而是起始值。
+
+为什么不是直接 50？
+
+50 个“席位” ≠ 50 个“必须同时发请求”。
+
+用户点击：
+
+广播
+
+实际应该：
+
+50 seats
+   │
+   ▼
+scheduler
+   │
+   ├── provider A → 2
+   ├── provider B → 2
+   ├── provider C → 2
+   └── provider D → 2
+
+最多同时 8 个。
+
+其余：
+
+QUEUED
+运行时字段
+JavaScript
+{
+  seatId: "api-17",
+
+  runtime: {
+    state: "queued",
+
+    requestId: null,
+
+    queuedAt: null,
+    startedAt: null,
+
+    firstTokenAt: null,
+    lastEventAt: null,
+    completedAt: null,
+
+    queuePosition: 11,
+
+    abortController: null
+  }
+}
+provider 限流
+JavaScript
+{
+  providerId: "openai",
+
+  limits: {
+    maxConcurrent: 2,
+
+    requestsPerMinute: null,
+    tokensPerMinute: null,
+
+    retryAfterUntil: null
+  }
+}
+
+不要把：
+
+JavaScript
+global = 6
+
+写死在 adapter。
+
+429 自适应
+
+例如：
+
+429
+ ↓
+读取 Retry-After
+ ↓
+provider cooldown
+ ↓
+maxConcurrent:
+  2 → 1
+ ↓
+连续成功 N 次
+ ↓
+1 → 2
+
+这样比手工猜每家限流强。
+
+50 路 UI 不需要立即虚拟化
+
+这是我对你一个非常关键的判断：
+
+不要一看到 50 席就上虚拟列表。
+
+真正需要优化的是：
+
+消息历史列表
+
+而不是：
+
+50 个席位卡片
+
+50 个非常轻的卡片：
+
+HTML
+<div class="seat-card">
+  <header>GPT-6 Sol</header>
+  <div class="preview"></div>
+  <div class="status"></div>
+</div>
+
+完全不是问题。
+
+真正的 DOM 杀手
+
+这种写法：
+
+JavaScript
+onDelta(delta => {
+  message.innerHTML += markdown(delta);
+});
+
+50 路 × 几十 token/秒，会非常难受。
+
+应该：
+
+流事件
+  ↓
+seat.buffer
+  ↓
+requestAnimationFrame
+  ↓
+一次性更新 textContent
+
+而且：
+
+流式阶段先纯文本，结束之后再 Markdown 渲染。
+
+可运行的合帧调度器
+JavaScript
+class RenderScheduler {
+  constructor() {
+    this.dirty = new Map();
+    this.running = false;
+  }
+
+  mark(seatId, renderFn) {
+    this.dirty.set(seatId, renderFn);
+
+    if (!this.running) {
+      this.running = true;
+      requestAnimationFrame(() => this.flush());
+    }
+  }
+
+  flush() {
+    const jobs = [...this.dirty.values()];
+    this.dirty.clear();
+
+    const start = performance.now();
+
+    for (const render of jobs) {
+      render();
+
+      // 避免一帧把 renderer 卡死
+      if (performance.now() - start > 10) {
+        break;
+      }
+    }
+
+    if (this.dirty.size > 0) {
+      requestAnimationFrame(() => this.flush());
+    } else {
+      this.running = false;
+    }
+  }
+}
+
+消息更新：
+
+JavaScript
+const buffers = new Map();
+const scheduler = new RenderScheduler();
+
+function appendDelta(seatId, delta, element) {
+  let text = buffers.get(seatId) || "";
+  text += delta;
+  buffers.set(seatId, text);
+
+  scheduler.mark(seatId, () => {
+    element.textContent =
+      buffers.get(seatId);
+  });
+}
+并发信号量
+JavaScript
+class Semaphore {
+  constructor(limit) {
+    this.limit = limit;
+    this.active = 0;
+    this.queue = [];
+  }
+
+  acquire() {
+    return new Promise(resolve => {
+      if (this.active < this.limit) {
+        this.active++;
+        resolve();
+      } else {
+        this.queue.push(resolve);
+      }
+    });
+  }
+
+  release() {
+    this.active--;
+
+    const next = this.queue.shift();
+
+    if (next) {
+      this.active++;
+      next();
+    }
+  }
+}
+
+const globalSemaphore = new Semaphore(8);
+
+async function runRequest(fn) {
+  await globalSemaphore.acquire();
+
+  try {
+    return await fn();
+  } finally {
+    globalSemaphore.release();
+  }
+}
+
+实际项目再加一层：
+
+GlobalSemaphore(8)
+      ↓
+ProviderSemaphore(2)
+      ↓
+CredentialSemaphore(2)
+      ↓
+SeatSemaphore(1)
+性能成本
+
+50 个 seat shell：
+
+很低
+
+50 条 SSE：
+
+网络开销：低~中
+Node stream：低~中
+
+真正明显的是：
+
+Markdown 重排
+DOM layout
+历史消息无限增长
+大附件 base64
+什么时候不该这么做
+
+如果未来变成：
+
+500 个 API agent
+每个 agent 同时产生长文本
+
+那 8 并发+普通 DOM 就不够，需要：
+
+virtualized history
+Web Worker markdown
+possibly separate renderer architecture
+
+但 50 席没到这个级别。
+
+Q5｜多轮上下文到底放哪里？
+一句话结论
+
+V1 不要急着 SQLite；50 席完全可以用“JSONL 追加日志 + 内存活动缓存”，SQLite 留给搜索、统计、复杂查询阶段。
+
+你的原方案：
+
+messages 全塞一个 JSON
+
+我不推荐。
+
+更推荐：
+
+sessions/
+  sess_001.jsonl
+  sess_002.jsonl
+  ...
+Session
+JavaScript
+{
+  sessionId: "sess_001",
+  seatId: "api-17",
+
+  providerId: "openai-main",
+  modelId: "gpt-6-sol",
+
+  title: "架构设计讨论",
+
+  createdAt: "...",
+  updatedAt: "...",
+
+  context: {
+    contextWindow: 1050000,
+
+    lastInputTokens: 12000,
+    lastOutputTokens: 3000,
+
+    cumulativeInputTokens: 82000,
+    cumulativeOutputTokens: 21000,
+
+    estimatedContextTokens: 15000
+  },
+
+  compaction: {
+    enabled: true,
+    summaryMessageId: null
+  }
+}
+Message
+JavaScript
+{
+  id: "msg_001",
+  turnId: "turn_004",
+
+  role: "user",
+
+  parts: [
+    {
+      type: "text",
+      text: "继续分析"
+    }
+  ],
+
+  createdAt: "..."
+}
+
+assistant：
+
+JavaScript
+{
+  id: "msg_002",
+  turnId: "turn_004",
+
+  role: "assistant",
+
+  parts: [
+    {
+      type: "text",
+      text: "..."
+    }
+  ],
+
+  usage: {
+    inputTokens: 12000,
+    outputTokens: 3000,
+    reasoningTokens: 2200
+  },
+
+  status: "completed"
+}
+为什么 JSONL 比 JSON 好？
+
+因为：
+
+append
+
+很简单。
+
+而普通 JSON：
+
+读取整个数组
+修改
+重新 stringify 整个文件
+写回
+
+50 席长期使用后会越来越恶心。
+
+上下文不能简单“累计”
+
+这是一个重要坑。
+
+例如：
+
+第1轮 prompt = 2k
+第2轮 prompt = 4k
+第3轮 prompt = 8k
+
+不代表当前 context：
+
+14k
+
+因为每次 API 请求都会带上历史，而且不同协议还可能有：
+
+cache
+reasoning
+system
+tools
+attachment
+
+应该分别记录：
+
+lastRequestInputTokens
+lastResponseOutputTokens
+lastReasoningTokens
+contextTokensAtSend
+sessionCumulativeInputTokens
+sessionCumulativeOutputTokens
+上下文策略
+
+我建议：
+
+< 70%
+正常
+
+70~85%
+提醒
+
+85~92%
+自动 compact
+
+> 92%
+强制 compact / 用户确认
+
+compact：
+
+system prompt
++
+summary
++
+最近 N 轮
+
+而不是机械砍掉最早消息。
+
+usage 统一结构
+JavaScript
+{
+  inputTokens: 1200,
+  outputTokens: 800,
+
+  reasoningTokens: 500,
+
+  cachedInputTokens: 0,
+
+  totalTokens: 2000
+}
+
+OpenAI Chat streaming 可以最后得到 usage；Anthropic streaming 的 thinking token breakdown 当前出现在最终 message_delta；Gemini 的 usageMetadata 直接包含 prompt/candidate/total 以及 thoughts 等字段。
+OpenAI Developers
++2
+Claude Platform
++2
+
+关于 token 预估
+
+不要假装：
+
+JavaScript
+text.length / 4
+
+就是准确 token。
+
+应该：
+
+send 前：
+  estimated
+
+response 完成：
+  exact provider usage
+
+UI：
+  estimated  → exact
+
+可以增加可选：
+
+JavaScript
+countTokens()
+
+但只有提供方存在对应能力时才调用，否则每次发送前再多打一遍请求，会增加延迟和成本。
+
+成本
+
+JSONL：
+
+200~400 LOC
+
+SQLite：
+
+第一版约 500~1000 LOC + native dependency 管理
+
+所以现在不上 SQLite。
+
+什么时候不该这么做
+
+未来出现：
+
+几十万会话
+全文搜索
+按模型统计
+按时间统计
+成本报表
+复杂筛选
+
+那就直接 SQLite。
+
+Q6｜统一“思考等级”怎么设计？
+一句话结论
+
+你现在的 off / standard / max 太粗；我建议内部统一成 auto + 5级 ordinal，同时保留 providerOverride，因为不同厂商的“思考”根本不是同一个参数。
+
+这是我认为你 Q6 最需要改的地方。
+
+统一模型
+JavaScript
+reasoning: {
+  mode: "auto" | "off" | "level",
+
+  level:
+    "minimal" |
+    "low" |
+    "medium" |
+    "high" |
+    "max",
+
+  budgetTokens: null,
+
+  providerOverride: null
+}
+
+UI：
+
+思考
+[ 自动 ▼ ]
+
+自动
+关闭
+低
+中
+高
+最大
+
+但是：
+
+UI 是否显示哪一级，由模型 capability 决定。
+
+OpenAI
+
+当前 OpenAI 文档的模型支持已经不只是 low/medium/high，还包括 xhigh、max 等；Responses 使用 reasoning.effort，Chat Completions 使用对应 reasoning effort 参数。
+OpenAI Developers
++2
+OpenAI Developers
++2
+
+映射：
+
+auto    → omit
+minimal → none / minimal（按模型能力）
+low     → low
+medium  → medium
+high    → high
+max     → xhigh / max
+
+不要假定所有 OpenAI 模型都有这些档位。
+
+Anthropic
+
+这里更有意思。
+
+Anthropic 当前已经把 output_config.effort 做成独立控制，而且支持：
+
+low
+medium
+high
+xhigh
+max
+
+并且官方说明 adaptive thinking 下，effort 是控制 thinking 深度的重要参数。
+Claude Platform
++2
+Claude Platform
++2
+
+所以：
+
+low     → output_config.effort = "low"
+medium  → "medium"
+high    → "high"
+max     → "max"
+
+对于支持 adaptive thinking 的模型：
+
+JavaScript
+thinking: {
+  type: "adaptive"
+}
+
+然后 effort 控制深度。
+
+旧 Claude thinking
+
+老模型还有：
+
+JavaScript
+thinking: {
+  type: "enabled",
+  budget_tokens: 16000
+}
+
+但这套不能成为你的统一 UI API。
+
+Anthropic 当前已经明确在较新的 Claude 上推进 adaptive thinking；部分新模型甚至不能关闭 thinking。
+Claude Platform
++1
+
+Gemini
+
+Gemini 3 系列目前用 thinking_level，不同模型支持的等级不同，例如有的支持：
+
+minimal / low / medium / high
+
+有的只有：
+
+low / medium / high
+
+而且当前 Gemini API 文档明确建议使用 thinking_level 控制 reasoning behavior。
+Google AI for Developers
++1
+
+所以：
+
+minimal → minimal
+low     → low
+medium  → medium
+high    → high
+max     → high
+
+注意：
+
+max 并不意味着 Gemini 真有 max。
+
+它只是你 UI 的“最大可用级别”。
+
+Ollama
+
+Ollama 更适合 capability-driven：
+
+/api/show 当前可以返回：
+
+JavaScript
+thinking: {
+  values: ["low", "medium", "high"],
+  default: "medium"
+}
+
+请求中使用：
+
+JavaScript
+think: true
+
+或者具体 level。
+GitHub
+
+DeepSeek
+
+这里反而说明为什么不能把“思考等级”设计成：
+
+API 参数 = reasoning_level
+
+因为某些模型的 reasoning 差异实际上来自：
+
+model A
+model B
+
+而不是：
+
+thinking=high
+
+所以你的模型抽象必须允许：
+
+JavaScript
+reasoning.modelSwitch = true
+
+例如：
+
+JavaScript
+{
+  mode: "level",
+  level: "high",
+
+  providerOverride: {
+    type: "model",
+    model: "xxx-reasoner"
+  }
+}
+UI 我不建议“完全隐藏”
+
+你原先说：
+
+不支持思考的模型隐藏控件。
+
+我改成：
+
+主卡片
+
+不显示。
+
+打开详细参数
+
+显示：
+
+思考：
+[ 不支持 ]
+
+或者：
+
+思考：
+[ 模型固定开启 ]
+
+或者：
+
+思考：
+[ low | medium | high ]
+
+这样用户不会误以为：
+
+“我没看到思考控件”
+=
+“这个模型不思考”
+可运行映射代码
+JavaScript
+function mapReasoning({
+  protocol,
+  requested,
+  capabilities
+}) {
+  const supported =
+    capabilities?.reasoningLevels || [];
+
+  if (requested === "auto") {
+    return { mode: "auto" };
+  }
+
+  const order = [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "max"
+  ];
+
+  // 从请求等级开始，向下寻找模型真正支持的等级
+  let index = order.indexOf(requested);
+
+  while (index >= 0) {
+    const level = order[index];
+
+    if (supported.includes(level)) {
+      switch (protocol) {
+        case "openai-responses":
+          return {
+            reasoning: {
+              effort:
+                level === "minimal"
+                  ? "none"
+                  : level
+            }
+          };
+
+        case "openai-chat":
+          return {
+            reasoning_effort:
+              level === "minimal"
+                ? "none"
+                : level
+          };
+
+        case "anthropic-messages":
+          return {
+            output_config: {
+              effort:
+                level === "minimal"
+                  ? "low"
+                  : level
+            }
+          };
+
+        case "gemini-native":
+          return {
+            thinking_level:
+              level === "minimal"
+                ? "minimal"
+                : level
+          };
+
+        case "ollama":
+          return {
+            think:
+              level === "minimal"
+                ? false
+                : level
+          };
+      }
+    }
+
+    index--;
+  }
+
+  return {
+    unsupported: true
+  };
+}
+
+注意我故意没有让 max → 40000 budget_tokens 这种硬编码进入核心。
+
+成本
+
+约 200~350 LOC。
+
+什么时候不该这么做
+
+如果你的软件只接 OpenAI，这个跨厂商 reasoning 抽象完全是多余的。
+
+但你这个项目本来就是“多 AI 会议测试台”，这正是值得抽象的地方。
+
+Q7｜“权限管理”到底该做什么？
+一句话结论
+
+单机单用户不要做 RBAC；V1 做“席位能力策略 + 配额策略 + 工具策略”，比你原来的 4 个开关多一点，但比真正的用户权限系统简单很多。
+
+我建议的最小模型
+JavaScript
+policy: {
+
+  input: {
+    allowText: true,
+    allowImages: true,
+    allowFiles: true,
+    allowPdf: true
+  },
+
+  editing: {
+    allowSystemPromptEdit: true,
+    allowModelSwitch: true,
+    allowParameterEdit: true
+  },
+
+  tools: {
+    mode:
+      "none" |
+      "readonly" |
+      "ask"
+  },
+
+  limits: {
+    maxInputTokensPerTurn: 100000,
+    maxOutputTokensPerTurn: 8000,
+    maxSessionTokens: 500000
+  }
+}
+为什么不是你的“四开关”？
+
+你原来：
+
+files
+images
+systemPrompt
+tokenLimit
+
+少了两个非常实际的东西：
+
+1. model switch
+
+50 个 seat 里：
+
+主持人 API seat
+
+可能不希望用户随便切模型。
+
+2. tool mode
+
+未来接入 DeepSeek Harness / 本地工具以后：
+
+NONE
+READONLY
+ASK
+
+会比：
+
+allowNetwork = true
+
+这种抽象准确得多。
+
+一个重要区分
+
+不要把：
+
+文件权限
+联网权限
+工具权限
+
+混成一件事。
+
+比如：
+
+模型支持联网
+
+是 capability。
+
+而：
+
+这个席位允许调用联网工具
+
+是 policy。
+
+两个完全不同。
+
+你的“管理员角色”现在是过度设计
+
+暂时不要：
+
+Admin
+Operator
+Reviewer
+Viewer
+
+也不要：
+
+Role
+PermissionGroup
+ACL
+RBAC
+
+因为你当前只有一个人。
+
+成本
+
+约 150~250 LOC。
+
+什么时候不该这么做
+
+当你未来要：
+
+局域网多人一起开会
+不同账号
+不同 API key
+不同席位权限
+审计
+
+那时候再引入 RBAC。
+
+Q8｜50 个 API 对话窗怎么摆？
+一句话结论
+
+我不建议“点击格子后原地变聊天窗”；应该保留席位卡片作为总览，点击后打开一个统一的 Focus Conversation Surface，50 个席位共享一个聊天界面。
+
+这是你 §6 里我最明确想推翻的一点。
+
+你原来的：
+
+宫格
+↓
+某个格子
+↓
+变成对话窗
+
+表面上省了一个体系。
+
+实际上会带来：
+
+格子高度变化
+滚动位置变化
+输入框抢焦点
+webview 生命周期判断
+chat state
+参数栏
+消息滚动
+
+最后 CSS 变得比独立 overlay 更复杂。
+
+推荐布局
+
+外层仍保持：
+
+┌─────────────────────────────────────────────┐
+│ Host Bar                                    │
+├─────────────────────────────────────────────┤
+│ 9 个 Web AI                                  │
+│                                             │
+│ [Web][Web][Web]                             │
+│ [Web][Web][Web]                             │
+│ [Web][Web][Web]                             │
+├─────────────────────────────────────────────┤
+│ API Seats                                    │
+│                                             │
+│ [17][18][19][20][21][22] ...                │
+│ [23][24][25][26][27][28] ...                │
+└─────────────────────────────────────────────┘
+
+API seat 是轻量卡片。
+
+点击：
+
+API-17
+
+打开：
+
+┌─────────────────────────────────────────────────────────┐
+│ API-17  GPT-6 Sol                         [×]            │
+├──────────────┬──────────────────────────────┬───────────┤
+│ Seat List    │ Conversation                │ Inspector │
+│              │                              │           │
+│ API-01       │ User                         │ Model     │
+│ API-02       │ ┌──────────────────────────┐ │ GPT-6 Sol │
+│ API-03       │ │ 内容                     │ │           │
+│ ...          │ │                          │ │ Thinking  │
+│ API-17  ●    │ └──────────────────────────┘ │ High      │
+│ ...          │                              │           │
+│ API-50       │ Assistant                    │ Context   │
+│              │ ┌──────────────────────────┐ │ 15k/1M    │
+│              │ │ 流式输出                 │ │           │
+│              │ └──────────────────────────┘ │ Usage     │
+│              │                              │ 32k       │
+│              ├──────────────────────────────┤           │
+│              │ +  输入问题          [发送]  │           │
+└──────────────┴──────────────────────────────┴───────────┘
+输入框
+┌──────────────────────────────────────────────────┐
+│ [+]  输入消息................................    │
+│                                      [发送]       │
+└──────────────────────────────────────────────────┘
+
+点击 +：
+
+┌──────────────┐
+│ 📎 文件       │
+│ 🖼 图片       │
+│ 📄 PDF        │
+│ 📝 文本        │
+└──────────────┘
+50 席的重点不是 Tab
+
+我不推荐：
+
+Tab1 Tab2 Tab3 ... Tab50
+
+而是：
+
+席位列表
++
+搜索
++
+分组
++
+最近使用
++
+运行状态
+
+例如：
+
+[搜索席位...]
+
+● 主持人
+● 架构师
+● 红队
+● 前端
+● 后端
+● 测试
+与现有 9 WebView 的关系
+
+关键是：
+
+API 对话 Focus Surface 不应该销毁 9 个 WebView。
+
+所以：
+
+Focus Overlay
+      │
+      ├── Web AI 原来的 grid 继续存在
+      └── API conversation 独立 DOM
+
+你现在的 WebView 登录状态、partition 都不会受到影响。
+
+成本
+
+约 500~900 LOC JS/CSS
+
+什么时候不该这么做
+
+如果你要做的是纯 ChatGPT clone，不需要 9 个 webview 总览，那可以直接做单聊天窗口。
+
+但通辽会议显然不是。
+
+Q9｜附件怎么统一？
+一句话结论
+
+附件不要直接塞进 Message 里；用独立 Attachment 实体，Message 只引用 attachmentId，adapter 再决定是 base64、file_id、inlineData、文本转换还是分页图像。
+
+这是你现有 api-adapter.js 最值得重构的地方之一。
+
+Attachment
+JavaScript
+{
+  id: "att_8f32",
+
+  name: "架构设计.pdf",
+
+  mime: "application/pdf",
+
+  sizeBytes: 1839200,
+
+  sha256:
+    "abcdef123456...",
+
+  kind:
+    "image" |
+    "text" |
+    "pdf" |
+    "document" |
+    "binary",
+
+  localPath:
+    "attachments/ab/cd/abcdef...",
+
+  createdAt: "...",
+
+  providerRefs: [
+    {
+      providerId: "openai-main",
+      credentialId: "cred_001",
+
+      remoteType: "file",
+      remoteId: "file_xxx",
+
+      expiresAt: null
+    }
+  ]
+}
+为什么一定要独立实体？
+
+比如用户：
+
+发一张 test.png
+
+然后：
+
+API-01
+API-02
+API-03
+...
+API-20
+
+如果你每次：
+
+buffer → base64 → 每个请求复制一份
+
+会非常浪费。
+
+正确方式：
+
+本地 Attachment
+      │
+      ├── OpenAI → 上传一次 → file_id
+      ├── Anthropic → 上传一次 → file_id
+      ├── Gemini → Files API
+      └── Ollama → 本地转 image/base64
+协议映射
+Attachment	OpenAI Responses	OpenAI Chat	Anthropic	Gemini	Ollama
+Image	input_image	image_url	image	inlineData / file	images[]
+PDF	input_file	file	document	document	❌ 原生
+TXT	input_file	text 注入	document/text	text/document	text
+DOCX	input_file	先提取文本	先转换	通常转换文本/PDF	先转换
+大文件	file_id	file_id(PDF)	file_id	Files API	本地预处理
+
+OpenAI Responses 当前支持 PDF、DOCX、PPTX、XLSX 等 input_file，Chat Completions 的 file input 则明显更窄，官方建议非 PDF 文件走 Responses。
+OpenAI Developers
+
+Anthropic 当前支持 PDF 与文本的 document block，也支持通过 Files API 上传后用 file_id 重复引用；图片则使用 image block。
+Claude Platform
++2
+Claude Platform
++2
+
+Gemini 当前 PDF 可以 inline，也可以 Files API；官方建议多轮、大文件优先 Files API，并明确 PDF 单文件最高 50 MB / 1000 页。
+Google AI for Developers
++1
+
+Ollama 当前 API 对 vision 模型使用 images 数组，PDF 不属于其 chat API 的一等输入类型，所以 meeting-lab 要自己做 PDF → 文本 / 图片页转换。
+GitHub
+
+这里有个非常重要的设计
+不要：
+JavaScript
+message.content = base64超大字符串
+
+应该：
+
+JavaScript
+message.parts = [
+  {
+    type: "attachment",
+    attachmentId: "att_123"
+  }
+]
+
+然后 adapter：
+
+resolveAttachment()
+      ↓
+capability check
+      ↓
+provider transform
+      ↓
+request body
+你目前漏掉的东西
+
+你 §4 的 G1~G7 没有漏完。
+
+我认为至少还缺这 8 项。
+
+G8｜请求生命周期
+
+你现在需要显式：
+
+QUEUED
+RUNNING
+CANCELLING
+COMPLETED
+FAILED
+CANCELLED
+TIMEOUT
+
+而不是只有：
+
+加载中
+G9｜Request ID / Turn ID
+
+必须：
+
+JavaScript
+requestId
+sessionId
+turnId
+messageId
+seatId
+
+否则 50 路并发时：
+
+API-17 的回复
+
+很容易串进：
+
+API-18
+G10｜幂等与重试
+
+流式请求不要自动重试。
+
+例如：
+
+输出了 3000 token
+↓
+网络断了
+↓
+自动 retry
+
+很容易生成两次回答。
+
+正确：
+
+partial answer
++
+status=interrupted
++
+用户点“继续”
+
+“继续”应该是一个新的 turn。
+
+G11｜停止生成
+
+每个 request：
+
+JavaScript
+AbortController
+
+并且：
+
+seat stop
+provider stop
+global stop
+meeting stop
+
+分层处理。
+
+G12｜成本统计
+
+你现在只关注：
+
+token
+
+实际上建议：
+
+JavaScript
+usage: {
+  inputTokens,
+  outputTokens,
+  reasoningTokens,
+
+  estimatedCost,
+
+  currency: "USD"
+}
+
+以后做：
+
+本次会议花费
+API-17 今日花费
+模型花费
+
+非常简单。
+
+G13｜附件生命周期
+
+例如 Gemini Files API 目前上传文件只保存 48 小时，所以不能把 provider file_id 当永久文件 ID。
+Google AI for Developers
+
+所以：
+
+JavaScript
+remoteFile = {
+  providerId,
+  remoteId,
+  uploadedAt,
+  expiresAt,
+  status
+}
+G14｜能力缓存
+
+比如：
+
+Claude model
+  支持 PDF
+  支持 image
+  支持 effort
+
+不要每次打开窗口再请求。
+
+G15｜API Key 多凭据
+
+未来一定会碰到：
+
+OpenAI key A
+OpenAI key B
+OpenAI key C
+
+尤其你 50 席。
+
+所以 Provider 和 Credential 一定分开：
+
+Provider
+   │
+   ├── Credential A
+   ├── Credential B
+   └── Credential C
+
+然后调度器：
+
+Credential cooldown
+Credential quota
+Credential failure count
+
+以后做密钥轮换非常轻松。
+
+最终我建议把 §6 改造成这个结构
+meeting-lab/
+│
+├─ core/
+│  │
+│  ├─ api/
+│  │  ├─ api-registry.js
+│  │  ├─ credential-store.js
+│  │  ├─ model-registry.js
+│  │  ├─ request-scheduler.js
+│  │  └─ api-runtime.js
+│  │
+│  ├─ protocols/
+│  │  ├─ base-adapter.js
+│  │  ├─ openai-chat.js
+│  │  ├─ openai-responses.js
+│  │  ├─ anthropic-messages.js
+│  │  ├─ gemini-native.js
+│  │  └─ ollama.js
+│  │
+│  ├─ sessions/
+│  │  ├─ session-store.js
+│  │  ├─ context-manager.js
+│  │  └─ usage-normalizer.js
+│  │
+│  └─ attachments/
+│     ├─ attachment-store.js
+│     ├─ attachment-cache.js
+│     └─ attachment-transformer.js
+│
+└─ shell/
+   └─ api/
+      ├─ api-seat-grid.js
+      ├─ api-conversation.js
+      ├─ api-inspector.js
+      └─ api-settings.js
+配置模型，我建议最终定成这样
+Provider
+JavaScript
+{
+  id: "provider_001",
+
+  name: "OpenAI 官方",
+
+  protocol: "openai-responses",
+
+  baseUrl: "https://api.openai.com/v1",
+
+  credentialId: "cred_001",
+
+  headers: {},
+
+  query: {},
+
+  models: [],
+
+  modelSync: {
+    enabled: true,
+    lastSuccessAt: null,
+    lastError: null
+  },
+
+  limits: {
+    maxConcurrent: 2,
+    requestsPerMinute: null,
+    tokensPerMinute: null
+  },
+
+  createdAt: "...",
+  updatedAt: "..."
+}
+Seat
+JavaScript
+{
+  seatId: "api-17",
+
+  title: "架构红队",
+
+  groupId: "architecture",
+
+  providerId: "provider_001",
+
+  credentialId: "cred_001",
+
+  modelId: "gpt-6-sol",
+
+  systemPrompt:
+    "你负责只寻找架构漏洞。",
+
+  parameters: {
+    temperature: null,
+
+    maxOutputTokens: 8000,
+
+    reasoning: {
+      mode: "level",
+      level: "high"
+    }
+  },
+
+  policy: {
+    input: {
+      allowText: true,
+      allowImages: true,
+      allowFiles: true,
+      allowPdf: true
+    },
+
+    editing: {
+      allowSystemPromptEdit: true,
+      allowModelSwitch: true,
+      allowParameterEdit: true
+    },
+
+    tools: {
+      mode: "none"
+    },
+
+    limits: {
+      maxInputTokensPerTurn: 100000,
+      maxOutputTokensPerTurn: 8000,
+      maxSessionTokens: 500000
+    }
+  },
+
+  sessionId: "sess_017",
+
+  enabled: true,
+
+  createdAt: "...",
+  updatedAt: "..."
+}
+
+这样你的“50 智能体”就真正成立了。
+
+设置界面最终规格
+
+我建议不要把所有东西堆在一个设置页面。
+
+设置
+
+┌──────────────────────────────────────────────┐
+│ API 提供方                                   │
+├──────────────────────────────────────────────┤
+│ OpenAI 官方                        ● 正常    │
+│ DeepSeek 中转                      ● 正常    │
+│ OpenRouter                         ● 正常    │
+│ Anthropic 官方                     ● 正常    │
+│ Google Gemini                      ● 正常    │
+│ Ollama 本地                        ● 正常    │
+│                                              │
+│ [+ 添加提供方]                               │
+└──────────────────────────────────────────────┘
+
+点击 provider：
+
+名称
+协议
+Base URL
+API Key
+测试连接
+拉取模型
+最后同步时间
+
+模型：
+☑ gpt-6-sol
+☑ gpt-6-luna
+☑ ...
+
+然后：
+
+席位管理
+
+独立页面：
+
+┌────┬────────────┬────────────┬─────────────┐
+│ #  │ 名称       │ 模型       │ 状态        │
+├────┼────────────┼────────────┼─────────────┤
+│ 01 │ 主持人     │ ...        │ ● ready     │
+│ 02 │ 架构师     │ ...        │ ● ready     │
+│ .. │ ...        │ ...        │ ...         │
+│ 50 │ 红队       │ ...        │ ○ disabled  │
+└────┴────────────┴────────────┴─────────────┘
+实施顺序
+阶段	做什么	原因	大致代码量
+1	Protocol 接口 + Normalized Event	所有后续功能的地基	300~500
+2	openai-chat 重构现有 adapter	先保证现有功能不掉	250~400
+3	Provider/Credential Registry + safeStorage	设置界面必须有真配置源	300~500
+4	Model Registry + /models 缓存	席位不能再绑定“第一模型”	400~700
+5	Scheduler + 8/2/1 并发模型	50 席的核心运行时	300~500
+6	Session Store + usage	真正实现多轮对话	400~700
+7	openai-responses + Anthropic	第一轮多协议	450~700
+8	Gemini + Ollama	完成四大类主流协议覆盖	400~650
+9	Attachment Manager	图片/PDF/文件统一处理	500~800
+10	API Conversation Surface	最后做 UI，不反过来绑架内核	600~1000
+
+大约：
+
+4,000~6,500 LOC。
+
+以你现在 2000 行左右单文件 renderer 来看，这是一个中型重构，不是一个“小功能”。
+
+最终裁决
+
+我会把你原来的几个判断这样修改：
+
+你的原方案	我的结论
+openai-chat	✅ 保留
+openai-responses	✅ 必须做
+anthropic	✅
+gemini	✅
+ollama	✅
+所有中转都按 OpenAI-compatible	✅ 默认如此，但允许特殊 override
+/models 就决定全部 metadata	❌ 推翻
+safeStorage + JSON	✅
+safeStorage 不可用就降级	❌ 禁止明文降级
+JSON 存全部历史	❌ 改 JSONL
+V1 直接 SQLite	❌ 暂时不上
+50 路都同时 HTTP	❌
+全局 6 并发	🟡 可用，但我建议默认 8
+50 席直接虚拟化	❌
+每席位 rAF	🟡 可以，但更推荐全局 render scheduler
+off/standard/max	❌ 太粗
+reasoning 三档	❌
+不支持思考就隐藏	🟡 卡片隐藏，详细面板显示“不可用”
+4 个权限项	🟡 接近，但应加入 model/tool policy
+RBAC	❌ 过度设计
+API 格子直接变聊天窗	❌ 推翻
+独立 Focus Conversation Surface	✅
+Attachment 直接进 message	❌
+Attachment 独立实体 + adapter 映射	✅
+
+尤其值得你注意的是：**当前各家“thinking”已经明显开始分叉——OpenAI 是 reasoning effort，Anthropic 是 effort + adaptive thinking，Gemini 是 thinking level，Ollama 甚至允许模型自己声明支持哪些 thinking values。**因此你如果把统一字段做成一个简单 reasoning: "high"，以后一定会返工。
+GitHub
++3
+OpenAI Developers
++3
+Claude Platform
++3
+
+而在附件方面，OpenAI、Anthropic、Gemini 现在都已经具备比较完整的文件输入能力，但方式完全不同；这也进一步证明 “附件实体独立 + 协议 adapter 转换” 应该从第一天就定下来。
+OpenAI Developers
++2
+Claude Platform
++2
+
+如果这是第 1 轮咨询案，我建议最终冻结的核心不是 UI，而是这 6 个接口：
+
+ProviderRegistry
+CredentialStore
+ModelRegistry
+ProtocolAdapter
+SessionStore
+AttachmentStore
+
+这 6 个一旦定住，后面的 50 席 UI、会议广播、权限、上下文、附件、思考等级，基本都是在它们之上的应用层。

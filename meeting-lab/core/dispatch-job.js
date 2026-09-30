@@ -35,6 +35,9 @@ const TRANSPORT = {
   L3: 'L3-manual',      // 逐席复制按钮，用户全手动
 };
 
+// 失败最多自动重试三次；超过上限必须人工确认，避免网络故障造成重复发送。
+const MAX_ATTEMPTS = 3;
+
 /** 内容哈希（快照完整性校验用；截断 16 位够防碰撞） */
 function contentHash(text, attachments) {
   return crypto.createHash('sha256')
@@ -126,6 +129,9 @@ function markSending(job, seatId, { transport = TRANSPORT.L1 } = {}) {
   }
   if (s.status === SEAT_STATUS.SENDING) {
     return { ok: false, reason: 'already_sending', seat: s };
+  }
+  if (s.attempt >= MAX_ATTEMPTS) {
+    return { ok: false, reason: 'attempt_limit', seat: s };
   }
   s.status = SEAT_STATUS.SENDING;
   s.attempt += 1;
@@ -235,14 +241,17 @@ function deserialize(data) {
     throw new Error('[dispatch] 恢复失败：落盘快照与内容 hash 不一致（稿子被篡改），拒绝续传');
   }
   const job = createDispatchJob({ snapshot, seats: data.seats.map((s) => s.seatId), jobId: data.jobId });
-  // 恢复每席的运行时状态（attempt/delivered/error 等不能清零，否则会重发）
+  // 崩溃时进程不可能可靠地完成发送确认；恢复后把 sending 变成 failed，允许受控重试。
+  // 已 delivered 的席位仍绝不重发。
   for (const s of data.seats) {
     const target = job.seats.get(s.seatId);
-    target.status = s.status;
+    target.status = s.status === SEAT_STATUS.SENDING ? SEAT_STATUS.FAILED : s.status;
     target.attempt = s.attempt;
     target.delivered = s.delivered;
     target.transport = s.transport;
-    target.error = s.error;
+    target.error = s.status === SEAT_STATUS.SENDING
+      ? '应用在发送确认前中断，需人工确认后重试'
+      : s.error;
     target.sentAt = s.sentAt;
   }
   return job;
@@ -260,6 +269,7 @@ module.exports = {
   markFailed,
   retryTargets,
   pendingTargets,
+  MAX_ATTEMPTS,
   progress,
   failedSeats,
   serialize,

@@ -1,0 +1,175 @@
+这条追加得很关键，而且和你前面“通辽会议窗口 = 3×3 <webview> 各自 partition”的架构强相关。
+
+先给结论：“通辽会议输入窗口拖文件收不到”通常不是网站不支持，而是 Electron 里 <webview> / 宿主窗口把原生拖放吞了，或者拖到的是 guest 页面但你们没有把文件转发给目标 AI 的输入框。
+
+一、为什么会“收不到”
+
+在 Electron 33 + sandbox:true + <webview> 场景里，拖文件失败常见有 5 类原因：
+
+1. 宿主窗口没开 HTML 拖放
+   Electron 默认不会把操作系统文件拖放自动变成网页 drop 事件，某些窗口/BrowserWindow 需要：
+   webPreferences: {
+     sandbox: true,
+     enableWebDragDrop: true // 关键
+   }
+   
+   没开时，拖文件进去要么被当“拖窗口/禁用手型”，要么 dragover 不触发。
+
+2. <webview> guest 里页面自己没写 drop 处理
+   9 个网站（DeepSeek/ChatGPT/Kimi…）本身大多支持拖文件，但：
+   - 你外层 meeting.html 如果监听了 window.drop 并 preventDefault()，可能把事件吃掉；
+   • 或者 webview 上盖了一层 UI（名牌、边框、拖拽遮罩），事件根本进不到 guest。
+
+3. 跨进程：guest 收到了，但“你们”指的是主进程/dsh 没收到
+   如果你们的“输入窗口”是：
+   • 会议窗口底部自己画的输入框
+
+   • 或者想把文件同时发给 9 个 AI / 主窗口 / dsh
+
+   
+   那 guest 里的 dataTransfer.files 只在 guest 渲染进程 里，不会自动到主进程。
+   必须：
+
+   guest drop → preload/webview.send → 宿主 → ipc → 主进程 → 再注入到目标输入框
+   
+
+4. sandbox 下拿不到真实路径
+   即使收到 File 对象：
+   • 渲染进程里 file.path 可能是 undefined
+
+   • 要路径只能用 preload 里的 webUtils.getPathForFile(file)（Electron 28+）
+
+   - 要内容就用 File.arrayBuffer() / File.text() 读 Blob，再 IPC 给主进程写临时文件 
+
+5. Windows 权限问题（很隐蔽）
+   如果 Electron 是用“管理员 PowerShell / 管理员 IDE”启动的，而资源管理器是普通权限：
+   > 从资源管理器拖文件进高权限窗口 → Windows 直接禁止
+   
+   表现就是：鼠标显示“禁止”，drop 永远不触发。
+   用普通终端启动就好了。
+
+二、你这个场景最稳的做法（一次搞定）
+
+方案：宿主层统一截获，再按目标转发
+
+因为通辽会议是 3×3 webview，不要让 9 个网站各自处理拖文件后再想办法回传；而是：
+
+1. meeting.html 宿主窗口开拖放
+
+window.addEventListener('dragover', e => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  // 先不让浏览器导航
+});
+
+
+BrowserWindow：
+new BrowserWindow({
+  webPreferences: {
+    sandbox: true,
+    enableWebDragDrop: true,
+    preload: 'meeting-preload.js'
+  }
+})
+
+
+2. 判断“拖到哪个格子”
+
+在 dragover/drop 里用 document.elementFromPoint(e.clientX, e.clientY) 找到对应的 <webview>：
+const el = document.elementFromPoint(e.clientX, e.clientY);
+const webview = el?.closest('webview');
+
+
+3. 读文件（不依赖网站）
+
+在 meeting 的 preload / 宿主渲染进程里：
+const files = await Promise.all(
+  Array.from(e.dataTransfer.files).map(async f => ({
+    name: f.name,
+    type: f.type,
+    size: f.size,
+    buffer: Array.from(new Uint8Array(await f.arrayBuffer()))
+  }))
+);
+
+用 Buffer/Array 传，别传 File 对象，别传 file.path
+
+4. 转发给对应 webview
+
+webview.send('meeting:files-drop', files);
+
+
+每个 webview 的 guest 里（通过 webview.addEventListener('ipc-message') 或 guest preload）：
+• 找到该网站的上传按钮 / 隐藏 <input type=file>
+
+- 用 DataTransfer + input.files 注入（最像真用户拖入）
+• 或调用网站自己的“粘贴文件 / 上传文件”接口
+
+⚠️ 注意：guest 页面是第三方网页，不能随便改 DOM 结构；最稳是模拟文件选择：
+const dt = new DataTransfer();
+fileList.forEach(f => dt.items.add(f));
+input.files = dt.files;
+input.dispatchEvent(new Event('change', { bubbles: true }));
+
+
+三、如果“输入窗口”是你们自己画的
+
+比如会议窗口底部有个“发给当前 AI 的输入框”：
+
+• 拖文件 → 宿主收到
+
+• 显示缩略图/文件名
+
+• 用户按发送 → 主进程把文件：
+
+  • 写成临时文件 userData/tmp/xxx.pdf
+
+  - 或转 base64 / blob
+• 再 webview.executeJavaScript(...) 把文件塞进对应网站
+
+不要指望“拖进去网站就自动收到”，在 webview 架构下不可靠。
+
+四、和前面咨询案的统一建议
+
+把“拖放文件”也当成单一数据源 + 跨进程事件：
+OS Drag
+  ↓
+meeting 宿主（dragover/drop）
+  ↓ files(Blob/name/size)
+meeting preload → main process
+  ↓
+agent runtime：当前激活格子 / 当前模型
+  ↓
+对应 webview / dsh 模型切换器 / 设置面板
+
+
+这样以后还能复用：
+• 主窗口 dsh 输入框拖文件
+
+• 模型切换器里“登录后才允许发文件给网页版”
+
+• 会议窗口“拖给当前说话的 AI”
+
+五、排查清单（你打包前先对一遍）
+BrowserWindow 是否 enableWebDragDrop: true
+
+是否用管理员终端启动（Windows 拖不动）
+
+meeting.html 是否全局 drop 被某层 UI 拦截
+
+webview 是否被遮罩 pointer-events:none/auto 影响
+
+guest 里是否真的有上传 <input type=file> 或可拖区域
+
+是否试图在 sandbox 渲染进程读 file.path（应改用 webUtils.getPathForFile 或读 Blob）
+
+多 webview 时有没有记录“当前焦点格子”，否则文件会发错 AI
+
+如果你愿意，我可以把这块直接补进你那个 咨询案-模型命名与登录状态与面板重构.md，加一节：
+
+诉求 5：通辽会议窗口拖拽文件到输入区/AI 格子，统一接收与转发方案
+
+要我直接写出“meeting.html + preload + main.js + guest 注入”四段可落地代码吗？

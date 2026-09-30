@@ -1,0 +1,1808 @@
+# 咨询案（第 1 轮）· API 接入核心
+
+> 本文针对 §0 的 Q1~Q9 逐题回答。每题先给一句话结论，再给依据与可运行代码。所有代码为 Node.js 18+ / Electron 33 环境，尽量零依赖（内置 fetch / AbortController / ReadableStream 可用）。
+
+
+## 你漏掉的（§4 缺口补充）
+
+在回答之前，先补你列出的缺口之外我识别到的：
+
+| # | 你漏掉的 | 严重度 | 说明 |
+|---|---------|--------|------|
+| G8 | **流式中断恢复（断点续传）** | 中 | SSE 流在长回复中途断开时，当前代码只报 SERVER_ERROR，已累积的 partial content 是否落盘、重试时是否带上下文重发，无设计。50 席并发下断流概率会放大。 |
+| G9 | **per-provider 速率限制的状态隔离** | 高 | 多家提供方共享一个全局信号量会导致"慢的拖死快的"。需要一个 per-provider 的令牌桶 + 全局并发上限的双层结构。 |
+| G10 | **模型列表缓存的失效与手动刷新** | 低 | /v1/models 拉到的列表如果缓存到 providers.json，何时刷新？中转站换模型不会通知你。需要一个 TTL + 手动刷新按钮。 |
+| G11 | **system prompt 的持久化与席位模板** | 中 | 50 个席位如果每个都要手写 system prompt，用户会崩溃。需要"席位模板"概念（预设角色 + 参数组合），一键创建。 |
+| G12 | **流式渲染的背压（backpressure）** | 高 | 50 路 SSE 同时到达时，renderer 的事件循环会被 delta 回调淹没。你提到了 rAF 合帧，但没提"当 DOM 更新跟不上 SSE 到达时怎么办"——需要丢弃中间帧而不是无限排队。 |
+| G13 | **错误重试的幂等性** | 中 | 非流式请求失败后重试是安全的，但流式请求如果已经收到部分 delta 再重试，会把重复内容拼进会话历史。需要区分"首字节前失败"和"首字节后失败"。 |
+| G14 | **多窗口/多实例的配置锁** | 低 | 单机单用户场景下风险低，但如果用户手贱开了两个 Electron 实例，providers.json 的并发写入会损坏文件。用原子写入（write temp + rename）可解。 |
+
+
+## Q1 多协议支持：内置哪几个协议适配器？
+
+### 一句话结论
+
+内置 4 个适配器即可覆盖 98%+ 的真实使用场景：**`openai-chat`**（覆盖所有 OpenAI 兼容中转站 + Ollama + 绝大多数国产模型）、**`anthropic-messages`**（Claude 原生）、**`gemini-native`**（Google 原生）、**`openai-responses`**（OpenAI 新接口 + o 系/GPT-5 系推理模型）。中转站（one-api / new-api / OpenRouter）统一按 `openai-chat` 处理**是足够的**，前提是你只调 `/v1/chat/completions` 和 `/v1/models` 这两个端点。OpenAI Responses API **值得现在支持但优先级最低**——它是 OpenAI 的未来方向（GPT-5 系推理模型在 Responses 上有更好的 reasoning 保持和缓存利用率），但中转站对它的支持还不普遍。
+
+### 协议适配器接口设计（字段级）
+
+```typescript
+// core/protocols/types.d.ts —— 纯类型定义，无运行时
+
+/** 统一的内部消息模型（所有协议适配器都转换成这个） */
+interface InternalMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: InternalContentPart[];
+}
+
+interface InternalContentPart {
+  type: 'text' | 'image' | 'file';
+  /** type=text 时使用 */
+  text?: string;
+  /** type=image 时使用 */
+  image?: {
+    /** base64 编码的原始数据（不含 data: 前缀） */
+    data: string;
+    /** MIME type，如 "image/png" */
+    mimeType: string;
+  };
+  /** type=file 时使用（PDF 等） */
+  file?: {
+    data: string;       // base64
+    mimeType: string;   // "application/pdf"
+    filename: string;
+  };
+}
+
+/** 统一的流式事件（适配器内部解析各协议 SSE 后发出） */
+type StreamEvent =
+  | { type: 'delta';    text: string;          /** 正常回复内容 */ }
+  | { type: 'thinking'; text: string;          /** 推理内容（reasoning_content / thinking block） */ }
+  | { type: 'usage';    usage: UsageSnapshot;   /** 用量快照，可能多次出现 */ }
+  | { type: 'error';    code: string; message: string; retryable: boolean }
+  | { type: 'done';     finishReason: string };
+
+interface UsageSnapshot {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** 思考 token（如果协议单独报告） */
+  reasoningTokens?: number;
+  /** 缓存命中 token（如果协议单独报告） */
+  cachedTokens?: number;
+}
+
+/** 模型元数据 */
+interface ModelInfo {
+  id: string;                    // 模型 ID，如 "claude-sonnet-4-20250514"
+  name?: string;                 // 展示名
+  contextWindow?: number;        // 上下文窗口 token 数
+  maxOutput?: number;            // 最大输出 token 数
+  inputModalities?: string[];    // ["text","image","pdf","audio"]
+  outputModalities?: string[];   // ["text"]
+  supportsReasoning?: boolean;   // 是否支持思考
+  supportsTools?: boolean;       // 是否支持 tool calling
+  pricing?: { input: number; output: number }; // 每百万 token 美元
+  family?: string;               // 模型家族，用于分组显示
+  status?: string;               // "active" | "deprecated" | "beta"
+}
+
+/** 协议适配器接口 */
+interface ProtocolAdapter {
+  /** 协议标识 */
+  readonly protocol: string;
+
+  /** 拉取模型列表。失败时抛异常，由上层降级 */
+  listModels(provider: ProviderConfig, signal?: AbortSignal): Promise<ModelInfo[]>;
+
+  /**
+   * 发起流式对话。
+   * - messages 是统一的 InternalMessage[]，适配器负责转换为协议原生格式
+   * - params 是统一的参数对象，适配器负责映射到协议原生字段
+   * - 通过 callbacks 回传统一事件
+   * - 返回一个 cancel 函数，调用后终止流
+   */
+  chatStream(
+    provider: ProviderConfig,
+    model: string,
+    messages: InternalMessage[],
+    params: ChatParams,
+    callbacks: {
+      onEvent: (event: StreamEvent) => void;
+      onError: (err: Error) => void;
+      onDone: () => void;
+    },
+    signal: AbortSignal,
+  ): Promise<void>;
+}
+
+/** 统一的对话参数 */
+interface ChatParams {
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  /** 统一思考等级：off / low / medium / high / max */
+  reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | 'max';
+  /** 自定义思考 token 预算（Claude/Gemini 用），优先于 reasoningEffort */
+  thinkingBudgetTokens?: number;
+  stop?: string[];
+}
+
+/** 提供方配置 */
+interface ProviderConfig {
+  id: string;            // 唯一标识，如 "openai-official"
+  name: string;          // 显示名
+  protocol: string;      // "openai-chat" | "anthropic-messages" | "gemini-native" | "openai-responses"
+  baseURL: string;       // 如 "https://api.openai.com/v1"
+  apiKey: string;        // 明文（运行时从 safeStorage 解密后注入）
+  /** 额外 HTTP 头（中转站可能需要） */
+  extraHeaders?: Record<string, string>;
+  /** 自定义 query 参数（某些中转站需要） */
+  extraQuery?: Record<string, string>;
+}
+```
+
+### 各协议差异点清单
+
+#### openai-chat（覆盖最广）
+
+| 差异点 | 说明 |
+|--------|------|
+| **消息格式** | `messages: [{role, content}]`，content 可以是 string 或 `[{type:"text",text},{type:"image_url",image_url:{url}}]` |
+| **系统提示词** | 作为 `role:"system"` 的普通消息 |
+| **流式格式** | SSE，每行 `data: {json}`，最后 `data: [DONE]` |
+| **usage 出现时机** | 通常最后一个 chunk 携带 `usage` 字段（需请求时设 `stream_options: {include_usage: true}`）；部分中转站不返回 usage |
+| **思考内容** | `delta.reasoning_content`（DeepSeek）或 `delta.reasoning`（部分中转站） |
+| **认证** | `Authorization: Bearer <key>` |
+| **模型列表** | `GET /v1/models` → `{data: [{id, object, created, owned_by}]}`，**无元数据** |
+| **中转站差异** | one-api/new-api 统一返回 OpenAI 格式；OpenRouter 返回更丰富的元数据（context_length, pricing 等） |
+
+#### openai-responses
+
+| 差异点 | 说明 |
+|--------|------|
+| **端点** | `POST /v1/responses` |
+| **请求体** | `{model, input: [{role, content}], stream: true}`，**不是 messages** |
+| **有状态** | 默认服务端存储对话历史（`store: true`），可以用 `previous_response_id` 续接 |
+| **推理保持** | 推理模型的 reasoning state 跨轮保持（Chat Completions 会丢弃） |
+| **流式事件** | SSE，事件类型为 `response.output_text.delta` / `response.reasoning_summary_text.delta` / `response.completed` 等 |
+| **usage** | 在 `response.completed` 事件中 |
+| **认证** | 同 openai-chat |
+| **中转站支持** | 较少，one-api/new-api 不一定支持 `/v1/responses` 透传 |
+
+#### anthropic-messages
+
+| 差异点 | 说明 |
+|--------|------|
+| **端点** | `POST /v1/messages` |
+| **系统提示词** | 独立的 `system` 字段，**不在 messages 数组中** |
+| **消息内容** | content 必须是 block 数组：`[{type:"text",text},{type:"image",source:{type:"base64",media_type,data}}]` |
+| **max_tokens 必填** | 必须提供 `max_tokens` |
+| **认证** | `x-api-key: <key>` + `anthropic-version: 2023-06-01` 头 |
+| **流式格式** | SSE，事件有 `message_start` / `content_block_start` / `content_block_delta` / `content_block_stop` / `message_delta` / `message_stop` |
+| **思考内容** | `content_block_delta` 中 `delta.type === "thinking_delta"` |
+| **思考参数** | `thinking: {type: "enabled", budget_tokens: N}`，budget_tokens 最小 1024，必须小于 max_tokens |
+| **usage** | `message_start` 中有 input_tokens，`message_delta` 中有 output_tokens |
+| **模型列表** | `GET /v1/models` → `{data: [{id, display_name, created_at, type}]}` |
+| **认证** | 另注意 Claude 支持 `anthropic-beta` 头启用实验特性 |
+
+#### gemini-native
+
+| 差异点 | 说明 |
+|--------|------|
+| **端点** | `POST /v1beta/models/{model}:streamGenerateContent` |
+| **认证** | Query 参数 `?key=<apiKey>`（**不是 Header**） |
+| **消息格式** | `contents: [{role: "user"|"model", parts: [{text}, {inlineData: {mimeType, data}}]}]` |
+| **系统提示词** | `systemInstruction: {parts: [{text}]}` 独立字段 |
+| **角色名** | 不是 `"assistant"` 而是 `"model"` |
+| **流式格式** | SSE，每行 `data: {json}`，**没有 `[DONE]` 标记**，靠连接关闭判断结束 |
+| **思考参数** | `generationConfig.thinkingConfig: {thinkingBudget: N, includeThoughts: true, thinkingLevel: "LOW"|"MEDIUM"|"HIGH"}` |
+| **思考内容** | parts 中 `{text, thought: true}` |
+| **usage** | 在 `usageMetadata: {promptTokenCount, candidatesTokenCount, totalTokenCount}` 中 |
+| **模型列表** | `GET /v1beta/models?key=xxx` → `{models: [{name: "models/gemini-2.5-pro", displayName, inputTokenLimit, outputTokenLimit, supportedGenerationMethods}]}` |
+| **PDF 支持** | 原生支持 PDF（`inlineData` + `mimeType: "application/pdf"`） |
+
+#### Ollama
+
+**按 openai-chat 处理即可**。Ollama 0.1.0+ 原生暴露 OpenAI 兼容端点 `/v1/chat/completions` 和 `/v1/models`，base URL 改为 `http://localhost:11434/v1`。注意：Ollama 的 OpenAI 兼容性是 experimental，部分高级参数（如 `reasoning_effort`）不支持，需要用 `num_ctx` 等 Ollama 原生参数——但如果你只做基础对话，OpenAI 兼容层足够。
+
+#### 中转站统一按 openai-chat 处理
+
+**足够。** one-api / new-api 的架构就是"每个适配器封装将标准 OpenAI 格式的请求和响应与目标厂商 API 特有格式进行相互转换"。你只需要调 `/v1/chat/completions` 和 `/v1/models`，它们会自动路由。OpenRouter 同理，且 `/v1/models` 返回更丰富的元数据（`context_length`、`pricing`、`supported_parameters` 等）。
+
+### 适配器注册与统一调用（可运行代码）
+
+```javascript
+// core/protocols/registry.js
+const adapters = new Map();
+
+/**
+ * 注册协议适配器
+ * @param {string} protocol - 协议标识
+ * @param {object} adapter - ProtocolAdapter 实现
+ */
+function registerAdapter(protocol, adapter) {
+  adapters.set(protocol, adapter);
+}
+
+/**
+ * 获取适配器，找不到时抛错
+ */
+function getAdapter(protocol) {
+  const adapter = adapters.get(protocol);
+  if (!adapter) {
+    throw new Error(`Unknown protocol: ${protocol}. Registered: ${[...adapters.keys()].join(', ')}`);
+  }
+  return adapter;
+}
+
+/**
+ * 统一入口：根据 provider.protocol 自动路由
+ */
+async function chatStream(provider, model, messages, params, callbacks, signal) {
+  const adapter = getAdapter(provider.protocol);
+  return adapter.chatStream(provider, model, messages, params, callbacks, signal);
+}
+
+module.exports = { registerAdapter, getAdapter, chatStream };
+```
+
+```javascript
+// core/protocols/openai-chat.js —— 最小可运行实现
+const { registerAdapter } = require('./registry');
+
+/**
+ * 把 InternalMessage[] 转成 OpenAI Chat Completions 格式
+ */
+function toOpenAIMessages(messages) {
+  return messages.map(msg => {
+    // 纯文本时简化为 string content
+    const textParts = msg.content.filter(p => p.type === 'text');
+    const nonTextParts = msg.content.filter(p => p.type !== 'text');
+
+    if (nonTextParts.length === 0) {
+      return { role: msg.role, content: textParts.map(p => p.text).join('\n') };
+    }
+
+    // 有非文本内容时用数组格式
+    const content = msg.content.map(part => {
+      if (part.type === 'text') {
+        return { type: 'text', text: part.text };
+      }
+      if (part.type === 'image') {
+        return {
+          type: 'image_url',
+          image_url: { url: `data:${part.image.mimeType};base64,${part.image.data}` },
+        };
+      }
+      // file 类型：OpenAI Chat Completions 不直接支持 PDF，降级为文本提示
+      return { type: 'text', text: `[附件: ${part.file.filename}, 类型: ${part.file.mimeType}]` };
+    });
+    return { role: msg.role, content };
+  });
+}
+
+const openaiChatAdapter = {
+  protocol: 'openai-chat',
+
+  async listModels(provider, signal) {
+    const url = `${provider.baseURL.replace(/\/$/, '')}/models`;
+    const resp = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${provider.apiKey}`,
+        ...(provider.extraHeaders || {}),
+      },
+      signal,
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`listModels failed: ${resp.status} ${body.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    return (data.data || []).map(m => ({
+      id: m.id,
+      name: m.id,
+      // OpenAI 原生 /v1/models 不返回这些，留空由元数据表补全
+      contextWindow: undefined,
+      inputModalities: undefined,
+      supportsReasoning: undefined,
+      family: undefined,
+    }));
+  },
+
+  async chatStream(provider, model, messages, params, callbacks, signal) {
+    const url = `${provider.baseURL.replace(/\/$/, '')}/chat/completions`;
+    const body = {
+      model,
+      messages: toOpenAIMessages(messages),
+      stream: true,
+      stream_options: { include_usage: true }, // 请求最后一块带 usage
+    };
+
+    if (params.temperature != null) body.temperature = params.temperature;
+    if (params.maxTokens != null) body.max_tokens = params.maxTokens;
+    if (params.topP != null) body.top_p = params.topP;
+    if (params.stop) body.stop = params.stop;
+
+    // 思考等级映射（见 Q6）
+    if (params.reasoningEffort && params.reasoningEffort !== 'off') {
+      body.reasoning_effort = params.reasoningEffort; // low/medium/high
+    }
+
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${provider.apiKey}`,
+        ...(provider.extraHeaders || {}),
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      const code = resp.status === 401 ? 'AUTH_FAILED'
+        : resp.status === 429 ? 'RATE_LIMITED'
+        : resp.status >= 500 ? 'SERVER_ERROR' : 'CLIENT_ERROR';
+      callbacks.onEvent({ type: 'error', code, message: errBody.slice(0, 500), retryable: resp.status >= 500 || resp.status === 429 });
+      return;
+    }
+
+    await parseSSE(resp.body, (data) => {
+      if (data === '[DONE]') return;
+      let json;
+      try { json = JSON.parse(data); } catch { return; }
+
+      const delta = json.choices?.[0]?.delta;
+      if (delta) {
+        // 正常内容
+        if (delta.content) {
+          callbacks.onEvent({ type: 'delta', text: delta.content });
+        }
+        // 推理内容（DeepSeek reasoning_content / 部分中转站 reasoning）
+        if (delta.reasoning_content) {
+          callbacks.onEvent({ type: 'thinking', text: delta.reasoning_content });
+        } else if (delta.reasoning) {
+          callbacks.onEvent({ type: 'thinking', text: delta.reasoning });
+        }
+      }
+
+      // usage（通常在最后一个 chunk）
+      if (json.usage) {
+        callbacks.onEvent({
+          type: 'usage',
+          usage: {
+            promptTokens: json.usage.prompt_tokens || 0,
+            completionTokens: json.usage.completion_tokens || 0,
+            totalTokens: json.usage.total_tokens || 0,
+            reasoningTokens: json.usage.completion_tokens_details?.reasoning_tokens,
+            cachedTokens: json.usage.prompt_tokens_details?.cached_tokens,
+          },
+        });
+      }
+
+      const finish = json.choices?.[0]?.finish_reason;
+      if (finish && finish !== 'null') {
+        callbacks.onEvent({ type: 'done', finishReason: finish });
+      }
+    });
+  },
+};
+
+/**
+ * 通用的 SSE 解析器（所有适配器复用）
+ */
+async function parseSSE(stream, onData) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          onData(line.slice(6));
+        }
+      }
+    }
+    // 处理 buffer 中最后一行
+    if (buffer.startsWith('data: ')) onData(buffer.slice(6));
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+registerAdapter('openai-chat', openaiChatAdapter);
+module.exports = { openaiChatAdapter, parseSSE, toOpenAIMessages };
+```
+
+### 成本与反例
+
+**成本**：4 个适配器 + 共享 SSE 解析器 + 类型定义，约 800~1200 行代码。维护负担中等——每家 API 偶有变化（如 Anthropic 的 beta header），需要关注 changelog。
+
+**什么时候不该这么做**：
+
+- 如果你只服务自己一个人，且只用 DeepSeek + 一个中转站 → 只做 openai-chat 就够了，4 个适配器是过度设计。
+- 如果你后续要支持大量模型（50+ 家），手写适配器会崩溃 → 应该考虑 LiteLLM 或直接上 OpenRouter 统一网关（见 §7 推翻方案）。
+- OpenAI Responses API 在中转站上支持尚不普遍，如果你的主要渠道是中转站，**可以推迟到第二轮**再做。
+
+
+## Q2 模型列表自动拉取
+
+### 一句话结论
+
+`GET /v1/models` 各协议差异大（路径、认证方式、返回结构都不同），但**拉取本身不是难点**。真正的难点是**元数据**（上下文窗口、多模态、是否支持推理）——`/v1/models` 几乎不返回这些。最靠谱的方案是：**先拉 `/v1/models` 拿到可用 ID 列表，再从 LiteLLM 的 `model_prices_and_context_window.json` + models.dev 的 `api.json` 两级元数据源补全**。拉取失败时降级到本地缓存（TTL 24h），缓存也没有时用内置硬编码表兜底。
+
+### 各协议 `/v1/models` 响应差异
+
+| 协议 | 路径 | 认证 | 返回字段 | 元数据丰富度 |
+|------|------|------|---------|-------------|
+| openai-chat | `GET /v1/models` | `Bearer` | `{data:[{id,object,created,owned_by}]}` | 极低 |
+| openai-responses | `GET /v1/models` | `Bearer` | 同 openai-chat | 极低 |
+| anthropic-messages | `GET /v1/models` | `x-api-key` | `{data:[{id,display_name,created_at,type}]}` | 低（有 display_name） |
+| gemini-native | `GET /v1beta/models?key=` | Query | `{models:[{name,displayName,inputTokenLimit,outputTokenLimit,supportedGenerationMethods}]}` | 中（有上下文窗口！） |
+| OpenRouter | `GET /v1/models` | `Bearer`（可选） | 丰富：`{data:[{id,name,context_length,pricing,supported_parameters,...}]}` | **高** |
+| Ollama | `GET /v1/models` | 无 | `{data:[{id,object,created,owned_by}]}` | 极低 |
+
+### 元数据表来源建议
+
+| 来源 | 内容 | 更新频率 | 适合场景 |
+|------|------|---------|---------|
+| **LiteLLM `model_prices_and_context_window.json`** | 模型定价 + 上下文窗口 + provider 路由 | 社区持续更新，day-0 支持新模型 | **主元数据源** |
+| **models.dev `api.json`** | 4000+ 模型的上下文窗口、能力标记（reasoning/tools/vision/PDF）、定价、模态 | 社区维护 | **补充元数据源**（能力标记更全） |
+| **OpenRouter `/v1/models`** | context_length + pricing + supported_parameters | 实时 | 仅当你的 provider 是 OpenRouter 时 |
+| **内置硬编码兜底** | 你自己维护的 50~100 个常用模型 | 手动 | 离线 / 拉取失败时 |
+
+**建议的元数据查找优先级**：
+1. 如果 provider 是 OpenRouter → 直接用 `/v1/models` 的 rich metadata
+2. 否则 → 从 `/v1/models` 拿 ID 列表 → 用 ID 去 LiteLLM 表查 `max_input_tokens` / `max_tokens` / `supports_reasoning` → 找不到的再去 models.dev 查 → 还找不到的标为 `unknown`
+3. 所有元数据缓存到本地，TTL 24h，支持手动刷新
+
+### 拉取 + 缓存 + 降级伪代码
+
+```javascript
+// core/model-fetcher.js
+const fs = require('fs');
+const path = require('path');
+
+const CACHE_DIR = path.join(process.env.APPDATA || path.join(require('os').homedir(), '.config'), 'meeting-lab');
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 小时
+
+// 远程元数据源 URL
+const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+const MODELS_DEV_URL = 'https://models.dev/api.json';
+
+/**
+ * 内存中的元数据缓存
+ */
+let _litellmMeta = null;
+let _modelsDevMeta = null;
+let _metaLoadedAt = 0;
+
+/**
+ * 加载元数据表（LiteLLM + models.dev），带缓存
+ */
+async function loadMetadata(signal) {
+  const now = Date.now();
+  if (_metaLoadedAt > 0 && now - _metaLoadedAt < CACHE_TTL_MS && _litellmMeta) {
+    return { litellm: _litellmMeta, modelsDev: _modelsDevMeta };
+  }
+
+  // 尝试从本地缓存文件加载
+  const localCache = loadMetadataCache();
+  if (localCache && now - localCache.timestamp < CACHE_TTL_MS) {
+    _litellmMeta = localCache.litellm;
+    _modelsDevMeta = localCache.modelsDev;
+    _metaLoadedAt = localCache.timestamp;
+    return { litellm: _litellmMeta, modelsDev: _modelsDevMeta };
+  }
+
+  // 从网络拉取
+  try {
+    const [litellmResp, devResp] = await Promise.all([
+      fetch(LITELLM_URL, { signal }).then(r => r.json()).catch(() => null),
+      fetch(MODELS_DEV_URL, { signal }).then(r => r.json()).catch(() => null),
+    ]);
+    _litellmMeta = litellmResp;
+    _modelsDevMeta = devResp;
+    _metaLoadedAt = now;
+    saveMetadataCache({ litellm: litellmResp, modelsDev: devResp, timestamp: now });
+  } catch (err) {
+    // 网络失败：如果本地有旧缓存则用旧缓存
+    if (localCache) {
+      _litellmMeta = localCache.litellm;
+      _modelsDevMeta = localCache.modelsDev;
+      _metaLoadedAt = localCache.timestamp;
+    }
+  }
+
+  return { litellm: _litellmMeta, modelsDev: _modelsDevMeta };
+}
+
+/**
+ * 从 LiteLLM 表中查找模型的元数据
+ */
+function lookupLitellm(meta, modelId) {
+  if (!meta) return null;
+  // LiteLLM 表的 key 格式：可能带 provider 前缀（如 "openai/gpt-4"），也可能不带
+  const candidates = [
+    modelId,
+    modelId.replace(/^[^/]+\//, ''), // 去掉前缀
+  ];
+  for (const key of candidates) {
+    if (meta[key]) {
+      return {
+        contextWindow: meta[key].max_input_tokens || meta[key].max_tokens || undefined,
+        maxOutput: meta[key].max_output_tokens || meta[key].max_tokens || undefined,
+        supportsReasoning: meta[key].supports_reasoning || false,
+        supportsTools: meta[key].supports_function_calling || false,
+        inputModalities: meta[key].supports_vision ? ['text', 'image'] : ['text'],
+        pricing: {
+          input: meta[key].input_cost_per_token || 0,
+          output: meta[key].output_cost_per_token || 0,
+        },
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * 从 models.dev 表中查找模型的元数据
+ */
+function lookupModelsDev(meta, modelId) {
+  if (!meta) return null;
+  // models.dev 的 key 格式是 "provider/model"
+  const candidates = [
+    modelId,
+    modelId.replace(/^[^/]+\//, ''),
+  ];
+  for (const key of candidates) {
+    for (const providerModels of Object.values(meta)) {
+      if (providerModels[key]) {
+        const m = providerModels[key];
+        return {
+          contextWindow: m.limit?.context || undefined,
+          maxOutput: m.limit?.output || undefined,
+          supportsReasoning: m.reasoning || false,
+          supportsTools: m.tool_call || false,
+          inputModalities: m.modalities?.input || ['text'],
+          pricing: m.cost ? { input: m.cost.input || 0, output: m.cost.output || 0 } : undefined,
+          family: m.family,
+          status: m.status,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 主入口：拉取模型列表 + 补全元数据
+ */
+async function fetchModelList(provider, signal) {
+  const adapter = getAdapter(provider.protocol);
+
+  // 1. 拉取模型 ID 列表
+  let rawModels;
+  try {
+    rawModels = await adapter.listModels(provider, signal);
+  } catch (err) {
+    // 拉取失败：降级到缓存
+    const cached = loadModelListCache(provider.id);
+    if (cached) {
+      return cached.map(m => ({
+        ...m,
+        _source: 'cache',
+        _stale: true,
+      }));
+    }
+    // 缓存也没有：返回空列表，UI 显示"手动输入模型 ID"
+    return [];
+  }
+
+  // 2. 补全元数据
+  const { litellm, modelsDev } = await loadMetadata(signal);
+  const enriched = rawModels.map(m => {
+    const litellmMeta = lookupLitellm(litellm, m.id);
+    const devMeta = lookupModelsDev(modelsDev, m.id);
+    // 合并：LiteLLM 优先，models.dev 补充
+    return {
+      ...m,
+      contextWindow: m.contextWindow || litellmMeta?.contextWindow || devMeta?.contextWindow,
+      maxOutput: litellmMeta?.maxOutput || devMeta?.maxOutput,
+      supportsReasoning: litellmMeta?.supportsReasoning ?? devMeta?.supportsReasoning,
+      supportsTools: litellmMeta?.supportsTools ?? devMeta?.supportsTools,
+      inputModalities: m.inputModalities || litellmMeta?.inputModalities || devMeta?.inputModalities,
+      pricing: m.pricing || litellmMeta?.pricing || devMeta?.pricing,
+      family: devMeta?.family,
+      status: devMeta?.status,
+      _source: 'remote',
+    };
+  });
+
+  // 3. 写入缓存
+  saveModelListCache(provider.id, enriched);
+
+  return enriched;
+}
+
+// —— 缓存读写（原子写入） ——
+function loadMetadataCache() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(CACHE_DIR, 'metadata-cache.json'), 'utf8'));
+  } catch { return null; }
+}
+
+function saveMetadataCache(data) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const tmp = path.join(CACHE_DIR, 'metadata-cache.json.tmp');
+  fs.writeFileSync(tmp, JSON.stringify(data));
+  fs.renameSync(tmp, path.join(CACHE_DIR, 'metadata-cache.json')); // 原子写入
+}
+
+function loadModelListCache(providerId) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(CACHE_DIR, `models-${providerId}.json`), 'utf8'));
+  } catch { return null; }
+}
+
+function saveModelListCache(providerId, models) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const tmp = path.join(CACHE_DIR, `models-${providerId}.json.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(models));
+  fs.renameSync(tmp, path.join(CACHE_DIR, `models-${providerId}.json`));
+}
+
+module.exports = { fetchModelList, loadMetadata, lookupLitellm, lookupModelsDev };
+```
+
+### 成本与反例
+
+**成本**：~300 行，两次远程 fetch（LiteLLM 表约 2MB，models.dev 约 5MB），首次加载 1-3 秒，之后走缓存。内存中保留 JSON 对象约 10-20MB。
+
+**什么时候不该这么做**：
+- 如果你只有 3-5 个 provider 且模型很少变 → 硬编码表 + 手动更新就够了，不需要自动拉取。
+- 如果你的主要 provider 是 OpenRouter → 直接用它的 `/v1/models` 返回的 rich metadata，不需要 LiteLLM/models.dev 两级查找。
+- 如果用户在离线环境 → 必须内置一个 bundled snapshot（打包时把 LiteLLM 表复制到 app 里），否则首次启动没有任何元数据。
+
+
+## Q3 密钥本地存储
+
+### 一句话结论
+
+**Windows 11 单机单用户场景下，Electron `safeStorage` 是唯一正确选择。** Windows 上 safeStorage 底层用 DPAPI，加密密钥绑定当前用户登录凭据，"只有使用与加密数据的人相同的登录凭据的用户才能解密"。keytar 已停止维护且引入原生依赖，明文 YAML 在 Electron 场景下没有理由用。**但必须处理 `safeStorage.isEncryptionAvailable() === false` 的降级路径**——虽然 Windows 上几乎不会发生，但代码必须能跑。
+
+### 为什么不是其他方案
+
+| 方案 | 问题 |
+|------|------|
+| **明文 YAML** | 任何能读到你用户目录的进程都能拿到 API key。你已经在 DSH 的 `.credentials.yaml` 里踩过这个坑了。 |
+| **keytar** | 需要原生编译（node-gyp），Electron 升级时经常需要 rebuild，且项目维护不活跃。 |
+| **自建 AES + 硬编码密钥** | 密钥在代码里，等于没有加密。 |
+| **safeStorage** | 零额外依赖，Electron 内置，Windows DPAPI 保护，跨平台有合理的 fallback。 |
+
+### 字段级设计
+
+```javascript
+// core/secure-store.js
+const { app, safeStorage } = require('electron');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * 密钥存储文件结构（磁盘上的样子）：
+ * {
+ *   "version": 1,
+ *   "keys": {
+ *     "provider-id-1": "<base64-encoded-encrypted-buffer>",
+ *     "provider-id-2": "<base64-encoded-encrypted-buffer>"
+ *   },
+ *   "plaintextFallback": false
+ * }
+ */
+
+const STORE_PATH = () => path.join(app.getPath('userData'), 'secrets.json');
+
+/**
+ * 检查当前环境是否真正支持加密。
+ * 注意：Linux 上 basic_text 后端返回 true 但实际只是混淆，不是加密。
+ */
+function isSecureStorageAvailable() {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  // Linux 上额外检查后端
+  if (process.platform === 'linux') {
+    const backend = safeStorage.getSelectedStorageBackend();
+    if (backend === 'basic_text') {
+      console.warn('[secure-store] Linux basic_text backend: secrets are only obfuscated, not encrypted');
+      return false;
+    }
+  }
+  return true;
+}
+
+function loadStore() {
+  try {
+    return JSON.parse(fs.readFileSync(STORE_PATH(), 'utf8'));
+  } catch {
+    return { version: 1, keys: {}, plaintextFallback: false };
+  }
+}
+
+function saveStore(store) {
+  const dir = path.dirname(STORE_PATH());
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = STORE_PATH() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2));
+  fs.renameSync(tmp, STORE_PATH()); // 原子写入
+}
+
+/**
+ * 加密并存储一个 API key
+ */
+function setApiKey(providerId, apiKey) {
+  const store = loadStore();
+  if (isSecureStorageAvailable()) {
+    const encrypted = safeStorage.encryptString(apiKey);
+    store.keys[providerId] = encrypted.toString('base64');
+    store.plaintextFallback = false;
+  } else {
+    // 降级：base64 编码（不是加密！仅防止肉眼直接看到）
+    store.keys[providerId] = Buffer.from(apiKey, 'utf8').toString('base64');
+    store.plaintextFallback = true;
+    console.warn('[secure-store] Encryption unavailable, storing key with obfuscation only');
+  }
+  saveStore(store);
+}
+
+/**
+ * 解密并读取一个 API key
+ */
+function getApiKey(providerId) {
+  const store = loadStore();
+  const stored = store.keys[providerId];
+  if (!stored) return null;
+
+  if (isSecureStorageAvailable() && !store.plaintextFallback) {
+    try {
+      return safeStorage.decryptString(Buffer.from(stored, 'base64'));
+    } catch (err) {
+      console.error(`[secure-store] Failed to decrypt key for ${providerId}:`, err.message);
+      return null;
+    }
+  } else {
+    return Buffer.from(stored, 'base64').toString('utf8');
+  }
+}
+
+/**
+ * 删除一个 API key
+ */
+function deleteApiKey(providerId) {
+  const store = loadStore();
+  delete store.keys[providerId];
+  saveStore(store);
+}
+
+module.exports = { setApiKey, getApiKey, deleteApiKey, isSecureStorageAvailable };
+```
+
+### 成本与反例
+
+**成本**：~100 行代码，零额外依赖。Windows DPAPI 加解密是瞬时的（微秒级）。
+
+**什么时候不该用**：
+- **多用户共享同一台机器**：safeStorage 在 Windows 上只保护"其他用户"，不保护"同一用户下的其他应用"。如果你的用户会运行恶意软件，API key 仍然可能被窃取。
+- **需要跨设备同步密钥**：safeStorage 加密的密文绑定当前设备 + 当前用户，拷到另一台机器无法解密。如果需要跨设备，应该用用户主密码派生密钥（但这会引入"忘记密码"问题）。
+- **你发现用户在 Linux 上跑**：如果 `getSelectedStorageBackend()` 返回 `basic_text`，必须显式告知用户"密钥仅被混淆，未加密"。Electron 文档明确指出 basic_text 是"用硬编码明文密码加密"。
+
+
+## Q4 50 个席位的并发与性能
+
+### 一句话结论
+
+**必须做双层并发控制**：全局信号量（默认 8-10 并发）+ per-provider 令牌桶（各自 rate limit）。渲染层用 **per-seat 的 rAF 合帧 + 15fps 节流**——不是 60fps，因为长会话下单次 DOM 更新可能耗时 50-150ms，60fps 的 rAF 回调会堆积到崩溃。50 路 SSE 同时更新 DOM 在 Electron 里**不需要虚拟化**（虚拟化解决的是"大量元素同时存在"的问题，不是"少量元素频繁更新"的问题），但**必须做背压**——当 DOM 更新跟不上 SSE 到达速率时，丢弃中间帧而不是无限排队。
+
+### 并发控制设计（字段级）
+
+```javascript
+// core/concurrency.js
+
+/**
+ * 信号量：限制同时运行的异步任务数量
+ */
+class Semaphore {
+  constructor(max) {
+    this.max = max;
+    this.current = 0;
+    this.queue = [];
+  }
+
+  async acquire() {
+    if (this.current < this.max) {
+      this.current++;
+      return;
+    }
+    return new Promise(resolve => this.queue.push(resolve));
+  }
+
+  release() {
+    if (this.queue.length > 0) {
+      const next = this.queue.shift();
+      next(); // 直接让等待者进入，不减少 current
+    } else {
+      this.current--;
+    }
+  }
+
+  /** 包装一个异步函数，自动 acquire/release */
+  async run(fn) {
+    await this.acquire();
+    try { return await fn(); }
+    finally { this.release(); }
+  }
+}
+
+/**
+ * 令牌桶：限制单位时间内的请求数
+ */
+class TokenBucket {
+  constructor({ ratePerMinute, burst }) {
+    this.ratePerMs = ratePerMinute / 60000;
+    this.capacity = burst || Math.ceil(ratePerMinute / 60);
+    this.tokens = this.capacity;
+    this.lastRefill = Date.now();
+  }
+
+  _refill() {
+    const now = Date.now();
+    const elapsed = now - this.lastRefill;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.ratePerMs);
+    this.lastRefill = now;
+  }
+
+  async take() {
+    this._refill();
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return;
+    }
+    // 需要等待
+    const waitMs = Math.ceil((1 - this.tokens) / this.ratePerMs);
+    await new Promise(r => setTimeout(r, waitMs));
+    return this.take(); // 递归重试
+  }
+}
+
+/**
+ * 全局并发控制器
+ */
+class ConcurrencyController {
+  constructor() {
+    // 全局信号量：默认 8 并发（不是 50！）
+    this.globalSemaphore = new Semaphore(8);
+    // per-provider 令牌桶
+    this.providerBuckets = new Map();
+    // per-provider 并发计数（可选，用于更精细的控制）
+    this.providerSemaphores = new Map();
+  }
+
+  /**
+   * 获取或创建 provider 的令牌桶
+   * @param {string} providerId
+   * @param {object} limits - { ratePerMinute, maxConcurrent }
+   */
+  _getProviderLimiter(providerId, limits = {}) {
+    if (!this.providerBuckets.has(providerId)) {
+      this.providerBuckets.set(providerId, new TokenBucket({
+        ratePerMinute: limits.ratePerMinute || 60, // 默认 60 RPM
+        burst: limits.burst || 5,
+      }));
+    }
+    if (!this.providerSemaphores.has(providerId)) {
+      this.providerSemaphores.set(providerId, new Semaphore(limits.maxConcurrent || 4));
+    }
+    return {
+      bucket: this.providerBuckets.get(providerId),
+      semaphore: this.providerSemaphores.get(providerId),
+    };
+  }
+
+  /**
+   * 执行一个受控的 API 调用
+   */
+  async run(providerId, limits, fn) {
+    const { bucket, semaphore } = this._getProviderLimiter(providerId, limits);
+
+    // 第一层：全局信号量
+    return this.globalSemaphore.run(async () => {
+      // 第二层：provider 信号量
+      return semaphore.run(async () => {
+        // 第三层：令牌桶
+        await bucket.take();
+        return fn();
+      });
+    });
+  }
+}
+
+module.exports = { Semaphore, TokenBucket, ConcurrencyController };
+```
+
+### 渲染节流设计（字段级）
+
+```javascript
+// core/render-scheduler.js
+
+/**
+ * 每个席位的渲染调度器
+ *
+ * 核心逻辑：
+ * 1. SSE delta 到达时，把文本追加到 pendingBuffer
+ * 2. 调度一次 rAF；如果当前帧已经调度过，跳过
+ * 3. rAF 执行时，把 pendingBuffer 一次性 flush 到 DOM
+ * 4. 如果两次 rAF 之间超过 66ms（15fps），用 setTimeout 延迟而不是排队
+ * 5. 如果 pendingBuffer 超过阈值（如 10KB），丢弃中间内容只保留首尾（背压）
+ */
+class RenderScheduler {
+  constructor(seatId, onFlush) {
+    this.seatId = seatId;
+    this.onFlush = onFlush; // (text: string) => void
+    this.pendingBuffer = '';
+    this.scheduled = false;
+    this.lastRenderTime = 0;
+    this.MIN_INTERVAL_MS = 66; // 15fps
+    this.MAX_BUFFER = 10 * 1024; // 10KB 背压阈值
+  }
+
+  /**
+   * 追加文本（由 SSE onEvent 调用）
+   */
+  append(text) {
+    this.pendingBuffer += text;
+
+    // 背压：如果缓冲区过大，丢弃中间内容
+    if (this.pendingBuffer.length > this.MAX_BUFFER) {
+      const keep = Math.floor(this.MAX_BUFFER / 2);
+      this.pendingBuffer =
+        this.pendingBuffer.slice(0, keep) +
+        '\n\n... [中间内容因渲染压力被省略] ...\n\n' +
+        this.pendingBuffer.slice(-keep);
+    }
+
+    this._schedule();
+  }
+
+  _schedule() {
+    if (this.scheduled) return;
+    this.scheduled = true;
+
+    const now = Date.now();
+    const elapsed = now - this.lastRenderTime;
+
+    if (elapsed >= this.MIN_INTERVAL_MS) {
+      // 距离上次渲染足够久，立即调度 rAF
+      requestAnimationFrame(() => this._flush());
+    } else {
+      // 距离上次渲染太近，用 setTimeout 延迟
+      setTimeout(() => {
+        requestAnimationFrame(() => this._flush());
+      }, this.MIN_INTERVAL_MS - elapsed);
+    }
+  }
+
+  _flush() {
+    this.scheduled = false;
+    this.lastRenderTime = Date.now();
+    if (this.pendingBuffer) {
+      this.onFlush(this.pendingBuffer);
+      this.pendingBuffer = '';
+    }
+  }
+
+  /** 强制刷新（流结束时调用） */
+  flushNow() {
+    if (this.pendingBuffer) {
+      this.onFlush(this.pendingBuffer);
+      this.pendingBuffer = '';
+    }
+    this.scheduled = false;
+  }
+}
+
+module.exports = { RenderScheduler };
+```
+
+### 内存/延迟成本表
+
+| 方案 | 内存开销 | 延迟影响 | 适用场景 |
+|------|---------|---------|---------|
+| 全局信号量 = 50（无限制） | 50 个并发连接，每连接 ~100KB buffer | 0 | ❌ 会触发 rate limit |
+| 全局信号量 = 8 + per-provider 令牌桶 | ~1MB | 排队延迟 0-5s | ✅ 推荐 |
+| 全局信号量 = 4 | ~500KB | 排队延迟 0-15s | 极保守，适合免费层 |
+| 渲染节流 15fps | 每席位 pendingBuffer ~10KB | 用户感知不到（15fps 对文本流足够） | ✅ 推荐 |
+| 渲染节流 60fps | 每席位 pendingBuffer ~10KB | 可能崩溃 | ❌ 长会话下会堆积 |
+
+### 关于虚拟化
+
+**50 个席位不需要虚拟化。** 虚拟化的目的是"当 DOM 中有 10000+ 个元素时，只渲染视口内的"。你的场景是 50 个席位 × 每个席位的消息列表（可能几十到几百条）。真正的瓶颈不是"元素数量"，而是"更新频率"。用 rAF 节流 + 背压解决更新频率问题即可。
+
+**但你需要**：
+- 每个席位的消息列表用 `DocumentFragment` 批量插入新消息
+- 流式更新时只改最后一个 `textContent`，不重建整个消息列表
+- 如果单席位消息超过 500 条，做"折叠旧消息"（不是虚拟化，是分页）
+
+### 反例
+
+**什么时候不该用 8 并发**：
+- 如果你的 provider 是 Ollama 本地模型 → 并发数取决于 GPU 显存，可能 1-2 个就满了
+- 如果你用的是 OpenAI 免费层（3 RPM）→ 全局信号量降到 2-3，令牌桶设为 3 RPM
+- 如果用户手动点了 50 个席位的"发送" → 应该是"排队"而不是"报错"
+
+**什么时候不该用 15fps**：
+- 如果用户只开了 1 个席位且用的是快模型（如 Gemini Flash）→ 60fps 也没问题，但 15fps 的差异用户几乎感知不到，所以统一 15fps 是安全的。
+
+
+## Q5 会话上下文管理
+
+### 一句话结论
+
+**内存 + 落盘 JSON 就够了，不要上 SQLite。** 50 个席位 × 每席位 200 条消息 × 每条消息平均 500 token ≈ 100MB 原始文本，加上 JSON 开销约 150MB。Electron renderer 的内存预算通常在 1-2GB，150MB 完全可接受。SQLite 引入原生依赖、增加序列化开销，在单机单用户场景下是过度设计。**上下文超限时的默认策略应该是"截断最旧的非系统消息"**，而不是自动摘要（摘要需要额外 API 调用，成本高且可能失败）。usage 统一累计方案见下文。
+
+### 存储结构（字段级）
+
+```javascript
+// core/session-store.js
+
+/**
+ * 磁盘上的会话文件结构（每席位一个 JSON 文件）：
+ * sessions/
+ *   <seatId>.json
+ *
+ * {
+ *   "seatId": "seat-1",
+ *   "providerId": "openai-official",
+ *   "model": "gpt-4o",
+ *   "systemPrompt": "你是一个...",
+ *   "messages": [
+ *     {
+ *       "id": "msg-uuid",
+ *       "role": "user",
+ *       "content": [{ "type": "text", "text": "..." }],
+ *       "timestamp": 1712345678901,
+ *       "usage": null  // user 消息没有 usage
+ *     },
+ *     {
+ *       "id": "msg-uuid2",
+ *       "role": "assistant",
+ *       "content": [{ "type": "text", "text": "..." }],
+ *       "thinking": [{ "type": "text", "text": "..." }],  // 推理内容（可选）
+ *       "timestamp": 1712345679000,
+ *       "usage": {
+ *         "promptTokens": 150,
+ *         "completionTokens": 200,
+ *         "totalTokens": 350,
+ *         "reasoningTokens": 50,
+ *         "cachedTokens": 0
+ *       }
+ *     }
+ *   ],
+ *   "cumulativeUsage": {
+ *     "promptTokens": 1500,
+ *     "completionTokens": 2000,
+ *     "totalTokens": 3500,
+ *     "requestCount": 5
+ *   },
+ *   "contextWindow": 128000,  // 从模型元数据来
+ *   "createdAt": 1712345678000,
+ *   "updatedAt": 1712345679000
+ * }
+ */
+```
+
+### 上下文用量计算
+
+**核心问题**：不同协议计算 token 的方式不同，且 `/v1/models` 不返回 tokenizer。你不能在客户端精确计算 token 数。
+
+**解决方案**：**用 API 返回的 usage 反推 + 保守估算**。
+
+```javascript
+// core/context-manager.js
+
+/**
+ * 估算一条消息的 token 数（保守估算）
+ * 英文：~4 chars/token
+ * 中文：~1.5 chars/token
+ * 取保守值：~2 chars/token
+ */
+function estimateTokens(text) {
+  if (!text) return 0;
+  // 粗略估算：中文约 1.5 字符/token，英文约 4 字符/token
+  const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const otherChars = text.length - chineseChars;
+  return Math.ceil(chineseChars / 1.5 + otherChars / 4);
+}
+
+function estimateMessageTokens(msg) {
+  let total = 0;
+  for (const part of msg.content) {
+    if (part.type === 'text') total += estimateTokens(part.text);
+    if (part.type === 'image') total += 85; // 低分辨率图片约 85 token
+    if (part.type === 'file') total += 2000; // PDF 粗略估算
+  }
+  if (msg.thinking) {
+    for (const t of msg.thinking) total += estimateTokens(t.text);
+  }
+  return total + 4; // 消息开销
+}
+
+/**
+ * 计算当前会话的上下文用量
+ */
+function calcContextUsage(session) {
+  let total = 0;
+  // system prompt
+  total += estimateTokens(session.systemPrompt);
+  // 所有消息
+  for (const msg of session.messages) {
+    total += estimateMessageTokens(msg);
+  }
+  return {
+    usedTokens: total,
+    contextWindow: session.contextWindow || 128000,
+    usagePercent: Math.min(100, (total / (session.contextWindow || 128000)) * 100),
+  };
+}
+
+/**
+ * 截断策略：保留 system prompt + 最近 N 条消息
+ * 当 usage 接近上限（如 85%）时触发
+ */
+function truncateHistory(session, maxTokens) {
+  const systemTokens = estimateTokens(session.systemPrompt);
+  const budget = maxTokens - systemTokens - 1000; // 预留 1000 token 给回复
+
+  // 从最新往回累加
+  let used = 0;
+  const keep = [];
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    const msgTokens = estimateMessageTokens(session.messages[i]);
+    if (used + msgTokens > budget) break;
+    keep.unshift(session.messages[i]);
+    used += msgTokens;
+  }
+
+  return {
+    ...session,
+    messages: keep,
+    _truncated: session.messages.length - keep.length,
+  };
+}
+```
+
+### usage 统一累计
+
+```javascript
+// core/usage-accumulator.js
+
+/**
+ * 每个席位的 usage 累计器
+ *
+ * 不同协议的 usage 出现时机：
+ * - openai-chat：最后一个 chunk（需设 stream_options.include_usage）
+ * - anthropic：message_start 给 input，message_delta 给 output
+ * - gemini：每个 chunk 都有 usageMetadata，取最后一个
+ *
+ * 统一方案：适配器负责在正确时机发出 usage 事件，
+ * 累计器只做加法。
+ */
+class UsageAccumulator {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.promptTokens = 0;
+    this.completionTokens = 0;
+    this.totalTokens = 0;
+    this.reasoningTokens = 0;
+    this.cachedTokens = 0;
+    this.requestCount = 0;
+    this.lastRequestUsage = null; // 最后一次请求的 usage（用于展示单次）
+  }
+
+  /**
+   * 接收一个 usage 事件
+   * 注意：某些协议可能在流中途发多个 usage（增量），
+   * 这里用"覆盖"策略：每次请求只累计一次最终 usage。
+   */
+  onUsage(usage) {
+    this.lastRequestUsage = usage;
+    // 注意：这里不是累加，而是每次请求结束后由 endRequest() 累加
+  }
+
+  /**
+   * 一次请求结束时调用，把 lastRequestUsage 累加到总计
+   */
+  endRequest() {
+    if (this.lastRequestUsage) {
+      this.promptTokens += this.lastRequestUsage.promptTokens || 0;
+      this.completionTokens += this.lastRequestUsage.completionTokens || 0;
+      this.totalTokens += this.lastRequestUsage.totalTokens || 0;
+      this.reasoningTokens += this.lastRequestUsage.reasoningTokens || 0;
+      this.cachedTokens += this.lastRequestUsage.cachedTokens || 0;
+      this.requestCount++;
+      this.lastRequestUsage = null;
+    }
+  }
+
+  /**
+   * 如果协议不返回 usage，用估算值兜底
+   */
+  estimateFallback(promptText, completionText) {
+    this.lastRequestUsage = {
+      promptTokens: estimateTokens(promptText),
+      completionTokens: estimateTokens(completionText),
+      totalTokens: estimateTokens(promptText) + estimateTokens(completionText),
+      _estimated: true,
+    };
+  }
+
+  toJSON() {
+    return {
+      promptTokens: this.promptTokens,
+      completionTokens: this.completionTokens,
+      totalTokens: this.totalTokens,
+      reasoningTokens: this.reasoningTokens,
+      cachedTokens: this.cachedTokens,
+      requestCount: this.requestCount,
+    };
+  }
+}
+
+module.exports = { UsageAccumulator, estimateTokens, calcContextUsage, truncateHistory };
+```
+
+### 成本与反例
+
+**成本**：~400 行。每席位 JSON 文件大小：200 条消息 × 500 token × ~4 bytes/token ≈ 400KB。50 席 = 20MB 磁盘。内存中保持当前活跃会话约 2-5MB，完全可接受。
+
+**什么时候该上 SQLite**：
+- 会话数超过 500 个（不只是 50 个席位，而是每个席位有多个会话）
+- 需要全文搜索历史消息
+- 需要事务性写入（防止崩溃时文件损坏——但原子写入（write temp + rename）已经能解决 99% 的问题）
+
+**什么时候不该用自动摘要**：
+- 摘要需要额外 API 调用 → 消耗 token → 引入延迟和失败点
+- 摘要会丢失细节 → 用户可能不满意
+- **推荐方案**：接近上限时 UI 显示黄色警告 + "截断最旧消息"按钮，让用户手动决定。自动截断作为最后手段。
+
+
+## Q6 思考等级跨厂商映射
+
+### 一句话结论
+
+**统一为 4 档：`off` / `low` / `medium` / `high`，外加一个 `max` 作为可选扩展。** Claude 的 `budget_tokens` 连续值确实有信息损失，但实践中三到四档已经覆盖了 95% 的用户需求——大部分用户根本分不清 5000 和 8000 token 预算的区别。**不支持思考的模型 → 隐藏控件**，不是置灰。置灰会让用户困惑"为什么点了没反应"，隐藏则明确"这个模型没有这个能力"。
+
+### 映射表
+
+| 统一等级 | OpenAI `reasoning_effort` | DeepSeek | Claude `thinking.budget_tokens` | Gemini `thinkingConfig` |
+|---------|--------------------------|----------|-------------------------------|------------------------|
+| `off` | 不设置（或 `"none"` 对 GPT-5.1+） | 切换为非 reasoner 模型 | 不设置 `thinking` 字段 | `{thinkingBudget: 0}` |
+| `low` | `"low"` | reasoner 模型（默认行为） | `{budget_tokens: 2048}` | `{thinkingLevel: "LOW"}` 或 `{thinkingBudget: 1024}` |
+| `medium` | `"medium"` | reasoner 模型 | `{budget_tokens: 8192}` | `{thinkingLevel: "MEDIUM"}` |
+| `high` | `"high"` | reasoner 模型 | `{budget_tokens: 16384}` | `{thinkingLevel: "HIGH"}` |
+| `max`（扩展） | `"xhigh"`（部分模型支持） | 无 | `{budget_tokens: 32000}` | `{thinkingBudget: 32768}` |
+
+**关于 Claude budget_tokens 的信息损失**：如果你真的需要精细控制，可以在 UI 上提供一个"高级模式"，展开后显示 slider（1024 ~ max_tokens 之间）。**默认隐藏**，只在用户点击"自定义"时显示。
+
+**关于 DeepSeek**：DeepSeek 的 reasoner 模型（`deepseek-reasoner`）没有思考等级参数——思考是模型固有的。映射策略：`off` → 切到 `deepseek-chat`；`low/medium/high` → 都用 `deepseek-reasoner`。UI 上对 DeepSeek 显示一个开关而不是等级选择器。
+
+### 适配器中的映射代码
+
+```javascript
+// core/protocols/reasoning-map.js
+
+/**
+ * 统一思考等级 → 各协议请求体字段
+ */
+
+// OpenAI Chat Completions / Responses
+function toOpenAIReasoning(effort) {
+  if (!effort || effort === 'off') return null;
+  const map = { low: 'low', medium: 'medium', high: 'high', max: 'xhigh' };
+  return map[effort] || null;
+}
+
+// Anthropic Messages
+function toAnthropicThinking(effort, maxTokens) {
+  if (!effort || effort === 'off') return null;
+  const budgetMap = { low: 2048, medium: 8192, high: 16384, max: 32768 };
+  const budget = Math.min(budgetMap[effort] || 8192, (maxTokens || 4096) - 1);
+  // budget_tokens 最小 1024
+  return { type: 'enabled', budget_tokens: Math.max(1024, budget) };
+}
+
+// Gemini
+function toGeminiThinking(effort) {
+  if (!effort || effort === 'off') return { thinkingBudget: 0 };
+  // Gemini 3+ 用 thinkingLevel，2.5 用 thinkingBudget
+  const levelMap = { low: 'LOW', medium: 'MEDIUM', high: 'HIGH', max: 'HIGH' };
+  const budgetMap = { low: 1024, medium: 8192, high: 16384, max: 32768 };
+  return {
+    thinkingLevel: levelMap[effort] || 'MEDIUM',
+    thinkingBudget: budgetMap[effort] || 8192,
+    includeThoughts: true,
+  };
+}
+
+// DeepSeek：模型切换策略
+function toDeepSeekModel(baseModel, effort) {
+  if (effort === 'off') {
+    return baseModel.replace('reasoner', 'chat');
+  }
+  return baseModel.replace('chat', 'reasoner');
+}
+
+module.exports = { toOpenAIReasoning, toAnthropicThinking, toGeminiThinking, toDeepSeekModel };
+```
+
+### UI 降级建议
+
+```javascript
+// UI 渲染逻辑（伪代码）
+function renderReasoningControl(seat) {
+  const model = getModelMetadata(seat.model);
+
+  // 模型元数据中没有 supportsReasoning → 隐藏控件
+  if (!model.supportsReasoning) {
+    return null; // 不渲染
+  }
+
+  // DeepSeek reasoner → 显示开关而不是等级选择器
+  if (seat.model.includes('deepseek')) {
+    return { type: 'toggle', label: '深度思考' };
+  }
+
+  // 其他 → 显示 4 档选择器
+  return {
+    type: 'select',
+    label: '思考等级',
+    options: [
+      { value: 'off', label: '关闭' },
+      { value: 'low', label: '低' },
+      { value: 'medium', label: '中' },
+      { value: 'high', label: '高' },
+    ],
+  };
+}
+```
+
+### 成本与反例
+
+**成本**：~150 行映射代码 + 每协议 5-10 行的参数注入。维护负担低——各家的 thinking 参数已经趋于稳定。
+
+**什么时候不该硬压成四档**：
+- 如果你在做研究（如对比不同 budget 对输出质量的影响）→ 需要精确控制，应该提供"高级模式"
+- 如果 Claude 的 `budget_tokens` 未来被弃用（当前迹象：Claude 4.6 上 `enabled` + `budget_tokens` 已被标记为 deprecated，改用 `thinking: {type: "adaptive"}`）→ 需要跟进适配
+
+**什么时候该隐藏而不是置灰**：
+- 模型明确不支持思考 → 隐藏
+- 模型支持思考但当前 provider 的中转站剥离了参数 → 置灰并显示 tooltip "当前中转站不支持此参数"（需要检测：如果请求了 reasoning_effort 但 usage 中没有 reasoningTokens，说明被剥离了）
+
+
+## Q7 权限管理
+
+### 一句话结论
+
+单机单用户场景下，**"权限管理"唯一合理的拆解是"资源约束"**，不是"访问控制"。具体来说，3 个维度就够了：**能力开关**（是否允许附件上传）、**配额**（每席位/每会话 token 上限）、**输出长度限制**（max_tokens）。**"角色/管理员/用户"体系是过度设计**——单机场景下只有一个用户，角色体系没有意义。"编辑系统提示词"**不应该是权限**——这是每个席位的基本配置项，不需要开关控制。
+
+### 最小可用权限模型（字段级）
+
+```javascript
+// core/permissions.js
+
+/**
+ * 席位权限配置（存储在 seats.json 中每个席位对象内）
+ */
+const DEFAULT_PERMISSIONS = {
+  // —— 能力开关 ——
+  allowFileUpload: true,     // 是否允许上传文件（PDF/txt/docx）
+  allowImageUpload: true,    // 是否允许上传图片
+  maxAttachmentSizeMB: 4,    // 单文件大小上限（MB）
+
+  // —— 配额 ——
+  perSessionTokenLimit: null,   // 每会话 token 上限，null = 继承模型上下文窗口
+  perDayTokenLimit: null,       // 每日 token 上限，null = 无限制
+  maxConcurrentRequests: 1,     // 该席位同时最多几个请求在飞（通常 1）
+
+  // —— 输出控制 ——
+  maxOutputTokens: null,        // 单次回复最大 token，null = 用模型默认
+};
+```
+
+**为什么这些字段是必要的**：
+
+| 字段 | 为什么需要 | 反例（什么时候不该有） |
+|------|-----------|---------------------|
+| `allowFileUpload` | PDF/大文件容易爆 token，限制可以防止误操作 | 如果你的用户就是自己，永远知道自己在干什么 → 不需要 |
+| `allowImageUpload` | 某些模型不支持图片，传了会报错 | 已经在模型元数据中标记了 multimodal 能力 → 可以自动隐藏而非权限控制 |
+| `maxAttachmentSizeMB` | 防止用户传 100MB 的 PDF 把内存撑爆 | 如果你的前端已经在文件选择器限制了大小 → 后端检查是冗余的 |
+| `perSessionTokenLimit` | 防止一个席位把 API 额度吃光 | 单用户场景下，用户自己会注意 → 可以只做"警告"不做"硬限制" |
+| `maxOutputTokens` | 有些模型默认 max_tokens 很小，需要显式设置 | 如果 UI 上已经有 max_tokens 输入框 → 不需要权限层 |
+
+### 明确指出的过度设计
+
+| 过度设计 | 为什么不该做 |
+|---------|-------------|
+| **角色体系（admin/user/viewer）** | 单机单用户，没有多用户场景 |
+| **席位级"是否允许编辑系统提示词"开关** | 系统提示词是席位的基本配置，不是权限 |
+| **"是否允许删除会话"权限** | 同上，基本操作不需要权限 |
+| **API key 的 per-provider 访问控制** | 单用户拥有所有 key，没有"谁可以用哪个 key"的问题 |
+| **操作审计日志** | 单用户场景下，日志是给自己看的，不是给别人审计的 |
+| **网络访问白名单** | 单机场景下，用户自己配置的 baseURL 就是白名单 |
+
+### 成本与反例
+
+**成本**：~50 行（字段定义 + 3 个检查点：上传时检查、发送前检查、回复后检查）。几乎零维护。
+
+**什么时候不该用最小模型**：
+- 如果你的应用未来会变成多用户（如团队共享）→ 需要引入真正的权限体系。但那是另一个产品阶段的事，现在做是 YAGNI。
+- 如果用户明确要求"防止自己误操作" → 可以把配额做成"软限制"（警告但不阻止），而不是硬限制。
+
+
+## Q8 对话界面布局
+
+### 一句话结论
+
+**你的"宫格格子点击后原地变成对话窗"方向是对的。** 50 个席位如果每个都开独立窗口/面板，窗口管理会成为灾难。复用现有宫格，点击格子 → 格子内切换显示（webview ⇄ API 对话窗）。参数栏用**格子内右侧 240px 抽屉**，不用独立面板。**分组折叠 + 网格滚动**足够处理 50 席，不需要虚拟化。
+
+### 布局 ASCII 示意
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  [全局控制区]  [席位管理] [设置] [人工分发甲板]            [● 3 席位活跃]    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  [分组: 推理模型] ▼                                                          │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐            │
+│  │  Seat 1     │ │  Seat 2     │ │  Seat 3     │ │  Seat 4     │            │
+│  │  ● 活跃     │ │  ● 活跃     │ │  ○ 空闲     │ │  ○ 空闲     │            │
+│  │  ┌─────────┐│ │  ┌─────────┐│ │             │ │             │            │
+│  │  │webview  ││ │  │对话窗   ││ │             │ │             │            │
+│  │  │ (网页)  ││ │  │┌───────┐││ │             │ │             │            │
+│  │  │         ││ │  ││ 消息  │││ │             │ │             │            │
+│  │  │         ││ │  ││ 列表  │││ │             │ │             │            │
+│  │  │         ││ │  │└───────┘││ │             │ │             │            │
+│  │  └─────────┘│ │  │┌───────┐││ │             │ │             │            │
+│  │             │ │  ││输入框 │││ │             │ │             │            │
+│  │  [点此对话] │ │  ││➕ 发送│││ │             │ │             │            │
+│  │             │ │  │└───────┘││ │             │ │             │            │
+│  │             │ │  ├─────────┤│ │             │ │             │            │
+│  │             │ │  │右侧参数 ││ │             │ │             │            │
+│  │             │ │  │┌───────┐││ │             │ │             │            │
+│  │             │ │  ││上下文 │││ │             │ │             │            │
+│  │             │ │  ││  ████ │││ │             │ │             │            │
+│  │             │ │  ││ 68%   │││ │             │ │             │            │
+│  │             │ │  │├───────┤││ │             │ │             │            │
+│  │             │ │  ││思考:中│││ │             │ │             │            │
+│  │             │ │  │├───────┤││ │             │ │             │            │
+│  │             │ │  ││模型:  │││ │             │ │             │            │
+│  │             │ │  ││gpt-4o │││ │             │ │             │            │
+│  │             │ │  │└───────┘││ │             │ │             │            │
+│  │             │ │  └─────────┘│ │             │ │             │            │
+│  │  [切换]     │ │  [切换]    │ │             │ │             │            │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘            │
+│                                                                              │
+│  [分组: 快速模型] ▼                                                          │
+│  ┌─────────────┐ ┌─────────────┐                                            │
+│  │  Seat 5     │ │  Seat 6     │                                            │
+│  │             │ │             │                                            │
+│  └─────────────┘ └─────────────┘                                            │
+│                                                                              │
+│  [分组: 本地模型] ▼                                                          │
+│  ┌─────────────┐                                                            │
+│  │  Seat 7     │                                                            │
+│  └─────────────┘                                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 与现有宫格的关系方案
+
+| 方案 | 优点 | 缺点 | 推荐度 |
+|------|------|------|--------|
+| **原地切换（webview ⇄ 对话窗）** | 复用现有宫格布局，零窗口管理成本 | 格子尺寸固定，对话窗可能太窄 | ✅ 推荐 |
+| 独立对话面板（右侧滑出） | 对话区域大 | 50 席时面板切换频繁，上下文丢失 | ❌ |
+| Tab 切换（顶部 Tab 栏） | 桌面端习惯 | 50 个 Tab 会溢出，需要滚动 Tab 栏 | 中 |
+| 独立窗口（每席一个 BrowserWindow） | 可多屏 | 50 个窗口 = 内存灾难 | ❌ |
+
+**推荐方案**：格子内原地切换 + 参数栏抽屉。
+
+- 每个格子有一个 `[切换]` 按钮（或在格子上双击）在 webview 和对话窗之间切换
+- 对话窗内右侧 240px 是可折叠的参数栏（默认展开，点击收起）
+- 参数栏内容：上下文用量条 / 思考等级选择器 / 模型选择器 / temperature slider / max_tokens 输入框
+- 输入框在对话窗底部，左侧有一个 `➕` 按钮弹出附件菜单（文件/图片）
+- 50 席时，格子尺寸约 300×400px，对话窗内消息列表可滚动，参数栏收窄到 180px
+
+### 成本与反例
+
+**成本**：复用现有宫格 CSS（约 200 行新增 CSS），对话窗组件约 300 行 JS。
+
+**什么时候不该用原地切换**：
+- 如果你需要"同一个席位同时看 webview 和对话窗" → 原地切换做不到，需要分屏或独立面板
+- 如果格子尺寸太小（< 250px 宽）→ 对话窗内容挤成一团，应该改用独立面板
+
+**什么时候该用虚拟化**：
+- 如果你把"50 个席位的消息列表全部渲染在一个 DOM 里" → 是的，需要虚拟化
+- 但上面的方案是"每个格子只渲染自己的消息列表"，50 个列表 × 每个渲染 20 条可见消息 = 1000 个 DOM 节点，不需要虚拟化
+
+
+## Q9 附件注入的协议差异
+
+### 一句话结论
+
+**统一抽象为 3 种附件类型：`image` / `file` / `text`。** 图片用 base64 内联（所有协议都支持）；文本文件直接拼进 prompt；**PDF 是最大的坑**——OpenAI Chat Completions 不原生支持，Anthropic 支持（通过 `document` block），Gemini 支持（通过 `inlineData`），OpenAI Responses 支持（通过 `input_file`）。**PDF 的统一策略：如果协议不支持，提取文本后拼进 prompt**（需要 PDF 解析库，可以用 pdf-parse，零依赖方案是自己写一个极简 PDF 文本提取器——但 PDF 格式复杂，建议用成熟库）。
+
+### 附件抽象（字段级）
+
+```typescript
+interface Attachment {
+  /** 唯一标识 */
+  id: string;
+  /** 附件类型 */
+  type: 'image' | 'file' | 'text';
+  /** 原始文件名 */
+  filename: string;
+  /** MIME type */
+  mimeType: string;
+  /** 原始字节大小 */
+  sizeBytes: number;
+  /** base64 编码的数据（image 和 file 类型使用） */
+  data?: string;
+  /** 纯文本内容（text 类型使用，或 PDF 提取后的文本） */
+  textContent?: string;
+  /** 上传时间 */
+  createdAt: number;
+}
+```
+
+### 各协议映射表
+
+| 附件类型 | openai-chat | openai-responses | anthropic-messages | gemini-native |
+|---------|-------------|------------------|-------------------|---------------|
+| **image** | `{type:"image_url", image_url:{url:"data:<mime>;base64,<data>"}}` | `{type:"input_image", image_url:...}` | `{type:"image", source:{type:"base64", media_type, data}}` | `{inlineData:{mimeType, data}}` |
+| **text** | 拼进 `content` 的 text part | 同 | 同 | 同 |
+| **PDF** | ❌ 不支持 → 提取文本拼进 prompt | `{type:"input_file", file_data:...}` | `{type:"document", source:{type:"base64", media_type:"application/pdf", data}}` | `{inlineData:{mimeType:"application/pdf", data}}` |
+
+### 统一附件注入代码
+
+```javascript
+// core/attachments.js
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * 把 Attachment 对象转成统一 InternalContentPart
+ */
+function attachmentToContentPart(att) {
+  if (att.type === 'image') {
+    return {
+      type: 'image',
+      image: { data: att.data, mimeType: att.mimeType },
+    };
+  }
+  if (att.type === 'text') {
+    return {
+      type: 'text',
+      text: `--- 附件: ${att.filename} ---\n${att.textContent}\n--- 附件结束 ---`,
+    };
+  }
+  // file 类型（PDF 等）
+  return {
+    type: 'file',
+    file: { data: att.data, mimeType: att.mimeType, filename: att.filename },
+  };
+}
+
+/**
+ * 各适配器如何把 InternalContentPart 转成协议原生格式
+ * （在适配器内部实现，这里展示映射逻辑）
+ */
+
+// openai-chat 的转换
+function toOpenAIContentPart(part) {
+  if (part.type === 'text') return { type: 'text', text: part.text };
+  if (part.type === 'image') {
+    return {
+      type: 'image_url',
+      image_url: { url: `data:${part.image.mimeType};base64,${part.image.data}` },
+    };
+  }
+  if (part.type === 'file') {
+    // OpenAI Chat Completions 不支持 PDF
+    // 降级：如果 file 有 textContent（已提取），拼进 prompt
+    // 如果没有，返回一个错误提示文本
+    return {
+      type: 'text',
+      text: `[PDF 附件: ${part.file.filename}。当前协议不支持直接注入 PDF，请使用支持 PDF 的模型或提取文本后重试。]`,
+    };
+  }
+}
+
+// anthropic-messages 的转换
+function toAnthropicContentPart(part) {
+  if (part.type === 'text') return { type: 'text', text: part.text };
+  if (part.type === 'image') {
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: part.image.mimeType, data: part.image.data },
+    };
+  }
+  if (part.type === 'file') {
+    if (part.file.mimeType === 'application/pdf') {
+      return {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: part.file.data },
+      };
+    }
+    // 其他文件类型降级为文本
+    return { type: 'text', text: `[附件: ${part.file.filename}]` };
+  }
+}
+
+// gemini-native 的转换
+function toGeminiPart(part) {
+  if (part.type === 'text') return { text: part.text };
+  if (part.type === 'image') {
+    return { inlineData: { mimeType: part.image.mimeType, data: part.image.data } };
+  }
+  if (part.type === 'file') {
+    return { inlineData: { mimeType: part.file.mimeType, data: part.file.data } };
+  }
+}
+
+module.exports = {
+  attachmentToContentPart,
+  toOpenAIContentPart,
+  toAnthropicContentPart,
+  toGeminiPart,
+};
+```
+
+### PDF 支持差异的详细说明
+
+| 协议 | PDF 支持方式 | 限制 |
+|------|-------------|------|
+| **OpenAI Chat Completions** | ❌ 不支持。gpt-4o 只能通过 Files API 上传 PDF 然后在消息中引用 `file_id`——但那是 Responses API 的路径 | 必须降级为文本提取 |
+| **OpenAI Responses** | `{type:"input_file", file_data:"data:application/pdf;base64,..."}` | 需要 Responses API |
+| **Anthropic** | `{type:"document", source:{type:"base64", media_type:"application/pdf", data}}` | 支持良好，Claude 原生解析 PDF |
+| **Gemini** | `{inlineData:{mimeType:"application/pdf", data}}` | 支持良好，原生解析 |
+
+**PDF 降级策略**：
+
+```javascript
+/**
+ * 如果不支持 PDF，尝试提取文本
+ * 需要 npm 包：pdf-parse（零依赖，纯 JS）
+ */
+async function extractPdfText(base64Data) {
+  // 这里假设有 pdf-parse
+  // const pdf = require('pdf-parse');
+  // const buffer = Buffer.from(base64Data, 'base64');
+  // const data = await pdf(buffer);
+  // return data.text;
+
+  // 零依赖方案：返回提示文本
+  return null;
+}
+
+/**
+ * 统一的附件处理入口
+ */
+async function prepareAttachment(att, protocol) {
+  if (att.type === 'file' && att.mimeType === 'application/pdf') {
+    const supported = ['anthropic-messages', 'gemini-native', 'openai-responses'];
+    if (!supported.includes(protocol)) {
+      // 尝试提取文本
+      const text = await extractPdfText(att.data);
+      if (text) {
+        return { type: 'text', text: `--- PDF: ${att.filename} ---\n${text}\n---` };
+      }
+      return {
+        type: 'text',
+        text: `[PDF 附件: ${att.filename}。当前协议不支持 PDF，且文本提取失败。]`,
+      };
+    }
+  }
+  return attachmentToContentPart(att);
+}
+```
+
+### 成本与反例
+
+**成本**：~200 行转换代码。如果引入 pdf-parse，额外 ~50KB 依赖。
+
+**什么时候不该统一**：
+- 如果你只用一个协议 → 不需要抽象，直接按协议格式写就行
+- 如果你的用户从不传 PDF → 可以暂时不做 PDF 支持，遇到时显示"暂不支持"
+
+**什么时候该用 pdf-parse**：
+- 你的用户经常传 PDF → 值得引入
+- 你坚持零依赖 → 自己写一个极简的 PDF 文本提取器（只处理 `Tj` 和 `TJ` 操作符），约 100 行，但只能处理简单 PDF
+
+
+## 对你 §6 方案的批判
+
+### 方向正确的部分
+
+- 四个适配器的选择（openai-chat / anthropic-messages / gemini-native / openai-responses）**正确**
+- 席位 → provider → model 的三层结构**正确**
+- 内存 + JSON 落盘的会话存储**正确**
+- 宫格原地切换对话窗**正确**
+
+### 需要修正的部分
+
+| 你的方案 | 问题 | 修正 |
+|---------|------|------|
+| `providers.json` 中的 `apiKeyEnc` | 加密后的密钥和 provider 配置混在一起 | **密钥单独存 `secrets.json`**，provider 配置里只存 `apiKeyRef`（引用 ID）。这样备份配置时不会泄露密钥。 |
+| `seats.json` 中的 `params{temp,maxTokens,reasoning}` | 扁平化不够 | 改为 `params: {temperature, maxTokens, topP, reasoningEffort, thinkingBudgetTokens}`，与 Q6 的映射表对齐 |
+| `protocols/` 只有 4 个方法 | 缺少流取消和错误分类 | 加上 `cancel()` 返回值和统一的 `StreamEvent` 错误分类（Q1 已修正） |
+| `session-store.js` 只提了"内存 + 落盘 JSON" | 没说落盘频率和原子写入 | 每次 assistant 回复完成后落盘一次，用 write-temp-rename 保证原子性。流式过程中的 delta 只存内存。 |
+
+### 你自认为的三个薄弱点
+
+**1. safeStorage 在 Windows DPAPI 不可用时的降级？**
+
+Windows DPAPI **几乎不会不可用**——除非用户在极端受限的企业环境（组策略禁用了 CryptProtectData）。降级策略：`safeStorage.isEncryptionAvailable()` 返回 false 时，用 base64 混淆存储 + UI 显示明确警告"密钥未加密存储"。不要静默降级。
+
+**2. 50 席 × 多轮历史全放内存会不会爆？**
+
+不会。50 席 × 200 条消息 × 500 token ≈ 50MB 原始文本 + JSON 结构开销 ≈ 80MB。Electron renderer 的内存预算通常 1-2GB。**但如果你的用户把每个席位的对话历史拉到 2000 条**，那就是 500MB+，需要警惕。解决方案：消息超过 500 条时自动归档旧消息到磁盘（从内存移除，需要时按需加载）。
+
+**3. 对话窗塞进宫格格子会不会把交互搞复杂？**
+
+**会有一些复杂**，但可控。关键设计：切换按钮要显眼（不要藏在右键菜单里），参数栏抽屉要有平滑动画（避免布局跳动），对话窗和 webview 共享同一个格子容器（用 `display:none` 切换而不是动态创建/销毁 DOM）。如果格子宽度 < 300px，参数栏改为底部弹出而不是右侧抽屉。
+
+### 关于"直接上 OpenRouter 统一网关"的讨论
+
+**不建议完全依赖 OpenRouter。** 理由：
+
+1. **你已经有 DSH 的本地密钥**——agne/google/deepseek，这些是直接 API，走 OpenRouter 要多一跳、多一个费用层
+2. **OpenRouter 是单点故障**——它挂了你的 50 席全挂
+3. **延迟增加**——多一跳网络延迟（50-200ms）
+4. **成本**——OpenRouter 在模型价格上加 5% 左右的手续费
+
+**但可以这样用**：把 OpenRouter 作为一个特殊的 provider（协议仍是 `openai-chat`），这样你不需要为它写单独适配器。它的 `/v1/models` 返回 rich metadata，可以作为元数据源之一。
+
+### 关于"用 LiteLLM 或 openai SDK"的讨论
+
+| 方案 | 优点 | 缺点 | 建议 |
+|------|------|------|------|
+| **LiteLLM（Python 服务）** | 100+ 家提供商，统一接口 | 需要跑一个 Python 进程，增加部署复杂度 | ❌ Electron 应用不应依赖 Python |
+| **LiteLLM（Node.js 版）** | 不依赖 Python | Node 版功能不完整，维护不活跃 | ❌ |
+| **openai 官方 SDK** | 类型安全，处理了重试和分页 | 只支持 OpenAI 格式，其他协议仍需手写 | ⚠️ 可以用于 openai-chat 适配器内部，但不解决多协议问题 |
+| **自建适配器** | 零依赖，完全可控 | 需要维护 4 个适配器 | ✅ **推荐** |
+
+**最终建议**：自建 4 个轻量适配器 + 共享 SSE 解析器 + 从 LiteLLM 表读取元数据（只读 JSON，不依赖 LiteLLM 运行时）。这样保持了零依赖的架构，同时获得了元数据的好处。
+
+
+## 建议实施顺序表
+
+| 步骤 | 做什么 | 为什么是这个顺序 | 大致代码量 |
+|------|--------|-----------------|-----------|
+| **1** | 协议适配器接口 + `openai-chat` 适配器重写 | 替换现有的 397 行硬编码 api-adapter.js，是后续一切的基础 | 400 行 |
+| **2** | `anthropic-messages` + `gemini-native` 适配器 | 覆盖 Claude 和 Gemini，验证接口设计是否合理 | 500 行 |
+| **3** | 设置界面（提供方 CRUD + 密钥输入 + 测试连接） | 有了适配器但没有 UI 去配置，用户无法使用 | 600 行（HTML+JS+CSS） |
+| **4** | 模型列表拉取 + 元数据补全 + 缓存 | 设置界面需要"拉取模型列表"按钮，模型元数据是 Q4/Q6/Q7 的前置 | 300 行 |
+| **5** | 席位管理（创建/命名/分组/持久化） | 有了 provider 和 model 列表，才能创建席位 | 400 行 |
+| **6** | 会话存储（内存 + JSON 落盘 + usage 累计） | 对话窗需要会话历史才能工作 | 400 行 |
+| **7** | 对话窗 UI（格子内切换 + 输入框 + 附件 + 参数栏） | 最后一步，把所有后端能力串联起来 | 800 行 |
+| **8** | 并发控制（全局信号量 + per-provider 令牌桶） | 50 席同时发送时才需要，可以先用简单版（全局 8 并发） | 200 行 |
+| **9** | 渲染节流（rAF + 15fps + 背压） | 同上，先跑通再优化 | 150 行 |
+| **10** | `openai-responses` 适配器 | 优先级最低，等前面的都稳定了再加 | 300 行 |
+
+**总计约 4000 行**。建议每完成一步就提交一个可用版本，避免"写了一万行才发现接口设计有问题"。

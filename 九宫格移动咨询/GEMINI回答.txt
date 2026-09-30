@@ -1,0 +1,257 @@
+这份咨询案非常详尽，完整地列出了从架构、环境到每次尝试的深层原因。这两个问题都是 Electron 桌面开发中极具代表性的“硬核”痛点。
+
+针对 **UI 统一** 和 **`<webview>` 自由拖拽排序**，以下是更优质、更符合 Electron 内部渲染与事件机制的解决方案。
+
+---
+
+## 问题一：主窗口「通辽会议」按钮 UI 统一
+
+### 根因分析
+
+1. **SPA 懒加载/异步渲染**：`dom-ready` 时 React 尚未挂载 DOM 节点。
+2. **`computedStyle` 复制失效**：复制 `color`/`background` 可能会把 CSS 变量、继承值（`currentColor`）或者暗黑/明亮主题类名遗漏；手动拼接 `style` 会产生硬编码底色。
+3. **图标对齐问题**：React 组件内部可能使用了复杂的 Flex / Grid 布局或 `line-height`/`margin` 补偿，直接算坐标 padding 极其容易出错。
+
+### 推荐解决方案：深度克隆骨架 + 样式类继承（DOM-Level Mirroring）
+
+不要手写内联样式（不要用 `btn.style.background = ...`），直接**深度克隆设置按钮节点**，保留它身上所有的 CSS Class 名与结构，然后只替换里面的文字与 SVG。
+
+#### 核心步骤：
+
+1. **MutationObserver 方案**：取代 `setTimeout` 轮询，精准监听侧边栏容器挂载时机。
+2. **`cloneNode(true)`**：保留目标按钮的全部样式类（Class）、Flex 布局属性、Hover/Active 伪类逻辑。
+3. **注入位置策略**：如果设置按钮容器是 `flex-direction: column`，直接 `appendChild` 或 `insertBefore` 就会自然上下排列；如果原容器是 `flex-direction: row`，可以用一个包覆层 `div` 把“设置”和“通辽会议”打包成纵向组合。
+
+#### 代码实现参考
+
+```javascript
+function injectMeetingButton() {
+  const SETTINGS_SELECTOR = 'button[aria-label*="设置"], button[aria-label*="Settings"]';
+  
+  const settingsBtn = document.querySelector(SETTINGS_SELECTOR);
+  if (!settingsBtn) return false;
+  if (document.getElementById('dsh-meeting-btn')) return true; // 防止重复注入
+
+  // 1. 深度克隆设置按钮（完美继承所有 CSS Class、Flex 属性及主题变量）
+  const meetingBtn = settingsBtn.cloneNode(true);
+  meetingBtn.id = 'dsh-meeting-btn';
+  meetingBtn.setAttribute('aria-label', '通辽会议');
+  meetingBtn.removeAttribute('data-reactid'); // 清理可能影响 React 的属性
+
+  // 2. 查找并替换内部图标与文本
+  const textEl = meetingBtn.querySelector('span, div:not(:has(*))') || meetingBtn;
+  // 仅替换文本内容
+  if (textEl !== meetingBtn) textEl.textContent = '通辽会议';
+
+  const svgEl = meetingBtn.querySelector('svg');
+  if (svgEl) {
+    // 替换 SVG 的 path，但保留原 SVG 的 class、width、height、viewBox，保证视觉尺寸完全一致
+    svgEl.innerHTML = `<path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>`;
+  }
+
+  // 3. 布局逻辑处理（保障上下罗列与图标左对齐）
+  const parent = settingsBtn.parentNode;
+  const parentStyle = window.getComputedStyle(parent);
+
+  if (parentStyle.display === 'flex' && parentStyle.flexDirection.includes('column')) {
+    // 父级本来就是纵向布局，直接插入在设置按钮下方
+    parent.insertBefore(meetingBtn, settingsBtn.nextSibling);
+  } else {
+    // 父级是横向布局：创建一个无底色的 Column 容器包裹两个按钮
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'display: flex; flex-direction: column; gap: 4px; width: 100%;';
+    parent.insertBefore(wrapper, settingsBtn);
+    wrapper.appendChild(settingsBtn);
+    wrapper.appendChild(meetingBtn);
+  }
+
+  // 4. 绑定点击事件
+  meetingBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    window.electronAPI?.openMeetingWindow(); // 调起 IPC
+  });
+
+  return true;
+}
+
+// 使用 MutationObserver 替代 setTimeout，零延迟且不空跑
+const observer = new MutationObserver((mutations, obs) => {
+  if (injectMeetingButton()) {
+    // 注入成功后继续监听（以防 React 单页应用切路由重绘 DOM 把按钮刷掉）
+  }
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
+
+```
+
+---
+
+## 问题二：会议窗口 `<webview>` 自由拖拽排序
+
+### 根因分析：为什么 HTML5 DnD / 遮罩在真实拖拽下失效？
+
+1. **Chromium 原生拖拽 Handover（关键故障点）**：
+在 Windows 系统下，HTML5 的 `dragstart` 触发后，操作系统会接管鼠标并进入 **OLE Drop Source 循环**。当真实鼠标越过 `<webview>` 边界时，Chromium 的 Host 进程（BrowserWindow）会将拖拽 Handover（移交）给 WebContentsView（Guest 进程）。
+2. **遮罩层捕获不到真实 Drag 事件**：一旦进入 Native Drag 状态，全屏透明 `<div>` 的 CSS `z-index` **无法阻挡 Windows OLE 给 WebContentsView 传递 Drag 消息**。Guest 窗口内部的原生拖拽机制拦截了 drop，导致宿主 DOM 的遮罩收到的是断开的 Session。
+3. **`executeJavaScript` 伪造事件与真实拖拽的区别**：JS 伪造的 `DragEvent` 仅在 DOM 事件树传播，**完全没有触发操作系统的 Native Drag Session**，因此能骗过逻辑，却无法在真实鼠标下运行。
+
+---
+
+### 推荐解决方案：Pointer Events + 交互期临时 `pointer-events: none` 覆盖
+
+**放弃 HTML5 Drag & Drop（DnD）规范**，改用基础的 **Pointer Events（`pointerdown` / `pointermove` / `pointerup`）** 模拟拖拽，结合 **动态 CSS 禁用 webview 鼠标响应**。
+
+#### 核心机制：
+
+1. **`setPointerCapture`**：在 `pointerdown` 时将指针事件锁死在拖拽手柄/标题栏上，即便鼠标飞速移动，事件也不会丢失。
+2. **`pointer-events: none`（核心绕过法）**：在拖拽开始（`pointermove` 触发阈值）的瞬间，给所有 `<webview>` 节点加上 `pointer-events: none !important;`。
+* **效果**：一旦 `<webview>` 设置了 `pointer-events: none`，Chromium 的 Host 窗口就会完全无视 Guest 进程，**将鼠标指针穿透回宿主 DOM**，`pointermove` 和 `pointerup` 将 100% 稳定在宿主 DOM 触发！
+
+
+3. **克隆 Drag Avatar（拖拽镜像）**：拖拽时隐藏原卡片（或降低透明度），并在 `document.body` 生成一个跟随鼠标移动的缩略图浮层。
+
+#### 核心代码实现
+
+##### 1. CSS 准备（meeting.css）
+
+```css
+/* 拖拽期间强制所有 webview 穿透，防止捕获指针 */
+body.is-dragging webview {
+  pointer-events: none !important;
+}
+
+/* 拖拽中的占位符与镜像样式 */
+.cell.dragging-placeholder {
+  opacity: 0.3;
+  border: 2px dashed #409eff;
+}
+
+.drag-avatar {
+  position: fixed;
+  pointer-events: none;
+  z-index: 999999;
+  opacity: 0.85;
+  transform: scale(0.95);
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  transition: transform 0.05s linear;
+}
+
+```
+
+##### 2. JS 逻辑实现（meeting.js）
+
+```javascript
+function initGridDragAndDrop() {
+  const grid = document.getElementById('grid-container');
+  let draggingCell = null;
+  let avatarEl = null;
+  let startX = 0, startY = 0;
+  let isDragging = false;
+
+  grid.addEventListener('pointerdown', (e) => {
+    // 仅响应底部名牌或指定手柄的左键点击
+    const handle = e.target.closest('.np-label, .drag-handle');
+    if (!handle || e.button !== 0) return;
+
+    draggingCell = handle.closest('.cell');
+    startX = e.clientX;
+    startY = e.clientY;
+
+    // 绑定指针捕获，防止快速拖动时脱离
+    handle.setPointerCapture(e.pointerId);
+
+    const onPointerMove = (moveEv) => {
+      // 设置 5px 移动阈值，防止误触
+      if (!isDragging) {
+        const dist = Math.hypot(moveEv.clientX - startX, moveEv.clientY - startY);
+        if (dist < 5) return;
+
+        // 判定真正开始拖拽
+        isDragging = true;
+        document.body.classList.add('is-dragging'); // 关键：给所有 webview 加上 pointer-events: none
+        draggingCell.classList.add('dragging-placeholder');
+
+        // 创建随鼠移动的虚拟镜像 (Avatar)
+        avatarEl = createDragAvatar(draggingCell);
+        document.body.appendChild(avatarEl);
+      }
+
+      // 1. 更新 Avatar 位置
+      avatarEl.style.left = `${moveEv.clientX - 20}px`;
+      avatarEl.style.top = `${moveEv.clientY - 20}px`;
+
+      // 2. 实时计算目标放置位置
+      // 由于 webview 已被 pointer-events: none，document.elementFromPoint 能直接穿透找到下方的 .cell
+      const elementUnderMouse = document.elementFromPoint(moveEv.clientX, moveEv.clientY);
+      const targetCell = elementUnderMouse?.closest('.cell');
+
+      if (targetCell && targetCell !== draggingCell) {
+        // 实时交换 DOM 位置实现视觉动画
+        const cells = Array.from(grid.children);
+        const srcIdx = cells.indexOf(draggingCell);
+        const tgtIdx = cells.indexOf(targetCell);
+
+        if (srcIdx < tgtIdx) {
+          grid.insertBefore(draggingCell, targetCell.nextSibling);
+        } else {
+          grid.insertBefore(draggingCell, targetCell);
+        }
+      }
+    };
+
+    const onPointerUp = (upEv) => {
+      handle.releasePointerCapture(upEv.pointerId);
+      handle.removeEventListener('pointermove', onPointerMove);
+      handle.removeEventListener('pointerup', onPointerUp);
+
+      if (isDragging) {
+        // 清理状态
+        document.body.classList.remove('is-dragging');
+        draggingCell.classList.remove('dragging-placeholder');
+        avatarEl?.remove();
+
+        // 重新保存当前网格顺序（如写回 localStorage 或 Config）
+        saveGridOrder();
+      }
+
+      isDragging = false;
+      draggingCell = null;
+      avatarEl = null;
+    };
+
+    handle.addEventListener('pointermove', onPointerMove);
+    handle.addEventListener('pointerup', onPointerUp);
+  });
+}
+
+// 辅助函数：创建拖拽镜像
+function createDragAvatar(cell) {
+  const avatar = document.createElement('div');
+  avatar.className = 'drag-avatar';
+  avatar.style.width = `${cell.offsetWidth}px`;
+  avatar.style.height = `${cell.offsetHeight}px`;
+  
+  // 可以简单复制名牌和背景作为拖拽外观
+  const nameplate = cell.querySelector('.nameplate').cloneNode(true);
+  avatar.appendChild(nameplate);
+  avatar.style.background = '#1a1a1a';
+  avatar.style.border = '1px solid #409eff';
+  avatar.style.borderRadius = '8px';
+  return avatar;
+}
+
+```
+
+---
+
+## 方案对比总结
+
+| 维度 | 旧方案（尝试过的方案 C） | 新方案（Pointer Events + CSS 穿透） |
+| --- | --- | --- |
+| **主窗口按钮** | `computedStyle` 复制 + 手动给 border/background 内联 | `cloneNode(true)` 继承设置按钮类名 + MutationObserver 挂载 |
+| **效果对比** | 出现深色底色块，无法对齐 | **完美融合**，自动跟随原组件的主题切换、Hover 态与图标对齐 |
+| **拖拽机制** | HTML5 DnD + 全屏遮罩 | Pointer Events + 动态 `pointer-events: none` |
+| **webview 干扰** | 真实拖拽会被 OLE Handover 到 guest 进程拦截 | 拖拽触发瞬间禁用 webview 事件响应，**100% 穿透捕获** |
+| **可靠性** | 仅 `executeJavaScript` 伪造事件通过 | **真实鼠标操作 100% 可用**，滑动平滑流畅 |

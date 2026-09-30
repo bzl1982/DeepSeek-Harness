@@ -106,7 +106,7 @@ const MODES = Object.freeze({
   /* ─────── 1. 广播：同一件事，听多个独立视角 ─────── */
   broadcast: {
     id: 'broadcast',
-    label: '广播',
+    label: '全员广播',
     desc: '全员同时收到同一问题，各自回答一轮。最快，靠角色分化产生差异。',
     scene: {
       when: '你只想听同一件事的多个不同角度，不需要 AI 之间对话。',
@@ -150,7 +150,7 @@ const MODES = Object.freeze({
   /* ─────── 3. 协助：你自己要做，AI 当顾问团 ─────── */
   assist: {
     id: 'assist',
-    label: '协助',
+    label: '顾问协助',
     desc: '用户是执行者，AI 是顾问团：先各出方案 → 会诊挑错 → 收敛成能直接照做的结论。',
     scene: {
       when: '你自己是执行者，需要的是「**能直接照做**的方案」，不是讨论。',

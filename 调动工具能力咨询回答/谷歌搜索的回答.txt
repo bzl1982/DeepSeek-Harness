@@ -1,0 +1,55 @@
+将网页版大模型接入 DeepSeek Harness (DSH) 客户端，并使其具备调用本地工具以及生态中 200 多个插件（实际上截至目前社区精选和沙箱验证的插件已经扩展到数千个）的能力，是一条非常前沿且性感的 Agent 技术路线。 [1] 
+由于 DeepSeek Harness 底层完全基于强大的 Cordis 插件元框架 构建，其设计哲学就是“一切皆插件”（模型、工具、UI、沙箱全是可拆卸的模块）。要完美实现你的设想，主要有以下三条主流且高效的技术方法路线： [1] 
+------------------------------
+## 💡 路线一：基于 Cordis 协议的“模型适配器 (Model Adapter)”路线（推荐，最优雅）
+这是最符合 DeepSeek Harness 官方原生的做法。你不需要去修改网页版的界面，而是把你的网页版模型抽象为一个 DSH 认可的 Model 插件。 [2] 
+
+* 实现原理：
+在 DSH 中，大模型只是一个实现了 ctx.model 接口的 Cordis 插件。你可以写一个极简的 ESM 桥接插件，在本地启动一个轻量级的 WebSocket 或 HTTP 服务，去监听并劫持你网页版模型的输入输出。 [3] 
+* 技术实施步骤：
+1. 编写桥接插件：利用 DSH 的 defineTool 和事件钩子（如 turn/start、tool/call），让 DSH 的 Agent 决策循环（Loop）来调度你的网页版模型。
+   2. 标准 Function Calling 映射：当 DSH 决定调用本地工具（如 Bash、文件读写）或那 200 多个插件时，DSH 会生成标准的 JSON Schema 工具调用参数。你的桥接层将这些参数传给网页版（如果网页版支持 Function Calling），或者在本地直接由 DSH 的 ctx.subprocess 执行，再把 tool/result 结果喂回给模型。
+   3. 优势：一劳永逸。只要接入成功，DSH 自带的终端、文件树、以及生态里所有的第三方插件（如视觉插件 ModLens、工作流插件）你都可以直接无缝调用，不需要单独为每个插件做适配。 [1, 3, 4, 5] 
+
+## 🔌 路线二：基于 PTC (Code Mode SDK) 的“代码执行驱动”路线（最硬核，上限最高）
+DeepSeek Harness 提供了一个非常恐怖的特性叫做 PTC (Programmatic Tool Calling / Code Mode)。 [6, 7] 
+
+* 实现原理：
+在传统模式下，模型每调用一个工具就要和本地进行一次 Round-trip（往返对话）。而 PTC 允许模型直接编写一段 TypeScript 程序，一次性组合调用多个本地工具和插件。 [6, 7] 
+* 技术实施步骤：
+1. 把你的网页版模型作为 DSH 的 Preset 驱动源，并开启 Code Mode。
+   2. DSH 会把当前环境中安装的 200 多个插件及本地工具，包装成一个 Code Mode SDK 暴露给模型。
+   3. 你的网页版模型只需要一行代码或者一段 TS 脚本（例如：调用本地文件读取 → 传递给某个分析插件 → 写入本地），DSH 本地的 runtime-worker 就会直接在沙箱里高效率执行完并返回最终结果。 [3, 6, 7] 
+* 优势：极其适合复杂的、多步骤的本地复杂任务，能省下巨额的 Token 传输成本，同时对网页版模型的长文本推理能力释放得最彻底。 [7] 
+
+## 🌐 路线三：基于 dsh-web-ui + 逆向 API 劫持路线（最快见效）
+如果你不想动底层的 Cordis 框架代码，想保持原汁原味的网页版前端体验，可以走外围扩展路线。
+
+* 实现原理：
+借助社区最成熟的 UI 全家桶插件 dsh-web-ui 或 dsh-better-sidebar，它们已经把默认素雅的毛坯房界面升级成了集成侧边栏、任务看板、内嵌终端的专业工作台。 [1, 8, 9] 
+* 技术实施步骤：
+1. 在客户端通过 dsh plugin --profile web add @linxin666/dsh-web-ui-all 一键安装专业级 Web 工作台。
+   2. 利用 Tampermonkey（油猴脚本）或浏览器 Extension，劫持网页版大模型的对话发送和接收端点，将其反向代理指向本地 DSH 客户端开放的 API 端口（通常本地 Web UI 挂在 http://127.0.0.1:3080）。
+   3. 优势：前端界面完全交由生态中成熟的 UI 插件托管（省去自己写前端的痛苦），网页版模型只需要安安静静地在后台充当“大脑”即可。 [1, 8, 10] 
+
+------------------------------
+## ⚠️ 避坑与实战小建议
+
+   1. 善用 Creator 模式调试：DSH 专门内置了一个叫 Creator 的 Preset 模式，它带有运行时检查和插件实验指南。在你调试网页端与本地工具连通性时，一定要切换到这个模式。 [6, 11] 
+   2. 注意 Node.js 版本与依赖：开发 DSH 插件时，确保本地环境 Node.js ≥ 22，且一定要安装好 pnpm。本地挂载非发布插件时，记得使用 --patch 参数进行热插拔测试。 [3, 12] 
+   3. 安全第一：因为你赋予了它“调动本地工具”的能力（比如 Bash 执行权限），在沙箱选择上，建议初期使用默认的 Workspace Write（限制大模型只能在你打开的当前工程目录下搞事情），不要轻易开 Full Access，防止模型或第三方插件不小心误删你全盘的文件。 [5, 7, 12] 
+
+你想先从哪一步开始切入？我们可以先聊聊如何把你的网页版大模型封装成符合 Cordis 标准的微型桥接插件，或者先挑几个核心的本地工具（比如本地文件读写、终端 Bash 权限）来进行首轮通路的测试。
+
+[1] [https://deepseek.csdn.net](https://deepseek.csdn.net/6a87be24662f9a54cb9f1881.html)
+[2] [https://www.deepseek.com](https://www.deepseek.com/harness/en/)
+[3] [https://github.com](https://github.com/deepseek-ai/deepseek-harness/discussions/961)
+[4] [https://deepinfra.com](https://deepinfra.com/blog/deepseek-harness-review)
+[5] [https://www.datacamp.com](https://www.datacamp.com/tutorial/deepseek-harness)
+[6] [https://www.deepseek.com](https://www.deepseek.com/harness/en/)
+[7] [https://deepinfra.com](https://deepinfra.com/blog/deepseek-harness-review)
+[8] [https://zhuanlan.zhihu.com](https://zhuanlan.zhihu.com/p/2072698072879125245)
+[9] [https://composio.dev](https://composio.dev/content/best-deepseek-harness-plugins)
+[10] [https://medium.com](https://medium.com/data-science-in-your-pocket/what-is-deepseek-harness-4199d11a1235)
+[11] [https://medium.com](https://medium.com/@breathofcode/building-your-first-deepseek-harness-plugin-a-step-by-step-tutorial-df8451fec66a)
+[12] [https://github.com](https://github.com/deepseek-ai/deepseek-harness/discussions/1477)

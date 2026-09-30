@@ -1,0 +1,717 @@
+我把你这份“六份外部咨询评审 + 最终定案”按**现在 2026-09-22 的微软官方资料**重新校了一遍。
+
+整体判断：**这份评审已经接近可以拿去指导开发，但 §1.3 关于 MAF 的核心判断必须改。** 这个错误很关键，不过它**不会推翻你最终“Phase 0 不引框架”的工程裁决**，只是裁决理由要换。
+
+## 一、先把最关键的一刀纠正
+
+你文档里这句话：
+
+> **MAF 1.0 刻意把 GroupChat 这种会话式涌现编排设计掉了。**
+
+按照微软现在的官方资料，这个结论已经不成立。
+
+微软在 **2026-04-03 发布 MAF 1.0 GA** 时明确写的是：
+
+> Multi-Agent Orchestration – Stable support for **sequential, concurrent, handoff, group chat, and Magentic-One**.
+
+也就是说，**Group Chat 没有被 MAF 砍掉**。恰恰相反，它进入了 1.0 的稳定编排能力。([Microsoft for Developers][1])
+
+而微软当前文档还直接写得非常清楚：
+
+> Group Chat = agents collaborate in a shared conversation
+
+并且现在的 `GroupChatBuilder` 支持：
+
+* round-robin
+* prompt/LLM-based speaker selection
+* custom selection logic
+* 自定义 orchestrator/manager
+* 多轮迭代
+* 共享上下文
+
+([Microsoft Learn][2])
+
+甚至微软的最新迁移示例，仍然明确提供：
+
+> `SelectorGroupChat` → `GroupChatBuilder`
+
+的迁移路径。([GitHub][3])
+
+所以这句：
+
+> **“微软放弃的，正好是你要的。”**
+
+需要从最终稿中删除。
+
+---
+
+# 二、但这反而让你的最终架构更加有意思
+
+因为真实情况变成了：
+
+```text
+AutoGen
+   ↓
+维护模式
+   ↓
+Microsoft Agent Framework
+   ↓
+仍然保留 GroupChat
+   ↓
+并把 GroupChat 建在 Workflow 图之上
+```
+
+这比“微软把 GroupChat 砍了”其实更漂亮。
+
+微软现在的设计是：
+
+```text
+                    Workflow
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+   Sequential      Concurrent      GroupChat
+                                       │
+                                Orchestrator
+                                       │
+                             ┌─────────┼─────────┐
+                             ↓         ↓         ↓
+                           Agent1   Agent2    Agent3
+```
+
+也就是说：
+
+> **微软没有抛弃 GroupChat，而是把 GroupChat 变成了 Workflow 体系里的一个正式编排模式。**
+
+官方 2026-07-08 的公告甚至明确说，**Sequential、Concurrent、Group Chat、Handoff、Magentic 五种编排模式都已经在 Python 和 .NET 达到 1.0 稳定状态。** ([Microsoft for Developers][4])
+
+---
+
+# 三、所以我会修改你这份“最终定案”，但不会推翻它
+
+你现在的最终裁决是：
+
+> **都不用：抄模型不引运行时。**
+
+这个我反而仍然赞成。
+
+但理由不要再写：
+
+> “MAF 不适合 9 人自由会议，因为它把 GroupChat 设计掉了。”
+
+应该改成：
+
+> **“MAF 在能力上完全能够表达通辽会议，但当前阶段没有必要引入它作为运行时。”**
+
+这是一个完全不同、也更加站得住脚的判断。
+
+---
+
+# 四、正确的技术裁决应该是这样
+
+## 裁决一：AutoGen 不引
+
+这个不变。
+
+微软官方现在明确把 AutoGen 标记为：
+
+> Maintenance Mode
+
+并明确建议新项目转向 Microsoft Agent Framework。([GitHub][5])
+
+所以：
+
+```text
+AutoGen
+❌ 不作为依赖
+✅ 只研究其历史设计
+```
+
+完全成立。
+
+---
+
+# 五、裁决二：MAF 不是“不适合”，而是“现在没必要”
+
+这一点我建议你重新定性。
+
+### MAF 对你的场景其实是“能力匹配”的
+
+因为它现在原生就有：
+
+```text
+Group Chat
+Concurrent
+Sequential
+Handoff
+Magentic
+```
+
+而 GroupChat 又明确支持：
+
+```text
+Round Robin
+LLM Speaker Selection
+Custom Selection
+Custom Manager
+```
+
+([Microsoft Learn][2])
+
+所以以后你真要做：
+
+> “ChatGPT 说完 → Gemini 点评 → Claude 质疑 → DeepSeek 复核 → 主持人决定下一位”
+
+MAF **是能表达的**。
+
+不是做不到。
+
+---
+
+# 六、真正让你现在不上 MAF 的原因，是工程边界
+
+你的理由应该改成这四条。
+
+### ① 通辽会议当前最大问题根本不是编排
+
+这是你这份报告里最重要的判断之一，而且完全成立。
+
+现在优先级实际上是：
+
+```text
+1. 完成检测
+2. 附件握手
+3. 并发隔离
+4. 会议状态
+5. 上下文边界
+6. 才是高级编排
+```
+
+如果：
+
+```text
+AI 回复到底有没有结束？
+```
+
+都还不知道，
+
+那：
+
+```text
+GroupChat / MAF / AutoGen / Magentic
+```
+
+谁当底座都不是关键问题。
+
+---
+
+### ② 你已经有一个正在运行的 Electron Agent Runtime
+
+这个区别非常大。
+
+别人：
+
+```text
+Python
+ ↓
+Playwright
+ ↓
+Browser
+```
+
+而你现在：
+
+```text
+Electron
+ ↓
+9 WebContents
+ ↓
+9 Partitions
+ ↓
+9 登录态
+ ↓
+CDP
+ ↓
+WebAI Adapter
+```
+
+所以你真正缺的是：
+
+```text
+Meeting Core
+```
+
+不是：
+
+```text
+Browser Runtime
+```
+
+五份方案让你重新开 Playwright，其实确实是在往回走。
+
+---
+
+### ③ MAF 当前没有 JavaScript/TypeScript 一等实现
+
+这一点也能得到当前微软生态的侧面验证。
+
+截至 2026 年 5 月，微软自己的 Agent Framework GitHub 讨论里，社区还在问：
+
+> “Any plans for first-class JavaScript/TypeScript support?”
+
+说明 MAF 的主线仍然是：
+
+```text
+Python
+.NET
+```
+
+而不是 Node/TypeScript。([GitHub][6])
+
+这和你的：
+
+```text
+DeepSeek Harness
+Electron
+Node.js
+CommonJS
+npm install && npm start
+```
+
+天然存在运行时边界。
+
+因此：
+
+> **不用 MAF ≠ MAF 不行。**
+
+而是：
+
+> **现在把一个 Python/.NET 编排运行时插进已经成熟的 Node/Electron 产品，没有足够收益。**
+
+这个理由比“MAF没有GroupChat”硬得多。
+
+---
+
+# 七、还有一个地方，我建议把你的结论再提高一个等级
+
+你现在写：
+
+> **抄 AutoGen 的编排模型，不抄实现。**
+
+我建议升级成：
+
+> **抄 AutoGen 的历史抽象 + 直接参考 MAF 现行 GroupChat 语义，不引运行时。**
+
+因为现在已经没有必要故意停留在 AutoGen 的旧模型上。
+
+你真正应该研究的是：
+
+```text
+AutoGen 历史思想
+        +
+MAF 当前稳定语义
+        ↓
+Tongliao Meeting Core
+```
+
+例如：
+
+| 领域                | 参考             |
+| ----------------- | -------------- |
+| speaker selection | AutoGen + MAF  |
+| group chat        | AutoGen + MAF  |
+| termination       | AutoGen        |
+| fan-out/fan-in    | MAF Concurrent |
+| custom manager    | MAF GroupChat  |
+| pause/resume      | MAF Workflow   |
+| checkpoint        | MAF Workflow   |
+| agent abstraction | MAF            |
+| browser control   | 你现有 Electron   |
+| file distribution | 你现有 DSH        |
+
+这样你的自研 Meeting Core 实际上会比“单纯抄 AutoGen”更加现代。
+
+---
+
+# 八、尤其是这一点：你其实可以把 MAF 当成“技术蓝图”，而不是运行时
+
+这个思路我很推荐。
+
+例如微软当前 `GroupChatBuilder` 的内部思想就是：
+
+```text
+                    Orchestrator
+                         │
+               ┌─────────┼─────────┐
+               ↓         ↓         ↓
+          Participant Participant Participant
+               │         │         │
+               └─────────┼─────────┘
+                         ↓
+                    Orchestrator
+                         ↓
+                     下一位
+```
+
+([Microsoft Learn][2])
+
+你自己的 Node 版完全可以做：
+
+```js
+SpeakerManager
+      ↓
+selectNextSpeaker()
+      ↓
+WebAI Adapter
+      ↓
+receive()
+      ↓
+Meeting Core
+      ↓
+selectNextSpeaker()
+```
+
+本质上就已经把 MAF 的 GroupChat 思路吃进去了。
+
+---
+
+# 九、而且 MAF 还有一个对你未来特别有价值的东西
+
+就是：
+
+> **Workflow as Agent**
+
+微软当前明确支持：
+
+> 把一个 Workflow 包装成 Agent，让外部消费者把它当普通 Agent 使用。
+
+([Microsoft Learn][7])
+
+这意味着未来你完全可以：
+
+```text
+Tongliao Meeting Core
+        ↓
+协议化
+        ↓
+MAF Workflow
+```
+
+甚至以后：
+
+```text
+一个通辽会议
+        ↓
+又成为更大 Agent 系统里的一个 Agent
+```
+
+所以你现在坚持协议隔离是完全正确的。
+
+---
+
+# 十、你现在这份报告真正应该修改的，是这一段
+
+建议把：
+
+> **4.2 裁决二：Phase 0/1 也不引入 MAF，因为 MAF 刻意把 GroupChat 换成确定性 graph workflow。**
+
+替换成下面这个版本：
+
+### 裁决二：Phase 0/1 不引入 Microsoft Agent Framework，但原因不是“MAF 不支持 GroupChat”
+
+这一点需要根据微软 2026 年最新官方资料修正。
+
+**Microsoft Agent Framework 1.0 实际仍然原生支持 Group Chat。** 微软于 2026-04-03 发布 1.0 GA 时，明确将 Sequential、Concurrent、Handoff、Group Chat、Magentic-One 列为稳定的多智能体编排模式；2026-07-08 又进一步宣布这些编排模式在 Python 与 .NET 两端全部达到 1.0。当前官方 `GroupChatBuilder` 仍支持 Round-Robin、LLM/Prompt Speaker Selection、自定义选择逻辑以及自定义 Orchestrator。([Microsoft for Developers][1])
+
+因此，本项目不能再以“MAF 已经取消 GroupChat、无法表达 9 人会议”作为不采用 MAF 的依据。
+
+正确裁决是：
+
+> **MAF 在能力层面能够表达通辽会议，但现阶段没有必要成为通辽会议的运行时依赖。**
+
+原因如下：
+
+1. **当前真正的技术瓶颈不在高级编排。**
+   目前首先需要解决的是回复完成检测、附件上传 ACK、并发失败隔离、会议消息模型和 per-AI 状态机。这些问题与 MAF/AutoGen 无关。
+
+2. **通辽会议已经拥有 Electron 浏览器运行时。**
+   9 个 WebContents、9 个持久化 Partition、9 个登录状态、CDP 文件上传和 WebAI Adapter 都已经存在。重新引入 Python Playwright 浏览器池会重复建设浏览器层，并破坏当前 9 宫格可视化产品结构。
+
+3. **项目当前架构纪律是纯 Node/Electron。**
+   Microsoft Agent Framework 目前的一等 SDK 仍以 Python 和 .NET 为主，JavaScript/TypeScript 一等实现并不是当前主线，因此现在引入 MAF 会产生额外的 Python/.NET sidecar、IPC、打包、升级和故障处理成本。([GitHub][6])
+
+4. **当前阶段引入框架会扩大问题面。**
+   Phase 0/1 的目标是验证 WebAI Adapter 的三个核心不确定性，而不是验证第三方 Agent Runtime。
+
+因此最终采用：
+
+```text
+Phase 0：
+纯 Node Meeting Lab
+
+Phase 1：
+Node Meeting Core
+
+Phase 2：
+接入 Electron / WebAI Adapter
+
+Phase 3：
+实现 Broadcast → RoundRobin → Dynamic Speaker Selection
+
+Phase 4：
+根据实际需求评估 MAF sidecar
+```
+
+未来如果出现以下需求：
+
+* 持久化 checkpoint；
+* 长时间会议断点恢复；
+* Human-in-the-loop 暂停/恢复；
+* 复杂 Magentic 编排；
+* 标准化 Workflow 暴露；
+* 跨语言 Agent 协作；
+
+则可以把现有 `SpeakerStrategy / Orchestrator` 替换或桥接到 Microsoft Agent Framework。
+
+由于 Meeting Core、WebAI Adapter、Attachment Bus 与编排层已经通过协议隔离，这一升级不应影响 Electron 浏览器层、9 个登录 Partition、会议 UI 和附件系统。
+
+因此：
+
+> **现在不用 MAF，是工程阶段选择，而不是能力否定。**
+>
+> **MAF 是未来可插拔的编排后端，而不是当前产品必须依赖的基础设施。**
+
+---
+
+# 十一、我还想替你改一个地方：不要把“MAF = 未来替换掉整个 Orchestrator”写死
+
+你现在 §4.4 写的是：
+
+> 将来需要 checkpointing / durable execution / human-in-the-loop，就换掉编排层。
+
+方向是对的，但可以再精确一点：
+
+```text
+Meeting Core
+    │
+    ├── Meeting State
+    ├── Attachment Bus
+    ├── Agent State
+    ├── Completion
+    │
+    └── Orchestration Port
+             │
+       ┌─────┴─────┐
+       │           │
+ Native Node    MAF Bridge
+    Engine       Engine
+```
+
+这样将来的 MAF 不是：
+
+```text
+“把老系统扔了重新做”
+```
+
+而是：
+
+```text
+OrchestrationPort
+        ↓
+NodeStrategy
+```
+
+或者：
+
+```text
+OrchestrationPort
+        ↓
+MAFAdapter
+```
+
+这才是你整个架构真正漂亮的地方。
+
+---
+
+# 十二、还有一个很值得肯定的发现：你们现在其实已经不应该追求“9 个 AI API 化”
+
+这份六家评审里，这个结论我认为是对的。
+
+你现在真正的产品模型应该是：
+
+```text
+          WebAI Provider
+                │
+                ▼
+          WebAI Adapter
+                │
+                ▼
+             Agent
+                │
+                ▼
+          Meeting Core
+                │
+                ▼
+        Speaker / Workflow
+```
+
+所以：
+
+```text
+ChatGPT Web
+Gemini Web
+Claude Web
+DeepSeek Web
+……
+```
+
+对 Meeting Core 来说都是：
+
+```text
+Agent
+```
+
+而不是：
+
+```text
+Model
+```
+
+这是非常关键的抽象。
+
+---
+
+# 十三、文件部分，我反而认为你这次已经找到真正的突破口
+
+你报告里：
+
+> **“上传 ACK 全部到齐才发”**
+
+这条我非常赞成，而且我会把它提升成**会议协议一级能力**。
+
+最终不要：
+
+```text
+send(text, files)
+```
+
+而应该明确分成：
+
+```text
+prepareMessage()
+        ↓
+uploadAttachments()
+        ↓
+waitForAttachmentReady()
+        ↓
+commitSend()
+```
+
+即：
+
+```text
+PREPARE
+   ↓
+UPLOADING
+   ↓
+ALL_READY
+   ↓
+SEND
+   ↓
+WAIT_RESPONSE
+   ↓
+COMPLETED
+```
+
+这样将来无论是：
+
+```text
+9 个 AI
+12 个 AI
+20 个 AI
+```
+
+都不会再把“上传文件”和“发送消息”混成一个不可控动作。
+
+这甚至比引入任何多 Agent 框架都重要。
+
+---
+
+# 十四、我会给你这份报告一个最终评价
+
+### 可以保留的核心判断
+
+**① AutoGen 不作为新依赖。**
+成立。微软当前明确处于 Maintenance Mode。([GitHub][5])
+
+**② Electron 不应该重新被 Playwright 取代。**
+成立，而且这是这次六份咨询中很有价值的架构判断。
+
+**③ Attachment Bus + ACK 门闩。**
+成立，而且是当前最值得优先动手的地方。
+
+**④ Completion Detector。**
+成立，而且是第二个真正的地基问题。
+
+**⑤ Phase 0 独立测试台，不碰客户端。**
+成立。
+
+**⑥ Node Meeting Core。**
+我赞成。
+
+---
+
+### 必须修正的核心判断
+
+**“MAF 已设计掉 GroupChat”——错误。**
+
+截至 2026-09-22，微软官方文档明确存在并支持：
+
+```text
+Group Chat
+GroupChatBuilder
+Round-Robin
+LLM Speaker Selection
+Custom Selection
+Custom Manager
+```
+
+而且 Group Chat 已经进入 1.0 稳定编排体系。([Microsoft Learn][2])
+
+---
+
+# 十五、所以我给这次最终定案的版本是
+
+> **不要用 AutoGen。**
+>
+> **现在也不要为了“微软最新框架”强行引入 MAF。**
+>
+> **但绝对不要说 MAF 不适合通辽会议。**
+>
+> **真实情况是：MAF 已经能很好地表达 GroupChat；只是你现在已有 Electron + Node 体系，而且当前瓶颈在 WebAI Runtime 稳定性，所以没有必要为了编排功能付出 Python/.NET sidecar 成本。**
+>
+> **因此 Phase 0～3：自研纯 Node Meeting Core。**
+>
+> **设计上直接参考 AutoGen + MAF 当前 GroupChat 的成熟抽象。**
+>
+> **Phase 4：保留 MAF Bridge 作为可插拔高级编排后端。**
+
+这样一来，你这份报告就从：
+
+> “六家里找一家的答案”
+
+真正升级成：
+
+> **“我们自己做架构裁决，同时把微软最新实现当技术参照物。”**
+
+这其实比单纯“接入微软 Agent Framework”更适合你这个已经有 **9 个持久化 Web AI + Electron 9 宫格 + CDP + Adapter** 的 DeepSeek Harness。
+
+而且有一点现在已经非常明确：**下一步真的不要急着写 GroupChat。先做 `meeting-lab`，把“完成检测 + 附件 ACK + 单点失败隔离”三个实验跑出硬结果。** 这三个一旦坐实，后面的会议编排基本就是软件工程问题，而不再是未知数。
+
+[1]: https://devblogs.microsoft.com/agent-framework/microsoft-agent-framework-version-1-0/?utm_source=chatgpt.com "Microsoft Agent Framework Version 1.0 | Microsoft Agent Framework"
+[2]: https://learn.microsoft.com/da-dk/agent-framework/user-guide/workflows/orchestrations/group-chat "Microsoft Agent Framework Workflows Orchestrations - Group Chat | Microsoft Learn"
+[3]: https://github.com/microsoft/agent-framework/blob/main/python/samples/autogen-migration/README.md?utm_source=chatgpt.com "agent-framework/python/samples/autogen-migration/README.md at main · microsoft/agent-framework · GitHub"
+[4]: https://devblogs.microsoft.com/agent-framework/agent-frameworks-orchestration-patterns-reach-1-0/?utm_source=chatgpt.com "Agent Framework’s Orchestration Patterns Reach 1.0 | Microsoft Agent Framework"
+[5]: https://github.com/microsoft/autogen?utm_source=chatgpt.com "GitHub - microsoft/autogen: A programming framework for agentic AI · GitHub"
+[6]: https://github.com/microsoft/agent-framework/discussions/6181?utm_source=chatgpt.com "Any plans for first-class JavaScript/TypeScript support in Microsoft Agent Framework? · microsoft agent-framework · Discussion #6181 · GitHub"
+[7]: https://learn.microsoft.com/en-us/agent-framework/journey/workflows?utm_source=chatgpt.com "Workflows | Microsoft Learn"

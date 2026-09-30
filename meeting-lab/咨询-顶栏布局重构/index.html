@@ -1,0 +1,1349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Lab - 9席AI咨询控制台</title>
+    <script src="https://aisearch-task.bj.bcebos.com/static/tailwindcss-3.4.17.js"></script>
+    <style>
+        :root {
+            --brand-rgb: 59, 130, 246;
+            --success-rgb: 34, 197, 94;
+            --warning-rgb: 249, 115, 22;
+            --danger-rgb: 239, 68, 68;
+            --card-bg: #ffffff;
+            --border: #e2e8f0;
+            --bg-main: #f8fafc;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-main);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* ========== 四容器骨架 - 冻结稿V1规范 ========== */
+        /* 1. TopDeck - 顶甲板：触发器组 + DispatchDeck */
+        #topdeck {
+            height: 180px;
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            border-bottom: 2px solid var(--border);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        
+        /* 触发器组 - R1' */
+        .trigger-bar {
+            height: 48px;
+            background: linear-gradient(90deg, #1e293b 0%, #334155 100%);
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        
+        .trigger-btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: none;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(.2,.8,.2,1);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .trigger-btn.primary {
+            background: #3b82f6;
+            color: white;
+        }
+        
+        .trigger-btn.primary:hover {
+            background: #2563eb;
+            transform: translateY(-1px);
+        }
+        
+        .trigger-btn.secondary {
+            background: rgba(255,255,255,0.1);
+            color: #e2e8f0;
+        }
+        
+        .trigger-btn.secondary:hover {
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .trigger-btn.danger {
+            background: rgba(239,68,68,0.2);
+            color: #fca5a5;
+        }
+        
+        /* DispatchDeck - 分发面板，落进顶甲板 */
+        #dispatchdeck {
+            flex: 1;
+            padding: 12px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .dispatch-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .dispatch-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .mode-switcher {
+            display: flex;
+            background: #f1f5f9;
+            border-radius: 8px;
+            padding: 3px;
+            gap: 2px;
+        }
+        
+        .mode-tab {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            background: transparent;
+            color: #64748b;
+        }
+        
+        .mode-tab.active {
+            background: white;
+            color: #3b82f6;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        
+        .dispatch-content {
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+            flex: 1;
+        }
+        
+        .seat-selector {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            flex: 1;
+        }
+        
+        .seat-chip {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 2px solid var(--border);
+            background: white;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .seat-chip.selected {
+            border-color: #3b82f6;
+            background: rgba(59,130,246,0.1);
+            color: #2563eb;
+        }
+        
+        .seat-chip.failed {
+            border-color: #ef4444;
+            background: rgba(239,68,68,0.1);
+            color: #dc2626;
+        }
+        
+        .seat-chip.success {
+            border-color: #22c55e;
+            background: rgba(34,197,94,0.1);
+            color: #16a34a;
+        }
+        
+        .seat-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #cbd5e1;
+        }
+        
+        .seat-chip.selected .seat-dot { background: #3b82f6; }
+        .seat-chip.success .seat-dot { background: #22c55e; }
+        .seat-chip.failed .seat-dot { background: #ef4444; }
+        
+        .dispatch-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .progress-bar {
+            width: 120px;
+            height: 6px;
+            background: #e2e8f0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #22c55e);
+            border-radius: 3px;
+            transition: width 0.3s;
+            width: 0%;
+        }
+        
+        .progress-text {
+            font-size: 12px;
+            color: #64748b;
+            font-weight: 500;
+            min-width: 40px;
+        }
+        
+        .action-btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .action-btn.primary {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: white;
+        }
+        
+        .action-btn.primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(59,130,246,0.4);
+        }
+        
+        .action-btn.secondary {
+            background: white;
+            border: 1px solid var(--border);
+            color: #475569;
+        }
+        
+        .action-btn.secondary:hover {
+            background: #f8fafc;
+        }
+        
+        /* 2. 主内容区：Grid + Dock 布局 */
+        .main-body {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        
+        /* Grid - 9席WebView网格 - 旧右栏已删除 */
+        #grid {
+            flex: 1;
+            padding: 12px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: 10px;
+            overflow: auto;
+        }
+        
+        .webview-card {
+            background: white;
+            border-radius: 10px;
+            border: 2px solid var(--border);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s;
+            position: relative;
+        }
+        
+        .webview-card.active {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+        }
+        
+        .webview-header {
+            height: 36px;
+            background: linear-gradient(90deg, #f8fafc, #f1f5f9);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        
+        .webview-favicon {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: white;
+        }
+        
+        .webview-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #334155;
+            flex: 1;
+        }
+        
+        .webview-status {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: rgba(34,197,94,0.1);
+            color: #16a34a;
+        }
+        
+        .webview-status.fail {
+            background: rgba(239,68,68,0.1);
+            color: #dc2626;
+        }
+        
+        .webview-status.l2 {
+            background: rgba(249,115,22,0.1);
+            color: #ea580c;
+        }
+        
+        .webview-content {
+            flex: 1;
+            background: linear-gradient(135deg, #fafbfc 0%, #f5f7fa 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            position: relative;
+        }
+        
+        .webview-placeholder {
+            text-align: center;
+            color: #94a3b8;
+        }
+        
+        .webview-placeholder-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+            opacity: 0.5;
+        }
+        
+        .webview-placeholder-text {
+            font-size: 12px;
+        }
+        
+        .copy-btn-float {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            padding: 6px 12px;
+            background: rgba(59,130,246,0.9);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 11px;
+            cursor: pointer;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+        
+        .webview-card:hover .copy-btn-float {
+            opacity: 1;
+        }
+        
+        /* 右侧双Dock布局：LogDock + ToolDock - 冻结稿V1 */
+        .dock-container {
+            width: 300px;
+            display: flex;
+            flex-direction: column;
+            border-left: 2px solid var(--border);
+            background: white;
+            flex-shrink: 0;
+        }
+        
+        .dock-tabs {
+            height: 38px;
+            display: flex;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        
+        .dock-tab {
+            flex: 1;
+            border: none;
+            background: transparent;
+            font-size: 13px;
+            font-weight: 500;
+            color: #64748b;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .dock-tab.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+            background: rgba(59,130,246,0.03);
+        }
+        
+        /* LogDock - 日志停靠 */
+        #logdock {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .log-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            font-family: 'SF Mono', 'Menlo', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+        }
+        
+        .log-entry {
+            padding: 6px 8px;
+            border-radius: 4px;
+            margin-bottom: 4px;
+            background: #f8fafc;
+            border-left: 3px solid #cbd5e1;
+        }
+        
+        .log-entry.info { border-left-color: #3b82f6; }
+        .log-entry.success { border-left-color: #22c55e; }
+        .log-entry.warning { border-left-color: #f59e0b; background: #fffbeb; }
+        .log-entry.error { border-left-color: #ef4444; background: #fef2f2; }
+        .log-entry.l2 { border-left-color: #f97316; background: #fff7ed; }
+        
+        .log-time {
+            color: #94a3b8;
+            margin-right: 6px;
+        }
+        
+        .log-msg {
+            color: #334155;
+        }
+        
+        /* ToolDock - 工具停靠 */
+        #tooldown {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: none;
+        }
+        
+        #tooldown.active {
+            display: block;
+        }
+        
+        #logdock.inactive {
+            display: none;
+        }
+        
+        .tool-section {
+            margin-bottom: 20px;
+        }
+        
+        .tool-section-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .tool-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 6px;
+        }
+        
+        .tool-item:hover {
+            background: #f8fafc;
+        }
+        
+        .tool-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+        
+        .tool-info {
+            flex: 1;
+        }
+        
+        .tool-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: #1e293b;
+        }
+        
+        .tool-desc {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 2px;
+        }
+        
+        /* F1浮层 - 闸门甲 */
+        .f1-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(15,23,42,0.6);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .f1-overlay.active {
+            display: flex;
+        }
+        
+        .f1-modal {
+            background: white;
+            border-radius: 16px;
+            width: 560px;
+            max-width: 90vw;
+            max-height: 80vh;
+            overflow: hidden;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+            animation: f1SlideIn 0.3s cubic-bezier(.2,.8,.2,1);
+        }
+        
+        @keyframes f1SlideIn {
+            from { opacity: 0; transform: translateY(20px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        
+        .f1-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .f1-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1e293b;
+        }
+        
+        .f1-close {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            border: none;
+            background: #f1f5f9;
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #64748b;
+        }
+        
+        .f1-body {
+            padding: 24px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .f1-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            background: #f8fafc;
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #334155;
+            margin-bottom: 6px;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+        }
+        
+        .form-textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        /* L2基座流程提示 */
+        .l2-flow {
+            background: linear-gradient(135deg, rgba(249,115,22,0.05), rgba(251,146,60,0.08));
+            border: 1px solid rgba(249,115,22,0.2);
+            border-radius: 10px;
+            padding: 12px;
+            margin-top: 8px;
+        }
+        
+        .l2-flow-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #ea580c;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .l2-steps {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        
+        .l2-step {
+            font-size: 11px;
+            padding: 4px 10px;
+            background: white;
+            border-radius: 12px;
+            color: #9a3412;
+            border: 1px solid rgba(249,115,22,0.2);
+        }
+        
+        /* 失败席位点名区域 */
+        .failed-seats-alert {
+            display: none;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-top: 8px;
+        }
+        
+        .failed-seats-alert.show {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .failed-seats-icon {
+            color: #dc2626;
+            font-size: 16px;
+        }
+        
+        .failed-seats-text {
+            font-size: 12px;
+            color: #991b1b;
+            flex: 1;
+        }
+        
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+        
+        /* 通知Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #1e293b;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 2000;
+            transition: transform 0.3s cubic-bezier(.2,.8,.2,1);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+        
+        .toast.success {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+        }
+        
+        .toast.error {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+        }
+    </style>
+</head>
+<body>
+    <!-- ========== 1. TopDeck 顶甲板 - 已按冻结稿V1实现 ========== -->
+    <div id="topdeck">
+        <!-- 触发器组 R1' -->
+        <div class="trigger-bar">
+            <button class="trigger-btn primary" onclick="openF1Modal()">
+                <span>📝</span> 新建咨询案
+            </button>
+            <button class="trigger-btn secondary" onclick="takeSnapshot()">
+                <span>📸</span> 生成快照
+            </button>
+            <button class="trigger-btn secondary" onclick="toggleMode('broadcast')">
+                <span>📡</span> 透明广播
+            </button>
+            <button class="trigger-btn secondary" onclick="recoverAnswers()">
+                <span>📥</span> 回收回答
+            </button>
+            <button class="trigger-btn secondary" onclick="generateConsensus()">
+                <span>✨</span> 共识提炼
+            </button>
+            <div style="flex:1"></div>
+            <button class="trigger-btn danger" onclick="clearAll()">
+                <span>🗑️</span> 清空轮次
+            </button>
+            <span style="color:#94a3b8; font-size:12px; margin-left:8px;">第7轮 · 真机落地复审</span>
+        </div>
+        
+        <!-- DispatchDeck 分发面板 - 已落进顶甲板 -->
+        <div id="dispatchdeck">
+            <div class="dispatch-header">
+                <div class="dispatch-title">
+                    <span>🚀</span> 分发控制台
+                    <span style="font-size:11px; font-weight:400; color:#f97316; background:#fff7ed; padding:2px 8px; border-radius:10px;">L2/L3手动基座优先 · L1自动尽力尝试</span>
+                </div>
+                <div class="mode-switcher">
+                    <button class="mode-tab active" onclick="switchDispatchMode('single')">单发</button>
+                    <button class="mode-tab" onclick="switchDispatchMode('batch')">群发</button>
+                    <button class="mode-tab" onclick="switchDispatchMode('round')">轮次</button>
+                </div>
+            </div>
+            
+            <div class="dispatch-content">
+                <div class="seat-selector" id="seatSelector">
+                    <!-- 9席位动态生成 -->
+                </div>
+                
+                <div class="dispatch-actions">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <span class="progress-text" id="progressText">0/9</span>
+                    <button class="action-btn secondary" onclick="clearSelection()">
+                        清空
+                    </button>
+                    <button class="action-btn primary" onclick="startL2Dispatch()">
+                        <span>📤</span> 开始分发(L2基座)
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 失败席位点名 -->
+            <div class="failed-seats-alert" id="failedAlert">
+                <span class="failed-seats-icon">⚠️</span>
+                <span class="failed-seats-text" id="failedText">L1自动上传失败席位：--</span>
+                <button class="action-btn secondary" style="padding:4px 10px; font-size:11px;" onclick="retryFailed()">重试失败席位</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== 2. 主内容区 ========== -->
+    <div class="main-body">
+        <!-- Grid - 9席WebView网格（旧380px右栏已删除） -->
+        <div id="grid">
+            <!-- 9个WebView卡片动态生成 -->
+        </div>
+        
+        <!-- 右侧双Dock容器 -->
+        <div class="dock-container">
+            <div class="dock-tabs">
+                <button class="dock-tab active" onclick="switchDock('log')">📋 日志</button>
+                <button class="dock-tab" onclick="switchDock('tool')">🔧 工具</button>
+            </div>
+            
+            <!-- LogDock 日志停靠 -->
+            <div id="logdock">
+                <div class="log-content" id="logContent">
+                    <div class="log-entry info">
+                        <span class="log-time">[21:58:00]</span>
+                        <span class="log-msg">✅ 顶栏布局重构已完成V1四容器骨架</span>
+                    </div>
+                    <div class="log-entry success">
+                        <span class="log-time">[21:58:01]</span>
+                        <span class="log-msg">TopDeck/Grid/LogDock/ToolDock加载完成</span>
+                    </div>
+                    <div class="log-entry warning">
+                        <span class="log-time">[21:58:01]</span>
+                        <span class="log-msg">⚠️ L1 CDP自动上传大面积失效，已切换为L2手动基座优先</span>
+                    </div>
+                    <div class="log-entry l2">
+                        <span class="log-time">[21:58:02]</span>
+                        <span class="log-msg">L2基座就绪：复制路径→逐席点击→进度k/N→失败点名</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ToolDock 工具停靠 -->
+            <div id="tooldown">
+                <div class="tool-section">
+                    <div class="tool-section-title">文件操作</div>
+                    <div class="tool-item" onclick="showToast('打开文件选择器')">
+                        <div class="tool-icon" style="background:rgba(59,130,246,0.1);">📂</div>
+                        <div class="tool-info">
+                            <div class="tool-name">选择文件</div>
+                            <div class="tool-desc">选择要分发的咨询稿文件</div>
+                        </div>
+                    </div>
+                    <div class="tool-item" onclick="clearUploadResidual()">
+                        <div class="tool-icon" style="background:rgba(239,68,68,0.1);">🧹</div>
+                        <div class="tool-info">
+                            <div class="tool-name">清空残留文件</div>
+                            <div class="tool-desc">发送前清空所有席位input，防污染</div>
+                        </div>
+                    </div>
+                    <div class="tool-item" onclick="verifyUpload()">
+                        <div class="tool-icon" style="background:rgba(34,197,94,0.1);">✅</div>
+                        <div class="tool-info">
+                            <div class="tool-name">回读校验</div>
+                            <div class="tool-desc">#19 校验文件是否真实上传成功</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tool-section">
+                    <div class="tool-section-title">Provider适配</div>
+                    <div class="tool-item">
+                        <div class="tool-icon" style="background:rgba(168,85,247,0.1);">🔌</div>
+                        <div class="tool-info">
+                            <div class="tool-name">通道配置</div>
+                            <div class="tool-desc">9站点专属上传通道设置</div>
+                        </div>
+                    </div>
+                    <div class="tool-item" onclick="runGateC()">
+                        <div class="tool-icon" style="background:rgba(245,158,11,0.1);">🚪</div>
+                        <div class="tool-info">
+                            <div class="tool-name">闸门丙验证</div>
+                            <div class="tool-desc">真机走通L2基座流程验证</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tool-section">
+                    <div class="tool-section-title">输出</div>
+                    <div class="tool-item" onclick="exportReport()">
+                        <div class="tool-icon" style="background:rgba(236,72,153,0.1);">📊</div>
+                        <div class="tool-info">
+                            <div class="tool-name">导出共识报告</div>
+                            <div class="tool-desc">生成咨询案结论docx</div>
+                        </div>
+                    </div>
+                    <div class="tool-item" onclick="openWorkBuddy()">
+                        <div class="tool-icon" style="background:rgba(20,184,166,0.1);">🤝</div>
+                        <div class="tool-info">
+                            <div class="tool-name">拖入WorkBuddy</div>
+                            <div class="tool-desc">最终产物送入WorkBuddy对话框</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- F1浮层 - 闸门甲（绘在9 webview之上不压网格） -->
+    <div class="f1-overlay" id="f1Overlay">
+        <div class="f1-modal">
+            <div class="f1-header">
+                <div class="f1-title">📝 新建第8轮咨询案</div>
+                <button class="f1-close" onclick="closeF1Modal()">×</button>
+            </div>
+            <div class="f1-body">
+                <div class="form-group">
+                    <label class="form-label">咨询案标题</label>
+                    <input type="text" class="form-input" id="roundTitle" placeholder="例如：第8轮咨询案 - L2基座落地验证">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">问题描述</label>
+                    <textarea class="form-input form-textarea" id="roundQuestion" placeholder="输入本轮要咨询9席AI的问题..."></textarea>
+                </div>
+                <div class="l2-flow">
+                    <div class="l2-flow-title">
+                        <span>ℹ️</span> L2手动基座分发流程
+                    </div>
+                    <div class="l2-steps">
+                        <span class="l2-step">① 选择目标席位</span>
+                        <span class="l2-step">② 点击「开始分发」</span>
+                        <span class="l2-step">③ L1自动尝试(失败秒降)</span>
+                        <span class="l2-step">④ 逐席复制问题路径</span>
+                        <span class="l2-step">⑤ 点击「粘贴并发送」</span>
+                        <span class="l2-step">⑥ k/N进度实时更新</span>
+                        <span class="l2-step">⑦ 失败席位显式点名</span>
+                    </div>
+                </div>
+            </div>
+            <div class="f1-footer">
+                <button class="action-btn secondary" onclick="closeF1Modal()">取消</button>
+                <button class="action-btn primary" onclick="createRound()">创建并分发</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast通知 -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // 9席位配置 - 对应文档中9站点
+        const seats = [
+            { id: 'gpt', name: 'ChatGPT', color: '#10a37f', domain: 'chat.openai.com' },
+            { id: 'qianwen', name: '通义千问', color: '#6366f1', domain: 'tongyi.aliyun.com' },
+            { id: 'wenxin', name: '文心一言', color: '#2563eb', domain: 'yiyan.baidu.com' },
+            { id: 'gemini', name: 'Gemini', color: '#4285f4', domain: 'gemini.google.com' },
+            { id: 'kimi', name: 'Kimi', color: '#6b21a8', domain: 'kimi.moonshot.cn' },
+            { id: 'deepseek', name: 'DeepSeek', color: '#0ea5e9', domain: 'chat.deepseek.com' },
+            { id: 'yuanbao', name: '元宝', color: '#f97316', domain: 'yuanbao.tencent.com' },
+            { id: 'doubao', name: '豆包', color: '#eab308', domain: 'www.doubao.com' },
+            { id: 'google', name: '谷歌AI', color: '#ea4335', domain: 'ai.google.dev' }
+        ];
+        
+        let selectedSeats = new Set();
+        let dispatchStatus = {};
+        seats.forEach(s => dispatchStatus[s.id] = 'pending');
+        
+        // 初始化
+        function init() {
+            renderSeatSelector();
+            renderGrid();
+            addLog('info', '界面初始化完成，L2手动基座已就绪');
+        }
+        
+        // 渲染席位选择器
+        function renderSeatSelector() {
+            const container = document.getElementById('seatSelector');
+            container.innerHTML = seats.map(seat => {
+                const isSelected = selectedSeats.has(seat.id);
+                const status = dispatchStatus[seat.id];
+                let statusClass = '';
+                if (status === 'success') statusClass = 'success';
+                else if (status === 'failed') statusClass = 'failed';
+                else if (isSelected) statusClass = 'selected';
+                
+                return `<div class="seat-chip ${statusClass}" onclick="toggleSeat('${seat.id}')" data-seat="${seat.id}">
+                    <span class="seat-dot"></span>
+                    ${seat.name}
+                    ${status === 'success' ? '✓' : ''}
+                    ${status === 'failed' ? '✗' : ''}
+                </div>`;
+            }).join('');
+        }
+        
+        // 渲染WebView网格
+        function renderGrid() {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = seats.map(seat => {
+                const status = dispatchStatus[seat.id];
+                let statusHtml = '<span class="webview-status">待机</span>';
+                if (status === 'success') statusHtml = '<span class="webview-status">已发送</span>';
+                else if (status === 'failed') statusHtml = '<span class="webview-status fail">L1失败</span>';
+                else if (status === 'l2') statusHtml = '<span class="webview-status l2">L2处理中</span>';
+                
+                return `<div class="webview-card" id="card-${seat.id}" data-seat="${seat.id}">
+                    <div class="webview-header">
+                        <div class="webview-favicon" style="background:${seat.color}">${seat.name[0]}</div>
+                        <div class="webview-title">${seat.name}</div>
+                        ${statusHtml}
+                    </div>
+                    <div class="webview-content">
+                        <div class="webview-placeholder">
+                            <div class="webview-placeholder-icon">🌐</div>
+                            <div class="webview-placeholder-text">${seat.domain}</div>
+                            <div style="font-size:11px; color:#cbd5e1; margin-top:8px;">WebView区域</div>
+                        </div>
+                        <button class="copy-btn-float" onclick="copyToSeat('${seat.id}')">
+                            📋 粘贴并发送
+                        </button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+        
+        // 切换席位选择
+        function toggleSeat(seatId) {
+            if (selectedSeats.has(seatId)) {
+                selectedSeats.delete(seatId);
+            } else {
+                selectedSeats.add(seatId);
+            }
+            renderSeatSelector();
+        }
+        
+        // 清空选择
+        function clearSelection() {
+            selectedSeats.clear();
+            seats.forEach(s => dispatchStatus[s.id] = 'pending');
+            renderSeatSelector();
+            renderGrid();
+            updateProgress();
+            document.getElementById('failedAlert').classList.remove('show');
+            addLog('info', '已清空所有席位选择和状态');
+        }
+        
+        // 切换分发模式
+        function switchDispatchMode(mode) {
+            document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            addLog('info', `切换到${mode === 'single' ? '单发' : mode === 'batch' ? '群发' : '轮次'}模式`);
+        }
+        
+        // 切换Dock
+        function switchDock(dock) {
+            document.querySelectorAll('.dock-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            if (dock === 'log') {
+                document.getElementById('logdock').classList.remove('inactive');
+                document.getElementById('tooldown').classList.remove('active');
+            } else {
+                document.getElementById('logdock').classList.add('inactive');
+                document.getElementById('tooldown').classList.add('active');
+            }
+        }
+        
+        // L2基座分发开始
+        function startL2Dispatch() {
+            if (selectedSeats.size === 0) {
+                showToast('请先选择目标席位', 'error');
+                return;
+            }
+            
+            addLog('l2', `🚀 开始L2基座分发，目标席位: ${Array.from(selectedSeats).map(id => seats.find(s=>s.id===id).name).join('、')}`);
+            addLog('warning', 'L1 CDP自动上传开始尝试，失败将秒级降级到L2...');
+            
+            // 模拟L1尝试，部分失败
+            let failed = [];
+            let success = [];
+            
+            selectedSeats.forEach(seatId => {
+                // 根据文档F7-1: 只有Gemini/元宝/豆包偶尔成功，其他L1失效
+                const l1Success = ['gemini', 'yuanbao', 'doubao'].includes(seatId) && Math.random() > 0.3;
+                
+                if (l1Success) {
+                    dispatchStatus[seatId] = 'success';
+                    success.push(seatId);
+                    addLog('success', `✓ ${seats.find(s=>s.id===seatId).name}: L1自动上传成功`);
+                } else {
+                    dispatchStatus[seatId] = 'l2';
+                    failed.push(seatId);
+                    addLog('error', `✗ ${seats.find(s=>s.id===seatId).name}: L1自动上传失败/判定失真，降级L2手动`);
+                }
+            });
+            
+            renderSeatSelector();
+            renderGrid();
+            updateProgress();
+            
+            if (failed.length > 0) {
+                const failedNames = failed.map(id => seats.find(s=>s.id===id).name).join('、');
+                document.getElementById('failedText').textContent = `L1自动上传失败席位：${failedNames}，请点击各席位「粘贴并发送」按钮完成L2手动分发`;
+                document.getElementById('failedAlert').classList.add('show');
+                addLog('l2', `L2手动基座启动：共${failed.length}个席位需要手动粘贴发送`);
+            }
+            
+            if (success.length === selectedSeats.size) {
+                showToast('全部席位L1自动上传成功！', 'success');
+                addLog('success', '🎉 所有席位分发完成');
+            } else {
+                showToast(`${success.length}个L1成功，${failed.length}个需L2手动处理`, 'error');
+            }
+        }
+        
+        // 单席L2复制
+        function copyToSeat(seatId) {
+            const seat = seats.find(s => s.id === seatId);
+            dispatchStatus[seatId] = 'success';
+            
+            // 模拟复制到剪贴板+点击文件框
+            addLog('l2', `📋 ${seat.name}: 已复制文件路径到剪贴板，请在WebView中点击输入框完成粘贴`);
+            
+            setTimeout(() => {
+                addLog('success', `✓ ${seat.name}: L2手动发送成功`);
+                renderSeatSelector();
+                renderGrid();
+                updateProgress();
+                
+                // 检查是否全部完成
+                const allDone = Array.from(selectedSeats).every(id => dispatchStatus[id] === 'success');
+                if (allDone) {
+                    document.getElementById('failedAlert').classList.remove('show');
+                    showToast('所有席位分发完成！', 'success');
+                    addLog('success', '🎉 L2基座全部分发流程完成');
+                }
+            }, 500);
+            
+            showToast(`已复制到剪贴板：请在${seat.name}窗口粘贴`, 'success');
+        }
+        
+        // 重试失败席位
+        function retryFailed() {
+            const failed = Array.from(selectedSeats).filter(id => dispatchStatus[id] === 'failed' || dispatchStatus[id] === 'l2');
+            failed.forEach(id => dispatchStatus[id] = 'pending');
+            startL2Dispatch();
+        }
+        
+        // 更新进度
+        function updateProgress() {
+            const total = selectedSeats.size || 9;
+            const done = Array.from(selectedSeats).filter(id => dispatchStatus[id] === 'success').length;
+            const percent = Math.round((done / total) * 100);
+            
+            document.getElementById('progressFill').style.width = `${percent}%`;
+            document.getElementById('progressText').textContent = `${done}/${total}`;
+        }
+        
+        // F1浮层
+        function openF1Modal() {
+            document.getElementById('f1Overlay').classList.add('active');
+        }
+        
+        function closeF1Modal() {
+            document.getElementById('f1Overlay').classList.remove('active');
+        }
+        
+        function createRound() {
+            const title = document.getElementById('roundTitle').value || '新一轮咨询';
+            addLog('info', `📝 创建咨询案：${title}`);
+            closeF1Modal();
+            
+            // 默认全选所有席位
+            seats.forEach(s => {
+                selectedSeats.add(s.id);
+                dispatchStatus[s.id] = 'pending';
+            });
+            renderSeatSelector();
+            renderGrid();
+            updateProgress();
+            
+            showToast('咨询案已创建，请点击「开始分发」', 'success');
+        }
+        
+        // 工具函数
+        function takeSnapshot() {
+            addLog('info', '📸 正在生成9席当前快照...');
+            // 快照视觉反馈：闪光效果
+            const grid = document.getElementById('grid');
+            grid.style.transition = 'filter 0.2s';
+            grid.style.filter = 'brightness(1.2)';
+            setTimeout(() => {
+                grid.style.filter = '';
+                addLog('success', '快照已保存：snapshot_' + new Date().getTime() + '.png');
+                showToast('快照生成成功', 'success');
+            }, 800);
+        }
+        
+        function toggleMode(mode) {
+            // 透明广播激活态视觉反馈
+            const btn = event.target;
+            if (btn.style.background === 'rgba(34,197,94,0.3)') {
+                btn.style.background = '';
+                btn.classList.remove('primary');
+                btn.classList.add('secondary');
+                addLog('info', '透明广播模式已关闭');
+            } else {
+                btn.style.background = 'rgba(34,197,94,0.3)';
+                addLog('info', '📡 透明广播模式已激活，23条兜底规则优先级加载(#19清空校验已提P0)');
+                showToast('透明广播兜底已启用');
+            }
+        }
+        
+        function recoverAnswers() {
+            addLog('info', '📥 开始回收9席回答...');
+            document.querySelectorAll('.webview-status').forEach(s => {
+                s.textContent = '回收中';
+                s.style.background = 'rgba(59,130,246,0.1)';
+                s.style.color = '#2563eb';
+            });
+            setTimeout(() => {
+                document.querySelectorAll('.webview-card').forEach((card, idx) => {
+                    const status = card.querySelector('.webview-status');
+                    status.textContent = '已回收';
+                    status.style.background = 'rgba(34,197,94,0.1)';
+                    status.style.color = '#16a34a';
+                    const placeholder = card.querySelector('.webview-placeholder');
+                    placeholder.innerHTML = `
+                        <div class="webview-placeholder-icon">📄</div>
+                        <div class="webview-placeholder-text">回答已保存</div>
+                        <div style="font-size:11px; color:#94a3b8; margin-top:4px;">answer_${idx+1}.md</div>
+                    `;
+                });
+                addLog('success', '回答回收完成，已写入answers目录');
+                showToast('回答回收完成', 'success');
+            }, 1200);
+        }
+        
+        function generateConsensus() {
+            addLog('info', '✨ 开始生成共识提炼...');
+            // 视觉反馈：高亮所有卡片，模拟共识提炼中
+            document.querySelectorAll('.webview-card').forEach(card => {
+                card.style.borderColor = '#f59e0b';
+                card.style.boxShadow = '0 0 0 3px rgba(245,158,11,0.15)';
+            });
+            
+            setTimeout(() => {
+                document.querySelectorAll('.webview-card').forEach(card => {
+                    card.style.borderColor = '';
+                    card.style.boxShadow = '';
+                    const placeholder = card.querySelector('.webview-placeholder');
+                    if (placeholder) {
+                        placeholder.innerHTML = `
+                            <div class="webview-placeholder-icon">✅</div>
+                            <div class="webview-placeholder-text" style="color:#16a34a; font-weight:600;">回答已回收</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:6px;">共识提炼中...</div>
+                        `;
+                    }
+                });
+                addLog('success', '共识报告已生成，可拖入WorkBuddy');
+                showToast('共识提炼完成！', 'success');
+            }, 1500);
+            showToast('正在提取9席共识...');
+        }
+        
+        function clearAll() {
+            if (confirm('确定要清空当前轮次所有数据？')) {
+                clearSelection();
+                document.getElementById('logContent').innerHTML = '';
+                addLog('info', '🗑️ 轮次数据已清空');
+                showToast('已清空');
+            }
+        }
+        
+        function clearUploadResidual() {
+            addLog('warning', '🧹 正在清空所有席位残留文件（防跨轮污染缺口E）...');
+            setTimeout(() => {
+                addLog('success', '所有WebView input.files已清空');
+                showToast('残留文件已清空');
+            }, 500);
+        }
+        
+        function verifyUpload() {
+            addLog('info', '✅ 执行发送前回读校验（#19提P0）...');
+            addLog('success', '所有席位文件路径回读一致，无假阴性');
+            showToast('回读校验通过', 'success');
+        }
+        
+        function runGateC() {
+            addLog('warning', '🚪 开始真机闸门丙验证：L2基座可走通性...');
+            setTimeout(() => {
+                addLog('success', '✅ 闸门丙验证通过：L2基座在顶甲板布局下可完整走通');
+                addLog('success', 'dispatchdeck可常驻顶甲板，无需回退独立浮窗');
+                showToast('闸门丙验证通过！', 'success');
+            }, 1000);
+        }
+        
+        function exportReport() {
+            showToast('报告导出中...');
+            setTimeout(() => showToast('共识报告.docx 已生成', 'success'), 1000);
+        }
+        
+        function openWorkBuddy() {
+            addLog('info', '🤝 准备拖入WorkBuddy对话框...');
+            showToast('请将文件拖入WorkBuddy');
+        }
+        
+        // 添加日志
+        function addLog(type, msg) {
+            const content = document.getElementById('logContent');
+            const time = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.innerHTML = `<span class="log-time">[${time}]</span><span class="log-msg">${msg}</span>`;
+            content.appendChild(entry);
+            content.scrollTop = content.scrollHeight;
+        }
+        
+        // Toast提示
+        function showToast(msg, type = '') {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.className = `toast ${type} show`;
+            setTimeout(() => toast.classList.remove('show'), 2500);
+        }
+        
+        // 启动
+        init();
+    </script>
+</body>
+</html><!--01526958692395614730092322--><!--01688147752395614730092322--><!--02963959592573747210092322-->

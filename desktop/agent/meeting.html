@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>AI 会议</title>
+  <title>通辽会议</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0b0e14; color: #e6e6e6; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
@@ -18,9 +18,21 @@
 
     /* 宫格区 */
     .grid { flex: 1; display: grid; gap: 4px; padding: 8px; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); }
-    .cell { position: relative; background: #1a1f28; border-radius: 8px; overflow: hidden; border: 1px solid #2a3a4a; }
-    .cell .label { position: absolute; top: 6px; left: 6px; z-index: 100; background: rgba(0,0,0,0.7); color: #4da3ff; padding: 2px 8px; border-radius: 4px; font-size: 11px; } .cell .zoom-btn { position: absolute; top: 6px; right: 6px; z-index: 100; background: rgba(0,0,0,0.7); color: #4da3ff; border: none; border-radius: 4px; padding: 2px 8px; font-size: 13px; cursor: pointer; } .cell .zoom-btn:hover { background: rgba(77,163,255,0.3); } .cell .shrink-btn { position: absolute; top: 6px; right: 48px; z-index: 100; background: rgba(255,100,100,0.7); color: #fff; border: none; border-radius: 4px; padding: 2px 8px; font-size: 13px; cursor: pointer; } .cell .popout-btn { position: absolute; top: 6px; right: 48px; z-index: 100; background: rgba(0,0,0,0.7); color: #4da3ff; border: none; border-radius: 4px; padding: 2px 8px; font-size: 13px; cursor: pointer; } .cell .popout-btn:hover { background: rgba(77,163,255,0.3); } .cell .shrink-btn:hover { background: rgba(255,100,100,0.9); }
-    .cell webview { width: 100%; height: 100%; border: none; }
+    .cell { position: relative; background: #1a1f28; border-radius: 8px; overflow: hidden; border: 1px solid #2a3a4a; display: flex; flex-direction: column; }
+    .cell webview { flex: 1; width: 100%; border: none; min-height: 0; }
+    .cell .nameplate { display: flex; justify-content: center; align-items: center; gap: 8px; padding: 3px 10px; background: #0d1118; border-top: 1px solid #3a4a5e; }
+    .cell .np-label { color: #8fc7ff; border: 1px solid #5a7a9e; border-radius: 4px; padding: 1px 10px; font-size: 12px; cursor: grab; user-select: none; white-space: nowrap; background: #16202e; }
+    .cell .np-label::before { content: '≡ '; font-weight: 700; }
+    .cell.dragging .np-label { cursor: grabbing; }
+    .cell .nameplate button { background: #1d2836; color: #8fc7ff; border: 1px solid #5a7a9e; border-radius: 4px; padding: 1px 8px; font-size: 12px; cursor: pointer; line-height: 1.5; }
+    .cell .nameplate button:hover { background: #2a3a4a; }
+    .cell .nameplate .shrink-btn { color: #ff9b9b; border-color: #a05a5a; }
+    .cell.dragging { opacity: 0.4; }
+    .cell.drag-over { border-color: #4da3ff !important; box-shadow: 0 0 8px rgba(77,163,255,0.5); }
+
+    /* 拖拽期间：所有 webview 指针事件穿透到宿主 DOM（配合主进程 setIgnoreMouseEvents 双保险） */
+    html[data-dragging="true"] webview { pointer-events: none !important; }
+    html[data-dragging="true"] { cursor: grabbing; }
 
     /* 右侧栏：AI 回答折叠抄送 */
     .sidebar { width: 360px; background: #121820; border-left: 1px solid #2a3a4a; display: flex; flex-direction: column; }
@@ -41,11 +53,15 @@
     .input-bar input:focus { border-color: #4da3ff; }
     .input-bar button { padding: 10px 20px; background: #4da3ff; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
     .input-bar button:hover { background: #5db3ff; }
+    .file-chip { display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#2a3a4a;border-radius:6px;font-size:12px;color:#ccc; }
+    .file-chip img { width:24px;height:24px;border-radius:4px;object-fit:cover; }
+    .file-chip .remove { cursor:pointer;color:#f66;margin-left:4px; }
+    .drop-over { border-color: #4da3ff !important; background: rgba(77,163,255,0.1); }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>AI 会议</h1>
+    <h1>通辽会议</h1>
     <div class="controls">
       <button id="btn-fullscreen">⛶ 全屏</button>
       <button id="btn-grid3x3">3×3</button>
@@ -61,28 +77,54 @@
     </div>
   </div>
 
-  <div class="input-bar">
-    <input id="user-input" placeholder="输入你的问题，所有 AI 都会看到...">
-    <button id="btn-send">发送</button>
+  <div id="file-preview-bar" style="display:none;padding:8px 20px;background:#1a2332;border-top:1px solid #2a3a4a;flex-wrap:wrap;gap:8px;align-items:center;">
+    <span style="color:#888;font-size:12px;">已添加文件：</span>
+    <div id="file-chips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
   </div>
 
+  <div class="input-bar">
+    <input id="user-input" placeholder="输入你的问题，拖文件到这里也可以...">
+    <button id="btn-send">发送</button>
+  </div>
   <script>
     // 会议配置：7 个网页版 AI
-    const MODELS = [
-      { id: 'deepseek-web', name: 'DeepSeek', url: 'https://chat.deepseek.com/' },
-      { id: 'chatgpt-web', name: 'ChatGPT', url: 'https://chatgpt.com/' },
-      { id: 'kimi-web', name: 'Kimi', url: 'https://kimi.moonshot.cn/' },
-      { id: 'doubao-web', name: '豆包', url: 'https://www.doubao.com/chat/' },
-      { id: 'tongyi-web', name: '通义', url: 'https://tongyi.aliyun.com/qianwen/' },
-      { id: 'yuanbao-web', name: '元宝', url: 'https://yuanbao.tencent.com/chat' },
-      { id: 'gemini-web', name: 'Gemini', url: 'https://gemini.google.com/app' },
-      { id: 'google-search', name: '谷歌搜索', url: 'https://www.google.com/search?q=' },
-      { id: 'wenxin-web', name: '文心', url: 'https://yiyan.baidu.com/' },
+    // 网页版智能体名单：从主进程唯一配置源读取（命名与设置-模型、主页模型切换器一致）
+    let MODELS = [];
+    // 兜底名单（bridge 不可用时）：命名与 agentCatalog.js 保持一致
+    const FALLBACK_MODELS = [
+      { id: 'deepseek-web', name: '深度求索-DeepSeek', url: 'https://chat.deepseek.com/' },
+      { id: 'chatgpt-web', name: 'OpenAI-ChatGPT', url: 'https://chatgpt.com/' },
+      { id: 'kimi-web', name: '月之暗面-Kimi', url: 'https://kimi.moonshot.cn/' },
+      { id: 'doubao-web', name: '字节跳动-豆包', url: 'https://www.doubao.com/chat/' },
+      { id: 'tongyi-web', name: '阿里巴巴-通义千问', url: 'https://tongyi.aliyun.com/qianwen/' },
+      { id: 'yuanbao-web', name: '腾讯-元宝', url: 'https://yuanbao.tencent.com/chat' },
+      { id: 'gemini-web', name: '谷歌-Gemini', url: 'https://gemini.google.com/app' },
+      { id: 'google-search', name: '谷歌-搜索', url: 'https://www.google.com/search?q=' },
+      { id: 'wenxin-web', name: '百度-文心', url: 'https://yiyan.baidu.com/' },
     ];
+    async function initCatalog() {
+      let list = null;
+      if (window.meetingBridge && window.meetingBridge.getAgents) {
+        try { list = await window.meetingBridge.getAgents(); } catch (e) { list = null; }
+      }
+      if (list && list.length) {
+        MODELS = list.map((m) => ({
+          id: m.id, name: m.name, url: m.url,
+          login: m.login || {}, exempt: !!m.exempt,
+        }));
+      } else {
+        MODELS = FALLBACK_MODELS;
+      }
+      buildGrid(3, 3);
+    }
 
     const grid = document.getElementById('grid');
     const feed = document.getElementById('feed');
     const userInput = document.getElementById('user-input');
+
+    // 拖拽排序兜底：捕获阶段一律允许拖放，防止 webview 内部拦截 dragover/drop
+    grid.addEventListener('dragover', (e) => e.preventDefault(), true);
+    grid.addEventListener('drop', (e) => e.preventDefault(), true);
 
     // 创建宫格
     function buildGrid(cols, rows) {
@@ -94,10 +136,12 @@
         cell.className = 'cell';
         cell.dataset.providerId = m.id;
         cell.innerHTML = `
-          <div class="label">${m.name}</div>
-          <button class="zoom-btn" title="宫格放大">⛶</button>
-          <button class="popout-btn" title="跳出成独立浏览器窗口（登录用）">🔗</button>
-          <button class="shrink-btn" title="缩小" style="display:none;">✕</button>
+          <div class="nameplate">
+            <span class="np-label" title="按住拖动排序">${m.name}</span>
+            <button class="zoom-btn" title="宫格放大">⛶</button>
+            <button class="popout-btn" title="跳出成独立浏览器窗口（登录用）">🔗</button>
+            <button class="shrink-btn" title="缩小" style="display:none;">✕</button>
+          </div>
         `;
         // 跳出：弹出独立浏览器窗口（完整浏览器功能，登录用）
         cell.querySelector('.popout-btn').onclick = () => {
@@ -134,28 +178,184 @@
         const wv = document.createElement('webview');
         wv.setAttribute('partition', `persist:agent-${m.id}`);
         wv.setAttribute('src', m.url);
-        wv.setAttribute('preload', './agent/browser/page/agentPreload.js');
-        cell.appendChild(wv);
+        wv.setAttribute('preload', './browser/page/agentPreload.js');
+        cell.prepend(wv);
         grid.appendChild(cell);
+
+        // ===== 拖拽排序：Pointer Events + webview 穿透（HTML5 DnD 已被真实鼠标证伪，弃用）=====
+        // 三层保障：
+        //  1) 手柄 pointerdown 后 setPointerCapture 锁住事件流，指针事件持续发往手柄元素；
+        //  2) 越过 5px 阈值后给 <html> 加 data-dragging → CSS 让所有 webview pointer-events:none，
+        //     指针穿透回宿主 DOM（cellAtPoint 才能命中 cell）；
+        //  3) IPC 通知主进程对 9 个 guest 调 setIgnoreMouseEvents(true)（进程级穿透，双保险）。
+        function resetCellZoom(c) {
+          c.style.gridColumn = '';
+          c.style.gridRow = '';
+          const zb = c.querySelector('.zoom-btn'); if (zb) zb.style.display = 'block';
+          const sb = c.querySelector('.shrink-btn'); if (sb) sb.style.display = 'none';
+        }
+        function cellAtPoint(x, y) {
+          const cells = grid.querySelectorAll('.cell');
+          for (const c of cells) {
+            const r = c.getBoundingClientRect();
+            if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return c;
+          }
+          return null;
+        }
+        const lbl = cell.querySelector('.np-label');
+        let drag = null; // 本 cell 的拖拽状态
+        function cleanupDrag() {
+          document.documentElement.removeAttribute('data-dragging');
+          if (window.meetingBridge && window.meetingBridge.setGuestIgnore) window.meetingBridge.setGuestIgnore(false);
+          const mask = document.getElementById('dnd-mask');
+          if (mask) mask.remove();
+          if (drag) {
+            if (drag.lastTarget) drag.lastTarget.classList.remove('drag-over');
+            if (drag.cell) drag.cell.classList.remove('dragging');
+          }
+          drag = null;
+        }
+        function onDragKey(ev) {
+          if (ev.key === 'Escape') { ev.preventDefault(); cleanupDrag(); }
+        }
+        function onDragMove(ev) {
+          if (!drag) return;
+          if (!drag.moved) {
+            const dist = Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY);
+            if (dist < 5) return; // 5px 阈值防误触
+            drag.moved = true;
+            document.documentElement.setAttribute('data-dragging', 'true'); // CSS 穿透 webview
+            if (window.meetingBridge && window.meetingBridge.setGuestIgnore) window.meetingBridge.setGuestIgnore(true); // 进程级穿透
+            drag.cell.classList.add('dragging');
+            const mask = document.createElement('div');
+            mask.id = 'dnd-mask';
+            mask.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:999999;background:transparent;cursor:grabbing;';
+            document.body.appendChild(mask);
+            drag.mask = mask;
+            window.addEventListener('keydown', onDragKey, true);
+          }
+          const target = cellAtPoint(ev.clientX, ev.clientY);
+          if (target && drag.lastTarget !== target) {
+            if (drag.lastTarget) drag.lastTarget.classList.remove('drag-over');
+            target.classList.add('drag-over');
+            drag.lastTarget = target;
+          }
+        }
+        function onDragEnd(ev) {
+          if (!drag) return;
+          try { drag.handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+          drag.handle.removeEventListener('pointermove', onDragMove);
+          drag.handle.removeEventListener('pointerup', onDragEnd);
+          drag.handle.removeEventListener('pointercancel', onDragEnd);
+          window.removeEventListener('keydown', onDragKey, true);
+          if (drag.moved) {
+            const target = cellAtPoint(ev.clientX, ev.clientY) || drag.lastTarget;
+            if (target && target !== drag.cell) {
+              resetCellZoom(drag.cell);
+              grid.insertBefore(drag.cell, target); // 把源窗口插到目标之前，其余顺移
+            }
+          }
+          cleanupDrag();
+        }
+        lbl.addEventListener('pointerdown', (ev) => {
+          if (ev.button !== 0) return;
+          ev.preventDefault();
+          drag = {
+            cell: cell,
+            handle: lbl,
+            moved: false,
+            startX: ev.clientX,
+            startY: ev.clientY,
+            lastTarget: null,
+            mask: null,
+          };
+          try { lbl.setPointerCapture(ev.pointerId); } catch (err) {}
+          lbl.addEventListener('pointermove', onDragMove);
+          lbl.addEventListener('pointerup', onDragEnd);
+          lbl.addEventListener('pointercancel', onDragEnd);
+        });
+        // ===== 登录状态 + 登录名检测（配置来自 agentCatalog；状态上报主进程，主窗口模型面板共用）=====
+        function escapeHtml(s) {
+          return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function updateBadge(m, state) {
+          const lbl = cell.querySelector('.np-label');
+          if (!lbl) return;
+          if (state.status === 'in') {
+            lbl.innerHTML = escapeHtml(m.name) + ' <span style="color:#4ade80">●</span>' + (state.name ? ' <span style="color:#8fc7ff;font-weight:400;font-size:11px;">' + escapeHtml(state.name) + '</span>' : '');
+          } else if (state.status === 'out') {
+            lbl.innerHTML = escapeHtml(m.name) + ' <span style="color:#555">○</span>';
+          } else {
+            lbl.innerHTML = escapeHtml(m.name) + ' <span style="color:#333">○</span>';
+          }
+        }
+        function probeScript(m) {
+          const cfg = m.login || {};
+          return `(function() {
+            var cfg = ${JSON.stringify(cfg)};
+            var loginRe = new RegExp(cfg.loginRe || '^$', 'i');
+            var logoutRe = new RegExp(cfg.logoutRe || '^$', 'i');
+            var visible = function(el) { return !!(el && el.offsetParent !== null && el.getBoundingClientRect().width > 0); };
+            var norm = function(s) { return (s || '').replace(/\s+/g, ''); };
+            var els = document.querySelectorAll('button, a, [role="button"]');
+            for (var i = 0; i < els.length; i++) {
+              var el = els[i];
+              if (!visible(el)) continue;
+              var t = norm(el.textContent);
+              if (t && loginRe.test(t) && !logoutRe.test(t)) return { status: 'out', name: '' };
+            }
+            var sels = cfg.userSelectors || [];
+            for (var j = 0; j < sels.length; j++) {
+              var found = null;
+              try { found = document.querySelectorAll(sels[j]); } catch (e) { continue; }
+              for (var k = 0; k < found.length; k++) {
+                var u = found[k];
+                if (!visible(u)) continue;
+                var t2 = norm(u.textContent);
+                if (t2 && t2.length <= 40 && !/avatar|头像|profile|用户|账户|account|菜单/i.test(t2)) return { status: 'in', name: t2 };
+                var alt = u.getAttribute ? (u.getAttribute('alt') || u.getAttribute('aria-label') || u.getAttribute('title')) : '';
+                if (alt && !/avatar|头像|profile|账户/i.test(alt)) return { status: 'in', name: alt.trim() };
+              }
+            }
+            var av = document.querySelectorAll('[class*="avatar"],[class*="user-menu"],[class*="profile"],[class*="account"],[data-testid*="user"],[data-testid*="avatar"]');
+            for (var a = 0; a < av.length; a++) { if (visible(av[a])) return { status: 'in', name: '' }; }
+            return { status: 'unknown', name: '' };
+          })()`;
+        }
+        function runAuthCheck() {
+          wv.executeJavaScript(probeScript(m)).then((r) => {
+            if (!r || typeof r.status !== 'string') return;
+            updateBadge(m, r);
+            if (window.meetingBridge && window.meetingBridge.reportAuth) {
+              window.meetingBridge.reportAuth({ id: m.id, status: r.status, name: r.name || '' });
+            }
+          }).catch(() => {});
+        }
+        // 首次加载完成立即检测一次 + 每 8 秒轮询（状态变化才会广播，名牌不闪）
+        wv.addEventListener('dom-ready', () => { runAuthCheck(); });
+        setInterval(runAuthCheck, 8000);
         // 监听 AI 回答
         wv.addEventListener('ipc-message', (e) => {
           if (e.channel === 'agent:message-detected') {
             addFeedItem(m.name, e.args[0], false);
           }
         });
+
       });
     }
 
     // 监听：独立浏览器窗口关闭后，刷新会议里对应的 webview（同步登录态）
-    window.meetingBridge.onRefreshWebview((providerId) => {
-      const cells = grid.querySelectorAll('.cell');
-      cells.forEach((cell) => {
-        const wv = cell.querySelector('webview');
-        if (wv && wv.getAttribute('partition') === 'persist:agent-' + providerId) {
-          wv.reload();
-        }
+    if (window.meetingBridge && window.meetingBridge.onRefreshWebview) {
+      window.meetingBridge.onRefreshWebview((providerId) => {
+        const cells = grid.querySelectorAll('.cell');
+        cells.forEach((cell) => {
+          const wv = cell.querySelector('webview');
+          if (wv && wv.getAttribute('partition') === 'persist:agent-' + providerId) {
+            wv.reload();
+          }
+        });
       });
-    });
+    }
 
     // 添加记录到侧边栏
     function addFeedItem(name, text, isUser) {
@@ -172,76 +372,380 @@
       feed.insertBefore(item, feed.firstChild);
     }
 
-    // 发送用户消息 → 广播给所有 AI
-    function broadcast(text) {
-      addFeedItem('你', text, true);
-      const cells = grid.querySelectorAll('.cell');
-      cells.forEach((cell) => {
-        const wv = cell.querySelector('webview');
-        const pid = cell.dataset.providerId || '';
-        if (wv) {
+    // 发送用户消息 → 广播给所有 AI（Electron 原生 insertText 为主，JS 注入兜底）
+    // 给单个 cell 发送文本（Electron 原生 insertText 为主，JS 注入兜底）
+    function broadcastToCell(cell, text) {
+      const wv = cell.querySelector('webview');
+      const pid = cell.dataset.providerId || '';
+      if (!wv) return;
+
+      // 豆包：先关掉"创建项目"对话框
+      if (pid === 'doubao-web') {
+        wv.executeJavaScript("document.querySelectorAll('.modal-close, [class*=\"close-icon\"], button[aria-label=\"关闭\"]').forEach(b => { try { b.click(); } catch(e){} });").catch(() => {});
+      }
+
+      // 第一步：在页面里递归找输入框并 focus（穿透 Shadow DOM + iframe）
+      wv.executeJavaScript(`
+        (async function() {
+          await new Promise(r => setTimeout(r, 500));
+          function findDeepInput(root) {
+            if (!root) root = document;
+            const els = root.querySelectorAll('textarea:not([type="hidden"]), [contenteditable="true"], [role="textbox"], input[type="text"]');
+            for (const el of els) { if (el.offsetParent !== null) return el; }
+            const all = root.querySelectorAll('*');
+            for (const el of all) { if (el.shadowRoot) { const f = findDeepInput(el.shadowRoot); if (f) return f; } }
+            const ifr = root.querySelectorAll('iframe');
+            for (const fr of ifr) { try { const d = fr.contentDocument || fr.contentWindow.document; const f = findDeepInput(d); if (f) return f; } catch(e){} }
+            return null;
+          }
+          const input = findDeepInput();
+          if (input) { input.focus(); input.click(); }
+        })();
+      `).catch(() => {});
+
+      // 第二步：等 600ms 让 focus 生效，用 Electron 原生 API 输入
+      setTimeout(() => {
+        try {
+          wv.focus();
+          wv.sendInputEvent({ type: 'keyDown', keyCode: 'a', modifiers: ['ctrl'] });
+          wv.sendInputEvent({ type: 'keyUp', keyCode: 'a', modifiers: ['ctrl'] });
+          wv.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+          wv.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+          wv.insertText(text);
+          setTimeout(() => {
+            wv.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+            wv.sendInputEvent({ type: 'char', keyCode: 'Enter' });
+            wv.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+          }, 150);
+        } catch(e) {
           wv.executeJavaScript(`
             (async function() {
               const text = ${JSON.stringify(text)};
-              const pid = ${JSON.stringify(pid)};
-
-              // 等 500ms 让页面加载完
-              await new Promise(r => setTimeout(r, 500));
-
-              // 豆包：先关掉"创建项目"对话框
-              if (pid === 'doubao-web') {
-                document.querySelectorAll('.modal-close, [class*="close-icon"], button[aria-label="关闭"]').forEach(b => { try { b.click(); } catch(e){} });
+              function findDeepInput(root) {
+                if (!root) root = document;
+                const els = root.querySelectorAll('textarea:not([type="hidden"]), [contenteditable="true"], [role="textbox"], input[type="text"]');
+                for (const el of els) { if (el.offsetParent !== null) return el; }
+                const all = root.querySelectorAll('*');
+                for (const el of all) { if (el.shadowRoot) { const f = findDeepInput(el.shadowRoot); if (f) return f; } }
+                const ifr = root.querySelectorAll('iframe');
+                for (const fr of ifr) { try { const d = fr.contentDocument || fr.contentWindow.document; const f = findDeepInput(d); } catch(e){} }
+                return null;
               }
-
-              // 找主输入框：所有可见的 textarea + contenteditable，取最后一个
-              let input = null;
-              const inputs = document.querySelectorAll('textarea, [contenteditable="true"], input[type="text"]');
-              const visible = [];
-              for (const el of inputs) { if (el.offsetParent !== null) visible.push(el); }
-              if (visible.length > 0) input = visible[visible.length - 1];
+              const input = findDeepInput();
               if (!input) return;
-
-              // 填文字
               input.focus();
               if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
-                input.value = text;
+                const proto = Object.getPrototypeOf(input);
+                const protoSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                const ownSetter = Object.getOwnPropertyDescriptor(input, 'value')?.set;
+                if (protoSetter && ownSetter !== protoSetter) protoSetter.call(input, text);
+                else if (ownSetter) ownSetter.call(input, text);
+                else input.value = text;
               } else {
-                input.innerText = text;
+                document.execCommand('selectAll', false, null);
+                document.execCommand('insertText', false, text);
               }
-              input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-
-              // 等 300ms
+              input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text, composed: true }));
               await new Promise(r => setTimeout(r, 300));
-
-              // 找发送按钮
-              let sent = false;
-              const btns = document.querySelectorAll('button, [role="button"], div[class*="send"], div[class*="submit"]');
-              for (const btn of btns) {
-                if (btn.offsetParent === null) continue;
-                const label = (btn.getAttribute('aria-label') || btn.textContent || btn.className || '').toLowerCase();
-                if (label.includes('发送') || label.includes('send') || label.includes('submit') || label.includes('提交')) {
-                  btn.click();
-                  sent = true;
-                  break;
-                }
-              }
-              // 找不到按钮，按 Enter
-              if (!sent) {
-                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              const btn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], [data-testid*="send"], div[class*="send-button"], div[class*="send-btn"]');
+              if (btn && !btn.disabled) btn.click();
+              else {
+                const ev = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+                input.dispatchEvent(new KeyboardEvent('keydown', ev));
+                input.dispatchEvent(new KeyboardEvent('keypress', ev));
+                input.dispatchEvent(new KeyboardEvent('keyup', ev));
               }
             })();
           `).catch(() => {});
         }
+      }, 600);
+    }
+    // ===== CDP 文件上传 =====
+    async function uploadFileToWebview(wv, filePath) {
+      try {
+        if (!wv.debugger.isAttached()) {
+          wv.debugger.attach('1.3');
+          await new Promise(r => setTimeout(r, 500));
+        }
+        // 确保 input[type=file] 存在
+        await wv.executeJavaScript(`
+          (function() {
+            var inp = document.querySelector('input[type="file"]');
+            if (!inp) {
+              inp = document.createElement('input');
+              inp.type = 'file';
+              inp.style.display = 'none';
+              document.body.appendChild(inp);
+            }
+            return !!inp;
+          })();
+        `);
+        const root = await wv.debugger.sendCommand('DOM.getDocument', { depth: -1 });
+        const found = await wv.debugger.sendCommand('DOM.querySelector', {
+          nodeId: root.root.nodeId,
+          selector: 'input[type="file"]'
+        });
+        if (!found.nodeId) return false;
+        await wv.debugger.sendCommand('DOM.setFileInputFiles', {
+          files: [filePath],
+          nodeId: found.nodeId
+        });
+        // 触发 change 事件让网站处理文件
+        await wv.executeJavaScript(`
+          (function() {
+            var inp = document.querySelector('input[type="file"]');
+            if (inp) {
+              inp.dispatchEvent(new Event('change', { bubbles: true }));
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          })();
+        `);
+        return true;
+      } catch(e) {
+        console.log('upload error:', e);
+        return false;
+      }
+    }
+
+    // 智能发送：短文本走输入框，长文本转 .md 文件上传
+    // ★ 阈值抽成具名常量，避免散落魔法数字
+    const INLINE_MAX = 4000;      // 不超过此长度：走输入框直发
+    const DEFAULT_CHAR_LIMIT = 10000; // agentCatalog 未配 charLimit 时的兜底
+    async function smartSend(cell, text, charLimit, batchPrefix) {
+      const prefix = batchPrefix || '';
+      const fullText = prefix + text;
+      // 短文本（<INLINE_MAX 字）走输入框
+      if (fullText.length <= INLINE_MAX) {
+        broadcastToCell(cell, fullText);
+        return;
+      }
+      // 长文本：写成 .md 文件上传
+      const wv = cell.querySelector('webview');
+      if (!wv) return;
+      const pid = cell.dataset.providerId || 'unknown';
+      const filename = 'dsh-batch-' + Date.now() + '-' + Math.random().toString(36).slice(2,6) + '.md';
+      if (!window.meetingBridge || !window.meetingBridge.writeTempMd) return;
+      const filePath = await window.meetingBridge.writeTempMd(filename, fullText);
+      // 先上传文件
+      const ok = await uploadFileToWebview(wv, filePath);
+      // 等上传完成
+      await new Promise(r => setTimeout(r, 3000));
+      // ★ 上传失败【绝不能】发「（见上传的文件）」——AI 会收到一句"见文件"却根本没有文件，
+      //   这是"9 个人收不到文件"里最隐蔽的一种：看起来发了，实际是空指路。
+      //   降级：直发正文前 INLINE_MAX 字并显式标注截断。
+      //   （3000ms 硬等与"上传成功"的判据，P1 会一并换成 DOM 级 ACK 判定）
+      if (!ok) {
+        broadcastToCell(cell, fullText.slice(0, INLINE_MAX)
+          + '\n\n【系统】完整内容上传失败，以上为截断正文（前 ' + INLINE_MAX + ' 字）。');
+        return;
+      }
+      // 然后发送说明文字
+      broadcastToCell(cell, prefix + '（见上传的文件）');
+    }
+
+    // ===== 文件拖拽 + 分批发送 =====
+    let attachedFiles = []; // {name, text, isImage, dataUrl, localPath, sha256}
+    // 本会议的落盘会话标识（同一会议内所有附件共用一个目录，散会可整体清理）
+    const meetingSessionKey = 'mtg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+
+    // 读文本文件
+    function readTextFile(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => resolve('');
+        reader.readAsText(file, 'utf-8');
       });
+    }
+
+    // 读图片为 base64
+    function readImageFile(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // 添加文件预览 chip
+    function addFileChip(file, text, dataUrl) {
+      const bar = document.getElementById('file-preview-bar');
+      const chips = document.getElementById('file-chips');
+      bar.style.display = 'flex';
+      const chip = document.createElement('div');
+      chip.className = 'file-chip';
+      if (dataUrl) {
+        chip.innerHTML = '<img src="' + dataUrl + '"><span>' + file.name + '</span><span class="remove">×</span>';
+      } else {
+        chip.innerHTML = '<span>📄 ' + file.name + '</span><span class="remove">×</span>';
+      }
+      chip.querySelector('.remove').onclick = () => {
+        attachedFiles = attachedFiles.filter(f => f.name !== file.name);
+        chip.remove();
+        if (!attachedFiles.length) bar.style.display = 'none';
+      };
+      chips.appendChild(chip);
+    }
+
+    // 处理拖入的文件
+    // ★ P0：所有格式都先落盘拿 localPath（附件握手的地基）；
+    //   文本类【额外】读出内容供"拼进 prompt"路径使用；非文本类【只】存 localPath + 占位符，
+    //   内容交给 CDP 真上传（P1）。没有 localPath 之前，PDF/图片/其它 永远只发占位符——
+    //   这就是"9 个人偶尔收不到文件"里"永远收不到内容"的那部分。
+    async function saveAttachmentBytes(file) {
+      if (!window.meetingBridge || !window.meetingBridge.saveAttachment) return null;
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await window.meetingBridge.saveAttachment(
+          meetingSessionKey, file.name, buf, file.size, file.type || ''
+        );
+        return (res && res.ok) ? res : null;
+      } catch (e) {
+        console.log('saveAttachment error:', e);
+        return null;
+      }
+    }
+    async function handleFiles(files) {
+      for (const file of files) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        // ★ 所有格式统一先落盘（拿到 localPath 才有真上传的可能）
+        const saved = await saveAttachmentBytes(file);
+        const localPath = saved ? saved.localPath : null;
+
+        if (['txt', 'md', 'markdown', 'text', 'csv', 'json', 'log'].includes(ext)) {
+          const text = await readTextFile(file);
+          attachedFiles.push({ name: file.name, text: text, isImage: false, localPath });
+          addFileChip(file);
+        } else if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) {
+          const dataUrl = await readImageFile(file);
+          attachedFiles.push({ name: file.name, text: '[图片: ' + file.name + ']', isImage: true, dataUrl: dataUrl, localPath });
+          addFileChip(file, null, dataUrl);
+        } else if (ext === 'pdf') {
+          // PDF 暂不自动解析，标注文件名；★ 现在有 localPath，P1 可走 CDP 真上传
+          attachedFiles.push({ name: file.name, text: '[PDF文件: ' + file.name + ']', isImage: false, localPath });
+          addFileChip(file);
+        } else {
+          attachedFiles.push({ name: file.name, text: '[文件: ' + file.name + ']', isImage: false, localPath });
+          addFileChip(file);
+        }
+      }
+    }
+
+    // 拖拽事件
+    const inputBar = document.querySelector('.input-bar');
+    document.body.addEventListener('dragover', (e) => { e.preventDefault(); inputBar.classList.add('drop-over'); });
+    document.body.addEventListener('dragleave', (e) => { if (!e.relatedTarget || !document.body.contains(e.relatedTarget)) inputBar.classList.remove('drop-over'); });
+    document.body.addEventListener('drop', (e) => {
+      e.preventDefault();
+      inputBar.classList.remove('drop-over');
+      if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+    });
+
+    // 按段落拆分长文本到批次
+    function splitIntoBatches(text, maxChars) {
+      const paras = text.split(/\n\s*\n/);
+      const batches = [];
+      let current = '';
+      for (const p of paras) {
+        if ((current + '\n\n' + p).length > maxChars) {
+          if (current) batches.push(current);
+          // 单段超长 → 按行再拆
+          if (p.length > maxChars) {
+            const lines = p.split('\n');
+            let lineBatch = '';
+            for (const line of lines) {
+              if ((lineBatch + '\n' + line).length > maxChars) {
+                if (lineBatch) batches.push(lineBatch);
+                lineBatch = line;
+              } else {
+                lineBatch = lineBatch ? lineBatch + '\n' + line : line;
+              }
+            }
+            current = lineBatch;
+          } else {
+            current = p;
+          }
+        } else {
+          current = current ? current + '\n\n' + p : p;
+        }
+      }
+      if (current) batches.push(current);
+      return batches;
+    }
+
+    // 给单个 AI 发送分批文本
+    // 给单个 AI 发送分批文本（每批走 smartSend：短文本输入框，长文本文件上传）
+    function sendBatchedToCell(cell, text, charLimit) {
+      const batches = splitIntoBatches(text, charLimit);
+      batches.forEach((batch, i) => {
+        setTimeout(() => {
+          const prefix = batches.length > 1 ? '【第' + (i+1) + '/' + batches.length + '批】' : '';
+          smartSend(cell, batch, charLimit, prefix);
+        }, i * 10000); // 每批间隔 10 秒，留足文件上传+AI回复时间
+      });
+    }
+
+    // ===== 盲点 A：角色分化（同一份输入 + 不同角色 = 真多视角，不是 9 个复读机）=====
+    // 每个 AI 发出去的文字，都在前面拼上它专属的角色前缀。
+    // ★ 这是"9 人会议"相对"1 个 AI"的真实增量所在，且不改任何架构，只改 prompt 构造。
+    // 角色定义集中在 meeting-lab/core/context-strategy.js 的 DEFAULT_ROLES（同一份，避免两处漂移）；
+    // 这里内联一份同构数据 —— 因为 meeting.html 是渲染进程，不能跨进程 require 该模块。
+    // Phase 2 接入 Meeting Core 后，这份内联数据会被 context-strategy.js 取代（届时删除本段）。
+    const AGENT_ROLES = {
+      'deepseek-web': '你是【红队】。只找方案里的漏洞、边界与风险，不要总结，不要客气。',
+      'chatgpt-web':  '你是【成本分析师】。只算钱：人力、token、存储、时间。',
+      'kimi-web':     '你是【合规审查】。只谈数据/法务/隐私风险。',
+      'doubao-web':   '你是【最挑剔的用户】。从使用者角度挑毛病，用大白话。',
+      'tongyi-web':   '你是【架构师】。只谈可扩展性、可维护性与演进。',
+      'yuanbao-web':  '你是【产品经理】。只谈优先级与取舍，不写代码。',
+      'gemini-web':   '你是【数据分析师】。只要能用数字说话的结论。',
+      'wenxin-web':   '你是【新人】。假设你刚加入团队，提出最朴素的问题。',
+      'google-search':'你是【事实核查员】。先搜后答，给出可验证的来源。',
+      // 未列出的 provider 走 default（不加前缀）
+    };
+    const DEFAULT_ROLE = '请就本轮问题给出你的完整回答。';
+    function rolePrefixFor(pid) {
+      return AGENT_ROLES[pid] || DEFAULT_ROLE;
     }
 
     // 事件绑定
     document.getElementById('btn-send').onclick = () => {
       const text = userInput.value.trim();
-      if (text) { broadcast(text); userInput.value = ''; }
+      let fullText = text;
+      // 附加文件内容
+      if (attachedFiles.length) {
+        const fileTexts = attachedFiles.map(f => {
+          return '\n\n--- 文件: ' + f.name + ' ---\n' + (f.text || '');
+        }).join('');
+        fullText = (text ? text + '\n\n' : '') + fileTexts;
+      }
+      if (!fullText.trim()) return;
+
+      addFeedItem('你', text || '(文件)', true);
+      const cells = grid.querySelectorAll('.cell');
+      cells.forEach((cell) => {
+        const pid = cell.dataset.providerId || '';
+        const model = MODELS.find(m => m.id === pid);
+        // charLimit 现在来自 agentCatalog.js 的每模型配置；回退常量改名，避免"10000 是魔法数字"
+        const limit = model && model.charLimit ? model.charLimit : DEFAULT_CHAR_LIMIT;
+        // ★ 盲点 A：按 AI 身份拼角色前缀（同一份输入 + 不同角色 = 真多视角）
+        const prefixed = rolePrefixFor(pid) + '\n\n' + fullText;
+        if (prefixed.length > limit) {
+          // 超长：分批发送（每批走 smartSend，超长的批会转 .md 文件上传）
+          sendBatchedToCell(cell, prefixed, limit);
+        } else if (prefixed.length > INLINE_MAX) {
+          // INLINE_MAX - limit 之间：转 .md 文件上传
+          smartSend(cell, prefixed, limit, '');
+        } else {
+          // INLINE_MAX 字以内：直接输入框
+          broadcastToCell(cell, prefixed);
+        }
+      });
+      userInput.value = '';
+      attachedFiles = [];
+      document.getElementById('file-chips').innerHTML = '';
+      document.getElementById('file-preview-bar').style.display = 'none';
     };
     userInput.onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('btn-send').click(); };
 
@@ -252,8 +756,8 @@
     document.getElementById('btn-grid3x3').onclick = () => buildGrid(3, 3);
     document.getElementById('btn-grid4x3').onclick = () => buildGrid(4, 3);
 
-    // 默认 3×3
-    buildGrid(3, 3);
+    // 默认 3×3（先取主进程唯一配置源，再构建网格）
+    initCatalog();
   </script>
 </body>
 </html>

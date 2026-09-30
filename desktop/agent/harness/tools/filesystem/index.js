@@ -22,12 +22,28 @@ function throwToolError(code, message) {
   throw e;
 }
 
+// ---------- fs_scope 白名单校验 ----------
+// ctx.fsScope 由 server 层按 toolDef.fs_scope 注入；空数组/undefined 表示不限制。
+// 测试直接调 handler 时不传 ctx，校验直接跳过，不影响现有用例。
+function assertPathAllowed(resolvedPath, fsScope) {
+  if (!Array.isArray(fsScope) || fsScope.length === 0) return;
+  const normalized = path.resolve(resolvedPath).toLowerCase();
+  const ok = fsScope.some((prefix) => {
+    const p = path.resolve(prefix).toLowerCase();
+    return normalized === p || normalized.startsWith(p + path.sep);
+  });
+  if (!ok) {
+    throwToolError('PERMISSION_DENIED', `path ${resolvedPath} 不在 fs_scope 白名单内`);
+  }
+}
+
 // ---------- filesystem.list ----------
-async function list(args) {
+async function list(args, ctx = {}) {
   if (!args || typeof args.path !== 'string' || !args.path) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.list: args.path is required');
   }
   const target = path.resolve(args.path);
+  assertPathAllowed(target, ctx.fsScope);
   let stat;
   try {
     stat = await fsp.stat(target);
@@ -62,11 +78,12 @@ async function list(args) {
 }
 
 // ---------- filesystem.read ----------
-async function read(args) {
+async function read(args, ctx = {}) {
   if (!args || typeof args.path !== 'string' || !args.path) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.read: args.path is required');
   }
   const target = path.resolve(args.path);
+  assertPathAllowed(target, ctx.fsScope);
   let stat;
   try {
     stat = await fsp.stat(target);
@@ -100,7 +117,7 @@ function globToRegex(glob) {
   return new RegExp(`^${escaped}$`, 'i');
 }
 
-async function search(args) {
+async function search(args, ctx = {}) {
   if (!args || typeof args.root !== 'string' || !args.root) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.search: args.root is required');
   }
@@ -108,6 +125,7 @@ async function search(args) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.search: args.query is required');
   }
   const root = path.resolve(args.root);
+  assertPathAllowed(root, ctx.fsScope);
   let rootStat;
   try {
     rootStat = await fsp.stat(root);
@@ -157,7 +175,7 @@ async function search(args) {
 }
 
 // ---------- filesystem.write ----------
-async function write(args) {
+async function write(args, ctx = {}) {
   if (!args || typeof args.path !== 'string' || !args.path) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.write: args.path is required');
   }
@@ -165,6 +183,7 @@ async function write(args) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.write: args.content must be string');
   }
   const target = path.resolve(args.path);
+  assertPathAllowed(target, ctx.fsScope);
   await fsp.mkdir(path.dirname(target), { recursive: true });
   const flag = args.append ? 'a' : 'w';
   await fsp.writeFile(target, args.content, { encoding: 'utf8', flag });
@@ -172,11 +191,12 @@ async function write(args) {
 }
 
 // ---------- filesystem.mkdir ----------
-async function mkdir(args) {
+async function mkdir(args, ctx = {}) {
   if (!args || typeof args.path !== 'string' || !args.path) {
     throwToolError('INVALID_ARGUMENTS', 'filesystem.mkdir: args.path is required');
   }
   const target = path.resolve(args.path);
+  assertPathAllowed(target, ctx.fsScope);
   await fsp.mkdir(target, { recursive: true });
   return { created: true, path: target };
 }

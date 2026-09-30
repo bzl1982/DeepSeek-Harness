@@ -1,0 +1,145 @@
+有办法，两个问题都有解。先把问题二的"病根"说清，因为它是理解一切方案的前提。
+
+## 问题二：webview 拖拽排序 —— 有可靠解法
+
+### 先回答"为什么模拟成功、真拖失败"
+
+这不是你代码的 bug，而是两个层面的机制：
+
+1. **webview 本质是 OOPIF**（跨进程 iframe），Electron 官方文档明确写了：不能给 `<webview>` 挂任何 mouse 事件，点击时焦点会从宿主迁移到 guest 。鼠标事件落在 webview 区域时，OS 层面的 hit-test 直接路由给 guest 的 WebContents，宿主的 DOM（包括你的 z-index 999999 遮罩）根本不在命中链上。
+2. **HTML5 原生拖放在 Windows 上走 OLE drag session**，一旦 drag 会话开始，Chromium 的 drag controller 对光标下方元素做独立 hit-test，光标移到 webview 上方时会话被"交接到" guest 页面，宿主所有 handler 全部"冻结"——这是 2017 年就有人报告的已知行为 。
+3. 你的 `executeJavaScript` 模拟是把 `DragEvent` **直接 dispatch 到指定元素**，绕过了 OS 拖放循环和 hit-test，所以永远能通过——它测的不是同一条链路。
+
+所以：**遮罩方案本身没错，缺的是让 guest 在拖拽期间"让路"**。
+
+### 推荐方案：拖拽期间对 guest 调 `setIgnoreMouseEvents`
+
+`setIgnoreMouseEvents` 是 WebContents 级别的方法（不只属于 BrowserWindow）。webview 的 guest 也是 WebContents，所以流程是：
+
+1. `dragstart`（或 pointerdown）→ 宿主通过 IPC 通知主进程
+2. 主进程对**全部 9 个 guest** 执行 `guest.setIgnoreMouseEvents(true)`
+3. 此时光标悬在 webview 上方，事件全部穿透到宿主 DOM，你的遮罩正常收到 `dragover`/`drop`
+4. `drop` / `dragend` → IPC 通知主进程恢复 `setIgnoreMouseEvents(false)`
+
+主进程（伪代码）：
+
+```js
+// main 进程
+const { ipcMain, webContents } = require('electron')
+
+ipcMain.on('dnd:set-ignore', (event, ignore) => {
+  // 会议窗口里所有 webview 的 guest contents
+  for (const wc of webContents.getAllWebContents()) {
+    if (wc.getType() === 'webview' && /* 属于会议窗口 */) {
+      wc.setIgnoreMouseEvents(ignore)  // 不要开 forward
+    }
+  }
+})
+```
+
+注意两点：
+- **不要开 `{forward:true}`**，你要的是完全穿透，不是转发。
+- Electron 33 里取 guest contents：`webviewTag.webContents`（`getWebContents()` 已废弃）。或者主进程按 `webContents.getType() === 'webview'` 过滤。
+
+宿主侧把 `dragend` 也作为恢复点（防 drop 没触发导致 guest 永久失效）：
+
+```js
+function setGuestIgnore(ignore) { dshBridge.setGuestIgnore(ignore) } // → ipcRenderer.send
+
+lbl.addEventListener('dragstart', (e) => {
+  setGuestIgnore(true);
+  // ...建遮罩（你现有逻辑）...
+});
+mask.addEventListener('drop', (e) => { /* 交换 */ setGuestIgnore(false); mask.remove(); });
+lbl.addEventListener('dragend', () => { // 兜底：用户 Esc / 拖出窗口
+  setGuestIgnore(false);
+  document.getElementById('dnd-mask')?.remove();
+});
+```
+
+这样你方案 B/C 的遮罩代码**一行不用改**，补上 guest 穿透就通了。这是 Electron 社区处理 webview 拖拽的 standard workaround。
+
+### 加强项（可选但建议）
+
+- 在 guest 页面也禁用它的原生拖放，避免它自己的文本/图片拖拽行为干扰：通过 `webContents.send` 给每个 guest 注入 `document.addEventListener('dragstart', e => e.preventDefault())`（在 `did-finish-load` 时 executeJavaScript）。
+- 如果你想更稳，可以放弃 HTML5 DnD，改用 **pointerdown + 全屏遮罩 + pointermove** 的手动拖拽（自己画一个拖动中的缩略图/高亮目标格）。手动拖拽只有普通鼠标事件，没有 OLE 会话，`setIgnoreMouseEvents` 穿透后遮罩收事件毫无障碍。HTML5 DnD + ignore 方案能用就先用它，改动最小。
+
+### 关于"只能放弃拖拽手势吗"
+
+不需要。`setIgnoreMouseEvents` 穿透后"拖到 webview 上方"完全可行。点选交换可以作为辅助交互（比如触屏/不方便拖时），但不是必须的退路。
+
+---
+
+## 问题一：按钮 UI 统一 —— 别"复制样式"，直接"克隆节点"
+
+### 核心思路转变
+
+你方案 A–D 的共同问题是：**逐项复制 computedStyle 再手动拼一个按钮**。这条路必然失败，因为：
+
+- computedStyle 只反映**当前状态**（默认态的颜色可能是透明的、继承的、CSS 变量解析后的），hover/active 态你拿不到；
+- 你自己写的 `padding/border/background` 永远和 React 组件的真实渲染有偏差；
+- SPA 重渲染会把你的注入节点冲掉。
+
+正确做法：**`cloneNode(true)` 深克隆设置按钮整棵子树，只换图标和文字**。克隆出来的节点带着原按钮一模一样的 class、结构、CSS 变量上下文，页面里已有的 stylesheet 会自动套用——包括 hover/active 态，**不需要复制任何 inline style**：
+
+```js
+function inject() {
+  var settingsBtn = document.querySelector('button[aria-label*="设置"], button[aria-label*="Settings"]');
+  if (!settingsBtn) return false;
+  if (document.getElementById('dsh-meeting-btn')) return true;
+
+  var btn = settingsBtn.cloneNode(true);   // 关键：整体克隆
+  btn.id = 'dsh-meeting-btn';
+  btn.removeAttribute('aria-label');
+  btn.setAttribute('aria-label', '通辽会议');
+  btn.style.removeProperty('background');  // 清理可能的内联背景，防方案D残留
+
+  // 只替换内容：保留原有图标容器结构，换掉 SVG path
+  var svg = btn.querySelector('svg');
+  if (svg) {
+    svg.innerHTML = '<path d="...你的会议图标 path..."/>';  // 同 viewBox，视觉尺寸自动一致
+  }
+  // 替换文字节点（保持原有 span 结构）
+  var walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+  var textNode;
+  while (textNode = walker.nextNode()) {
+    if (textNode.textContent.trim()) { textNode.textContent = textNode.textContent.replace(/设置|Settings/, '通辽会议'); break; }
+  }
+
+  settingsBtn.parentNode.insertBefore(btn, settingsBtn.nextSibling);
+  return true;
+}
+```
+
+这样做的好处，正好回答你的三个子问题：
+
+1. **字体/颜色/字号/圆角/hover 全一致**——因为它们来自同一个 class 和同一个 CSS 规则，不是你抄来的值。
+2. **图标尺寸、垂直对齐自动一致**——图标容器、gap、align-items 都是原结构，你只需保证新 SVG 用同样的 `viewBox`（比如 24×24），渲染尺寸自动跟随。
+3. **"上下罗列"不用管容器布局**——`insertBefore(btn, settingsBtn.nextSibling)` 让两个按钮成为同父同级的相邻兄弟节点。侧边栏无论是 flex column 还是 block，它们天然纵向排列、左对齐、同宽。如果连 `nextSibling` 位置被其他元素（如分隔线、徽标）影响，就打印一下 `settingsBtn.parentNode.children` 确认插入点。
+
+### 防"颜色与底色同色 / 按钮消失"
+
+方案 C 消失的真正原因大概率不是颜色，而是**你写了 `btn.style.paddingTop = ...px`，把 flex 布局的内边距模型搞坏 + React 重渲染把节点移除**，而注入脚本是单次执行的，节点没了就永远没了。对策是上面说的克隆 + **持久化注入**：
+
+```js
+var observer = new MutationObserver(function () {
+  if (inject()) { /* 已在 */ }
+});
+observer.observe(document.body, { childList: true, subtree: true });
+inject(); // 立即尝试一次
+```
+
+React 重渲染父列表时会把你注入的节点删掉，MutationObserver 会在下一个微任务周期把它放回去（`inject()` 里有 `getElementById` 去重，不会重复）。轮询（方案 D 的 2 秒重试）可以保留作兜底，但 observer 是主机制。
+
+如果克隆后个别样式真的不对（比如目标站用了 CSS-in-JS 的哈希类名 + 结构选择器如 `:nth-child`），兜底是：克隆后**从 computedStyle 白名单复制**（`font/color/padding/background/border/border-radius/gap/align-items/justify-content`），但不要碰 `display` 和 `position`。
+
+---
+
+## 优先级建议
+
+| 事项 | 做法 | 改动量 |
+|---|---|---|
+| 拖拽排序 | 主进程对 9 个 guest `setIgnoreMouseEvents(true/false)`，包在你现有遮罩方案外 | 小（~30 行），风险低 |
+| 按钮统一 | `cloneNode(true)` 替换内容 + MutationObserver 保活，删掉所有强制颜色 | 小，且一劳永逸 |
+
+另外提醒一点架构层面的：Electron 官方其实不推荐 webview tag（OOPIF 带来这类事件问题），如果这个项目后续还要加复杂交互（比如在 AI 页面上悬浮自己的 UI），长期可以考虑迁到 `BrowserView`/`WebContentsView`（每个 AI 一个 view，叠在窗口上，宿主 DOM 永远在最上层，天然不存在穿透问题）。但那是大改动，眼前的两个需求用上面两招就能解决。

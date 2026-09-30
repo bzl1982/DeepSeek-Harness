@@ -1,0 +1,130 @@
+你说的就是微软的 **AutoGen**（Microsoft Research 2023年9月开源的多智能体对话框架，GitHub 3.5万+ star，MIT 协议）。先说一个关键背景：2025 年末微软已把 AutoGen 和 Semantic Kernel 合并为 **Microsoft Agent Framework (MAF)**，AutoGen 本体不再更新，但 v0.4 的 API 仍然可用，核心思想完全延续到新框架。你的项目是新起的，建议直接评估 MAF，或者稳妥起见用 AutoGen v0.4——两者 API 几乎一样，下面方案对两者通用。
+
+## 一、AutoGen 的工作原理
+
+核心思想叫 **"对话即编排"（Conversation Programming）**：不手写流程控制代码，而是让多个"可对话智能体（ConversableAgent）"通过发消息互相协作，控制流由对话自然涌现。
+
+四个核心组件：
+
+1. **Agent（智能体）**
+   - `AssistantAgent`：LLM 驱动的智能体，由 system prompt 定义角色
+   - `UserProxyAgent`：人类代理，可代表你输入，或执行代码
+   - 每个 Agent 有自己的角色、上下文窗口、工具权限
+
+2. **GroupChat + GroupChatManager（群聊调度器）**
+   - 多个 Agent 组成群组，Manager 决定"下一个谁发言"
+   - 两种模式：`RoundRobinGroupChat`（轮流发言，确定性）和 `SelectorGroupChat`（用 LLM 根据对话内容动态选人，更像真实会议）
+
+3. **终止条件**：`TextMentionTermination`（说出关键词如 TERMINATE 就停）、`MaxMessageTermination`、`TokenUsageTermination` 等，可 AND/OR 组合。
+
+4. **模型无关的 ModelClient**：Agent 不直接绑死 OpenAI，而是通过一个模型客户端接口调用 LLM，支持 OpenAI / Azure / Anthropic / Gemini / Ollama 等，"换模型只改配置"。
+
+**这就是你接入的突破口**：第 4 点意味着只要你自己实现一个 ModelClient，Agent 根本不需要知道背后是 API 还是网页版 AI。
+
+## 二、你的核心困难与破解思路
+
+AutoGen 假设每个 Agent 背后是一个 API 接口；你的"通辽会议"里是 9 个**网页版** AI（ChatGPT、Claude、Gemini、Grok、豆包……网页版）。破解方法：**写一层"浏览器适配器"，把每个网页版 AI 包装成一个 AutoGen 兼容的 ModelClient**。
+
+```
+你的消息 ──► GroupChatManager（调度，决定谁发言）
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+   Agent_1      Agent_2     Agent_9
+   (网页AI_A)   (网页AI_B)  (网页AI_I)
+        │           │           │
+        ▼           ▼           ▼
+  BrowserAdapter × 9（Playwright 控制 9 个独立浏览器 Profile）
+        │           │           │
+        ▼           ▼           ▼
+   ChatGPT网页   Claude网页   Gemini网页 ...
+```
+
+**技术选型：Playwright（推荐）**，理由：
+- 每个 Agent 一个独立的浏览器 context（隔离 cookie/会话），9 个 AI 互不干扰
+- 支持持久化登录状态（`storage_state` 保存一次，不用每次扫码/登录）
+- 有 `expect_response` 网络拦截能力，可以不等 UI 渲染、直接从响应接口抓 AI 回复，**比解析 DOM 稳得多、也快得多**
+- 天然支持文件上传（`set_input_files`），解决你说的"发文件"需求
+
+## 三、落地步骤
+
+**第 1 步：打通单个网页 AI 的"说一句、读一句"**
+
+对 9 个目标网页，分别写一个 adapter 类，统一接口：
+
+```python
+class WebAIAdapter:
+    def send(self, text: str, files: list[str] | None = None) -> str: ...
+    def new_conversation(self) -> None: ...  # 清空上下文，开启新会话
+```
+
+实现要点：
+- 用 Playwright 连接已登录的浏览器 profile（先手动登录一次，保存 `storage_state.json`）
+- 发消息：`page.fill()` 输入框 → 点击发送（或拦截 send 的 fetch 请求直接 POST）
+- 读回复：优先用 `page.expect_response("**/conversation**")` 抓流式响应的最终 chunk；抓不到再降级为 DOM 等待 + `text_content()` 轮询"生成中"图标消失
+- 每个网页 AI 的适配器是独立的 `xxx_adapter.py`，接口统一，坏一个不影响其他
+
+**第 2 步：包成 AutoGen ModelClient**
+
+实现 `ChatCompletionClient` 协议（核心就两个方法）：
+
+```python
+from autogen_ext.models import ModelClient
+
+class WebPageModelClient(ModelClient):
+    def __init__(self, adapter: WebAIAdapter):
+        self.adapter = adapter
+
+    async def create(self, messages, **kwargs):
+        # 把 AutoGen 的消息历史拼成该网页 AI 能接受的格式（纯文本+角色标注）
+        prompt = self._render(messages)
+        reply = await asyncio.to_thread(self.adapter.send, prompt)
+        return CreateResult(
+            finish_reason="stop",
+            content=[TextMessage(content=reply, source=self.adapter.name)],
+            usage=RequestUsage(prompt_tokens=0, completion_tokens=0),  # 网页版拿不到精确token，可估算
+            cached=False,
+        )
+
+    def actual_usage(self): return RequestUsage(0, 0)
+    def total_usage(self): return RequestUsage(0, 0)
+    def count_tokens(self, messages, **kwargs): return 0
+    def remaining_tokens(self, **kwargs): return 128000
+    @property
+    def model_info(self): return ModelInfo(function_calling=False, vision=False)
+```
+
+**第 3 步：装配"通辽会议"**
+
+```python
+from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.teams import SelectorGroupChat
+from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
+
+agents = [
+    AssistantAgent(name, model_client=WebPageModelClient(adapter_i),
+                   system_message=ROLE_PROMPTS[name])
+    for name, adapter_i in zip(NINE_NAMES, adapters)
+]
+
+team = SelectorGroupChat(
+    participants=agents,
+    model_client=selector_llm,   # 选人用一个便宜的 API 模型（如 DeepSeek API），别再走网页
+    termination_condition=TextMentionTermination("散会") | MaxMessageTermination(30),
+)
+```
+
+一个关键建议：**调度器（Selector）不要走网页版**。让 9 个网页 AI 当"参会者"，但用 DeepSeek API 之类便宜稳定的接口来当"主持人"决定谁发言。网页版延迟高（5–30秒/轮），拿来做高频调度会卡死。
+
+**第 4 步：对接你现有的 harness 前端**
+你的通辽会议前端通过 WebSocket 把用户消息和文件转发给后端，后端把任务广播给 team.run()，再把每个 Agent 的消息流式推回前端 9 宫格界面。AutoGen 的 `team.run_stream()` 天然产出消息事件，前端按 source 路由到对应格子并打字机渲染。
+
+## 四、必须预判的坑
+
+1. **ToS 风险**：各家网页版 ToS 普遍禁止自动化访问，账号有被封风险。缓解：限速（每轮间隔≥8–15秒）、用副号、控制日轮次。技术上也可以考虑把部分网页 AI 换成官方 API 或 OpenRouter 中转，混合接入——架构完全一样，只是 adapter 换成 REST 调用，稳得多。
+2. **上下文管理**：网页 AI 有自己的上下文窗口，且无法精确控制。每轮把完整对话历史重发会爆窗口，建议：定期 `new_conversation()` + 由你的后端维护一份压缩的会议纪要注入。
+3. **状态依赖脆弱**：网页改版 selector 就失效。每个 adapter 写自动化测试，CI 里每日跑一次"9家连通性检查"。
+4. **并发与验证码**：9 个浏览器 profile 别同 IP 并发猛刷，错峰发言（本来轮流发言就是天然错峰）。
+5. **文件问题**：网页版传文件用 `set_input_files()` 可行，但各家对文件类型/大小限制不同，adapter 层要做白名单和错误重试。
+
+**总结一句话**：AutoGen 的模型无关架构正好给了你缝——把 9 个网页 AI 各写一个 Playwright adapter 伪装成 ModelClient，Agent 层和调度层完全复用 AutoGen，你只需专注维护 9 个薄适配器。建议先做通 1 个（比如 Gemini 网页版，它的 DOM 相对规整）跑通闭环，再批量复制到其余 8 个。

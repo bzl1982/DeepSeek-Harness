@@ -117,7 +117,7 @@ function createHarnessServer(opts = {}) {
 
     // 5) 无需确认（READ）→ 直接执行
     if (decision.decision === 'auto') {
-      return executeAndAudit(toolName, args, { requestId, sessionId, provider, requiredPermission: decision.requiredPermission, startedAt, confirmation: 'auto' });
+      return executeAndAudit(toolName, args, { requestId, sessionId, provider, requiredPermission: decision.requiredPermission, startedAt, confirmation: 'auto', taskContext: session.taskContext });
     }
 
     // 6) 需要确认
@@ -176,7 +176,7 @@ function createHarnessServer(opts = {}) {
 
       return executeAndAudit(toolName, args, {
         requestId, sessionId, provider, requiredPermission: decision.requiredPermission,
-        startedAt, confirmation: 'approved',
+        startedAt, confirmation: 'approved', taskContext: session.taskContext,
       });
     }
 
@@ -194,10 +194,27 @@ function createHarnessServer(opts = {}) {
     const startedAt = meta.startedAt;
     try {
       const toolDef = registry.get(toolName);
-      const result = await toolDef.handler(args, {
+      const timeoutMs = toolDef.timeout_ms || 30000;
+      const ctx = {
         sessionId: meta.sessionId,
         provider: meta.provider,
+        fsScope: toolDef.fs_scope,
+        taskContext: meta.taskContext,
+      };
+      let timer;
+      const timeoutPromise = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const e = new Error(`tool ${toolName} timed out after ${timeoutMs}ms`);
+          e.toolError = 'TOOL_TIMEOUT';
+          reject(e);
+        }, timeoutMs);
       });
+      let result;
+      try {
+        result = await Promise.race([toolDef.handler(args, ctx), timeoutPromise]);
+      } finally {
+        clearTimeout(timer);
+      }
       const durationMs = Date.now() - startedAt;
       await auditLog.append({
         sessionId: meta.sessionId, provider: meta.provider, requestId: meta.requestId,

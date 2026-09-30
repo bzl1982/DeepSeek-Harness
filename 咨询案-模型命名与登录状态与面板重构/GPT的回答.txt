@@ -1,0 +1,233 @@
+收到，这次文件已经正常到达了。之前那次确实不是文件内容问题，而是**通辽会议输入窗口拖拽上传链路没有把附件传递到当前对话**，所以我只能看到“（见上传的文件）”，但实际没有附件对象。
+
+这次收到的文件是：
+
+**《咨询案-模型命名与登录状态与面板重构.md》**
+
+我已经读取到内容，核心是 **DeepSeek Harness v0.1.5-rc.2 的模型命名统一 + 登录状态同步 + 模型切换器/设置面板重构方案咨询**。文件里描述了：
+
+* Electron 33.2.0
+* Windows 11 / 4K
+* 9 个网页版 AI + dsh API 模型
+* 三个界面：
+
+  1. dsh 主窗口
+  2. 通辽会议窗口（9 个 webview）
+  3. 设置 → 模型 / 首页模型切换器
+
+并且明确提出了几个关键问题，例如：
+
+* 9 个 AI 名称如何统一（例如：
+
+  * 深度求索-DeepSeek
+  * OpenAI-ChatGPT
+  * 月之暗面-Kimi
+  * 阿里巴巴-通义千问
+  * 谷歌-搜索）
+* webview 登录状态如何同步到主窗口
+* 如何提取登录用户名
+* API 模型为什么被网页版模型挤压
+* 设置页和模型切换器是否应该共享数据源
+* 如何一次性改完避免 SPA 注入失效
+
+文件说明项目背景和目标在开头已经定义，例如这是 DeepSeek Harness 的 Electron 客户端重构咨询，目标是“争取一次搞定”。
+其中架构限制也写得很明确：主窗口和会议窗口使用 sandbox，webview 独立渲染进程，各网站登录态隔离保存。
+当前会议窗口 AI 配置也是独立 MODELS 数组维护，这是后续统一数据源的关键点。
+
+关于你补充说的：
+
+> “我在通辽会议的输入窗口拖拽文件，你们收不到文件。”
+
+我建议排查方向如下：
+
+### 可能原因 1：会议窗口不是 ChatGPT 原生上传区域
+
+如果“通辽会议”是 Electron 里的独立 BrowserWindow：
+
+```
+Electron 主窗口
+ ├── ChatGPT网页
+ ├── DeepSeek网页
+ ├── ...
+ └── meeting.html
+       └── webview × 9
+```
+
+那么拖进去的文件事件可能只进入：
+
+```
+webview guest renderer
+```
+
+而没有经过：
+
+```
+Electron IPC
+ ↓
+ChatGPT 当前对话窗口
+ ↓
+附件上传服务
+```
+
+所以文件显示拖进去了，但实际上没有生成 attachment。
+
+---
+
+### 可能原因 2：drag/drop 事件被 webview 吞掉
+
+Electron 的 webview 天生容易出现：
+
+```
+dragenter
+dragover
+drop
+```
+
+事件被 guest 页面截获。
+
+特别是：
+
+* AI 网站输入框
+* 富文本编辑器
+* React textarea
+* contenteditable
+
+都会主动 preventDefault。
+
+---
+
+### 可能原因 3：文件上传区域和聊天区域不是同一个 renderer
+
+正常 ChatGPT 网页：
+
+```
+浏览器 renderer
+       |
+       |
+附件选择器
+       |
+       |
+上传接口
+```
+
+但是你的会议模式：
+
+```
+meeting.html renderer
+
+      |
+      |
+      +-- webview
+            |
+            +-- chat.deepseek.com
+            +-- chatgpt.com
+            +-- kimi...
+```
+
+拖入文件时，Electron 不知道你想上传给哪个上下文。
+
+---
+
+## 我建议 DeepSeek Harness 后续设计一个统一附件桥
+
+不要让 9 个 AI 网页自己处理拖拽。
+
+增加：
+
+```
+AttachmentManager
+        |
+        |
+Electron main process
+        |
+        |
+IPC
+        |
+        |
+meeting.html / dsh UI
+```
+
+流程：
+
+用户拖文件：
+
+```
+drop
+ |
+ ↓
+Electron 捕获
+ |
+ ↓
+AttachmentManager
+ |
+ ↓
+判断当前目标 AI
+ |
+ ↓
+发送 file path / buffer
+ |
+ ↓
+目标 webview 执行上传
+```
+
+类似浏览器级文件管理。
+
+---
+
+另外，你这份咨询案我建议下一步不要直接改代码，而是先冻结一个：
+
+**DeepSeek Harness v0.1.5-rc.3 重构方案**
+
+顺序应该是：
+
+```
+Step 1
+建立唯一 AI Provider 配置
+        |
+        |
+        +-- meeting.html
+        |
+        +-- 模型切换器
+        |
+        +-- 设置模型页
+
+
+Step 2
+登录状态服务
+
+webview
+ |
+ |
+LoginDetector
+ |
+ |
+main process cache
+ |
+ |
+UI
+
+
+Step 3
+模型列表重构
+
+API Models
+   ↓
+网页版 Models
+
+
+Step 4
+附件/拖拽事件统一层
+```
+
+不要先改 UI，否则后面一定返工。
+
+我可以继续帮你把这份咨询案做成一份**“给 AI 开发助手直接执行的 v0.1.5-rc.3 改造指令书”**，包括：
+
+* 文件修改清单
+* 新增类/模块设计
+* IPC 通道设计
+* 数据结构
+* 修改顺序
+* 验收标准
+
+这样你可以直接丢给 DeepSeek Harness 自己开发。

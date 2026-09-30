@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>八家方案评价与选型</title>
+</head>
+<body>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: #0b0e14; color: #e6e6e6; padding: 24px; margin: 0; }
+  h1 { font-size: 20px; color: #4da3ff; margin: 0 0 6px; }
+  .sub { font-size: 12px; color: #8b98a9; margin-bottom: 20px; line-height: 1.6; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #121820; border: 1px solid #2a3a4a; border-radius: 10px; padding: 14px 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+  .score { font-size: 12px; color: #4ade80; font-weight: 600; white-space: nowrap; }
+  .score.na { color: #8b98a9; }
+  .pills { margin: 6px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: #1d2836; color: #8fc7ff; border: 1px solid #5a7a9e; white-space: nowrap; }
+  .tag.off { color: #8b98a9; border-color: #3a4a5a; background: #181f2b; }
+  .tag.win { color: #4ade80; border-color: #2f6b4a; background: #12302a; }
+  ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; color: #c8d0dc; }
+  .footer { margin-top: 18px; background: #0f2233; border: 1px solid #2f6b4a; border-radius: 10px; padding: 14px 16px; font-size: 13px; line-height: 1.8; color: #c8d0dc; }
+  .footer b { color: #4ade80; }
+  .footer code { background: #1a2a3a; padding: 1px 6px; border-radius: 4px; color: #8fc7ff; font-size: 12px; }
+  .notice { margin-top: 14px; background: #241a12; border: 1px solid #8a5a2a; border-radius: 10px; padding: 12px 16px; font-size: 12px; color: #d8c0a0; line-height: 1.8; }
+</style>
+<h1>八家方案评价与选型（命名统一 · 登录状态/登录名 · 模型面板重构）</h1>
+<div class="sub">★=咨询案 10 问的回答质量；「拖拽」列为各家常提到的另一追加问题（用户发咨询案时各家顺带回答）。已按共识完成一轮实施（见底部）。</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>DP <span class="score">咨询案 ★★★★★</span></h2>
+    <div class="pills"><span class="tag win">10问全答</span><span class="tag win">拖拽有方案</span><span class="tag win">菜单建议</span></div>
+    <ul>
+      <li>最全面：agentCatalog 单一数据源 + 主进程 authState 状态中心 + 探针定位 + 完整注入脚本代码</li>
+      <li>登录检测：Cookie 辅助 + 逐站 DOM 探针 + 多候选回退 + 置信度；点名"不要从 JWT 解用户名"</li>
+      <li>拖拽：will-attach-webview 注入 preload + DOM.setFileInputFiles（Electron 官方能力）</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>KIMI <span class="score">咨询案 ★★★★★</span></h2>
+    <div class="pills"><span class="tag win">10问全答</span><span class="tag win">拖拽同路线</span></div>
+    <ul>
+      <li>与 DP 高度一致：命名单一源 + 主进程状态缓存 + 双向下推</li>
+      <li>细化刷新策略：事件驱动（did-navigate）优先 + 15~30s 轮询 + TTL 30s + 仅变化才广播</li>
+      <li>强调排序"不要每 3 秒 appendChild 移动节点"——这是当前排序/闪跳的根因判断</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>通义千问 <span class="score">咨询案 ★★★★☆</span></h2>
+    <div class="pills"><span class="tag win">10问全答</span><span class="tag win">拖拽排查清单</span></div>
+    <ul>
+      <li>架构判断好：数据层过滤（listProviderMeta 返回 loggedIn）＞ CSS ＞ DOM 显隐；注入脚本只瘦身</li>
+      <li>"unknown 不覆盖上一次状态"防闪、事件驱动优先、数据源统一——都是正确方向</li>
+      <li>扣分：判定脚本多处笔误（img[sr=、clas=、logsin 等），代码需自行校正</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>百度文心 <span class="score">咨询案 ★★★★☆</span></h2>
+    <div class="pills"><span class="tag win">10问全答</span><span class="tag win">9站选择器表</span><span class="tag win">拖拽5步</span></div>
+    <ul>
+      <li>最详细：给出 9 站 loginSelectors 配置表（DeepSeek/ChatGPT/Kimi/豆包/通义/元宝/Gemini/谷歌/文心），直接可用</li>
+      <li>落地步骤最清晰（4 步 + 踩坑清单）；"设置面板始终显示+状态、切换器仅登录显示"的区分与用户原话最贴合</li>
+      <li>扣分：篇幅长、个别选择器需实测校正</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>GPT <span class="score">咨询案 ★★★☆</span></h2>
+    <div class="pills"><span class="tag">方向性</span><span class="tag win">拖拽 AttachmentManager</span></div>
+    <ul>
+      <li>核心判断：dsh 是自有 SPA，最优是改前端源码而非注入脚本（本项目有 patch 机制，方向有价值）</li>
+      <li>建议登录状态做成主进程服务、会议窗口只读缓存；拖拽用统一附件桥</li>
+      <li>扣分：咨询案 10 问没有逐条给代码，落地性弱</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>豆包 <span class="score">拖拽专项 ★★★★</span></h2>
+    <div class="pills"><span class="tag off">咨询案未答</span><span class="tag win">拖拽深度最深</span></div>
+    <ul>
+      <li>只答拖拽，但技术分析最深：Electron ≥32 File.path 移除 → webUtils.getPathForFile；sendToHost 直通宿主；Blob 构造 File 的完整链路</li>
+      <li>明确指出"远程网页 JS 不能构造磁盘 File 对象"的安全限制，方案 B-Final 是生产首选</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>元宝 <span class="score">拖拽专项 ★★★</span></h2>
+    <div class="pills"><span class="tag off">咨询案未答</span><span class="tag win">拖拽有方案</span></div>
+    <ul>
+      <li>只答拖拽：enableWebDragDrop + 宿主统一截获 + elementFromPoint 定位 webview + DataTransfer 注入</li>
+      <li>补充了管理员权限拖拽被 Windows 拦截、sandbox 下 file.path 不可用等隐蔽坑</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>谷歌搜索 <span class="score na">★</span></h2>
+    <div class="pills"><span class="tag off">咨询案未答</span><span class="tag off">拖拽跑题</span></div>
+    <ul>
+      <li>完全跑题：把「通辽会议」当成真实视频会议软件，答的是会议权限/参会者限制</li>
+      <li>无可用内容</li>
+    </ul>
+  </div>
+</div>
+
+<div class="footer">
+  <b>采用方案（本轮已实施）</b>：① <code>agentCatalog.js</code> 单一数据源（命名/URL/partition/登录检测选择器，三处界面共用）② 命名表：<b>谷歌-搜索</b>、<b>阿里巴巴-通义千问</b>，DeepSeek/ChatGPT/Kimi/Gemini 保留英文（四家共识：不生造译名）③ 主进程 <code>authState</code> 状态中心 + IPC（report/getState/changed 广播）④ 会议窗口登录检测升级：双信号判定 + 逐站选择器提取登录名，名牌显示「名称 ● 登录名 / ○」⑤ 主窗口注入脚本重写：MutationObserver 替代 3 秒轮询、API 上/网页版下、切换器未登录隐藏（<b>谷歌-搜索豁免</b>）、设置面板显示状态+登录名、面板高度放开。
+</div>
+<div class="notice">
+  待确认/未做：① <b>拖拽文件上传</b>（多家都答了方案，但不是本次咨询案范围，若要做我按豆包方案 B-Final + DP 的 setFileInputFiles 实施）；② <b>菜单栏</b>「会议认证」→ 中文菜单（DP/KIMI/文心建议，等你确认是否改）；③ dsh 前端源码可改性（GPT 建议，可让后续改动大幅变轻，需你确认项目里 patch 脚本的权限边界）。
+</div>
+</body>
+</html>

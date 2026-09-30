@@ -1,0 +1,364 @@
+收到这份针对通辽会议（DSH 桌面端多 AI 系统）第五轮的咨询与模式/角色场景定义文件。
+这份文档极具深度与实战性，一刀切中了多智能体群聊系统进入软件工程化落地时的最核心痛点：防锚定、分数校准、状态机判停、接口约束、以及 O(N²) 的成本灾难。你提供的初步草案（草案 A 招标评审、草案 B 工程交付）已经是非常优秀的靶子。
+我将完全遵循你的铁律（说清成本、给反例、给字段级设计、直接批判与反驳、拒绝泛泛而谈），为你逐一回答并推演这 9 个硬核问题，并为你提供可直接落地的架构方案。
+------------------------------
+## 🛠️ 第一部分：核心问题逐一解答（Q1 - N9）## Q1：工作流 A 该新建 tournament 模式，还是 broadcast + iterate 组合？
+裁决：必须新建 tournament 模式。
+为什么组合路线不行：
+
+   1. 状态机污染：iterate（反复修正）的状态机内核是围绕 Single Artifact（单产物） 设计的（needs: ['draft']）。如果你试图用它去修正 broadcast 出来的 $N$ 份差异巨大的候选，你必须在运行时动态分裂出 $N$ 个平行的回环回路。这会导致你的 MeetingModel 发生“多宇宙分支坍塌”，Node 编排器的复杂度会呈指数级上升。
+   2. 上下文错配：iterate 核心在于“挑错”，而 tournament（招标）的核心在于“对比与优选”。
+
+反例（什么时候不该用 tournament）：
+当你的卡点问题非常具体（如“这行正则为什么报错”）且有唯一标准答案时，严禁使用 tournament。这会导致 N 个 AI 产出完全同质化的修复代码，随后的评标和定标阶段将完全沦为浪费 Token 的空转。
+------------------------------
+## Q2：工作流 A 的"评标"环节，如何防止评审者被第一份方案锚定？
+设计机制：执行「盲审与双向内容隔离（Double-Blind Matrix）」。
+在第 2 步评标（Review Proposals）时，编排器执行的不是一次性把所有方案打包喂给 AI，而是使用 扇出（Fan-out）循环。
+
+* 机制：如果现在有 3 个候选方案（$P_1, P_2, P_3$）和 3 个评审席位（$R_1, R_2, R_3$），编排器在这一阶段总共发起 $3 \times 3 = 9$ 次完全独立的、并行的调用。
+* 切片规则：当向评审者 $R_1$ 投喂方案 $P_1$ 时，输入仅包含原始 TASK + 方案 $P_1$。$R_1$ 绝对看不到方案 $P_2$ 和 $P_3$，更看不到评审者 $R_2$ 的打分。
+* 消除锚定：通过高频、碎片化的单步调用，让每个 AI 在评价某一方案时，都处于“无前文干扰的纯净态”。最终由编排器在 Node 侧把 $3 \times 3$ 的矩阵合并。
+
+反例（什么时候不该用盲审隔离）：
+当候选方案之间存在强依赖关系或互补关系（例如方案 A 是前端，方案 B 是后端，需要组合评审）时，严禁盲审。否则 AI 会因为缺乏全局上下文而将互补方案判为“不完整”。
+------------------------------
+## Q3：评标用「打分」还是「淘汰制」？跨模型分数怎么校准？
+裁决：放弃打分制，也放弃淘汰制，采用「全员成对决斗（Tournament Pairwise Elo Ranking）」或「强制相对排序（Relative Ranking）」。
+跨模型的打分绝对无法校准（DeepSeek 的 7 分可能比 ChatGPT 的 9 分更苛刻）。
+具体做法（相对排序法）：
+在盲审矩阵完成后，编排器发起最终的“定标”阶段。向收敛类席位（如主持助理）投喂全量方案，其互斥输出约束和格式约束必须强行锁定为 JSON 名次数组：
+## 字段级约束设计（注入给评审合并者的 JSON Schema）：
+
+{
+  "type": "object",
+  "properties": {
+    "ranking": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "proposal_id": { "type": "string" },
+          "rank": { "type": "integer", "description": "必须从 1 到 N 严格排序，不允许并列" },
+          "justification": { "type": "string", "description": "核心胜出或落选原因，限50字" }
+        },
+        "required": ["proposal_id", "rank", "justification"]
+      }
+    }
+  },
+  "required": ["ranking"]
+}
+
+编排器在 Node 侧对所有收敛席位返回的 rank 进行简单算术平均值叠加，得分最低（即名次最靠前）者胜出。不需要复杂的归一化，直接抹平了尺度差异。
+调用成本：1 次调用（由主持助理收敛计算）。
+反例：候选方案超过 5 个时不宜使用。因为长文本里塞入超过 5 份方案会导致模型在对比时产生“上下文迷失（Lost in the Middle）”。
+------------------------------
+## Q4：工作流 A 的终止判据：怎么客观判断"已经够好了"？
+设计机制：采用「评价值收敛 Delta 判定（Artifact Value Convergence Delta）」。
+由于我们采用了 Q3 的强制相对排序（算术平均名次），方案的质量可以被精确数字化。
+## 判停状态机伪代码（Node.js）：
+
+function shouldTournamentStop(meetingModel, currentRound) {
+  if (currentRound >= 5) return true; // 硬上限防空转
+
+  const currentBest = meetingModel.getBestProposal(currentRound);
+  const previousBest = meetingModel.getBestProposal(currentRound - 1);
+
+  if (!previousBest) return false;
+
+  // 计算最优方案在评审团中的平均名次变动
+  // 如果上一轮第一名平均得分是 1.2 名，这一轮依然是 1.2 名，说明优化已达瓶颈
+  const rankDelta = Math.abs(currentBest.averageRank - previousBest.averageRank);
+  
+  // 阈值设为 0.1。名次基本无变动，说明再修改也不会更好了
+  if (rankDelta < 0.1) {
+    return true; 
+  }
+
+  return false;
+}
+
+反例：参会评审席位 $N \le 2$ 时不能用此判据。样本量太小会导致平均名次 Delta 产生剧烈抖动，状态机将永远无法自发收敛。
+------------------------------
+## Q5："接口契约冻结"应该由谁写、写成什么形态？
+裁决：由「架构师」在第3阶段写，形态强制锁定为单文件「带有全量注释的 TypeScript 类型定义（Type Declarations）与依赖拓扑 JSON」。
+不能写自然语言（约束不住），也不能写伪代码。TypeScript 接口天生具备极强的结构化约束力，且不会过度绑架内部实现（AI 有自由选择实现逻辑的空间）。
+## 架构师输出规范示例：
+
+/**
+ * @contract_id: CON_0922
+ * @module: UserStorage
+ * @dependency: ['CryptoModule']
+ */export interface IUserStorage {
+  /**
+   * @throws {StorageFullError} 空间满异常
+   */
+  saveUser(user: { id: string; name: string }): Promise<boolean>;
+}
+
+分界线在哪？
+
+* 严禁写：具体函数的内部实现、局部变量命名、使用什么三方库（这属于 AI 实现层的自由）。
+* 必须写：文件路径、导出函数签名、参数对象强类型定义、可能抛出的自定义 Error 错误类名、依赖的其他模块。
+
+------------------------------
+## Q6：工作流 B 分头实现时，每个 AI 该看到什么上下文？
+切片规则：实施「契约沙箱切片（Contract Sandbox Slice）」。
+不需要让每个 AI 看到全量代码。我们需要在系统中新增一个特殊的切片类型：SLICE.CONTRACT。
+## SLICE.CONTRACT 的精确组装逻辑（Node.js）：
+
+function compileContractSlice(agentId, contractArtifact, originalTask) {
+  // 1. 提取当前 Agent 负责的具体模块定义
+  const myModule = contractArtifact.modules.find(m => m.assignedAgentId === agentId);
+  
+  // 2. 提取该模块显式声明依赖的其他模块接口（上游）
+  const upstreamContracts = contractArtifact.modules
+    .filter(m => myModule.dependencies.includes(m.name))
+    .map(m => m.typescriptInterface);
+
+  // 3. 组装最小上下文
+  return {
+    role: "system",
+    content: `
+      原始总任务: ${originalTask}
+      【核心接口契约全文】: 
+      ${contractArtifact.globalTypes}
+      
+      【你负责的模块契约】:
+      ${myModule.typescriptInterface}
+      
+      【你可以调用的上游模块接口】(禁止修改它们，你只能调用):
+      ${upstreamContracts.join('\n')}
+      
+      【边界硬约束】:
+      你只需要且只能输出你负责的模块代码。禁止实现任何未声明的模块。
+    `
+  };
+}
+
+上下文控制效果：从 $O(N)$ 暴降为常量级。每个 AI 的上下文窗口只包含了自身和直系上游，完美隔离了其余 8 个 AI 的内部实现噪音。
+------------------------------
+## Q7：成本：9 人专家会诊的上下文是 O(N²)。有哪些成熟的降成本手段？
+按照有效性与实用性进行严格排序，提供最有效的 3 个降本手段及副作用：
+## 1. 轮次终结者：动态单链历史剪枝（Dynamic Rollup & Link Slice）
+
+* 具体做法：在 panel（专家会诊）串行发言时，改变“第 $k$ 个人看前面所有人发言”的默认设计。改写为：第 $k$ 个人只看原始任务 + 第 $k-1$ 个人的发言（上一个人的垫脚石） + 由主持助理每轮实时更新的 500 字「共识动态滚动轴（Running Consensus Summary）」。
+* 上下文降维：将 $O(N^2)$ 的灾难直接斩断为 $O(N)$ 线性增长。
+* 副作用：如果中间某一个 AI 的回答严重跑偏且主持助理未能识别，错误的基因会被滚动轴继承，导致后排 AI 发生“选择性失明”。
+
+## 2. 分组并行归并（MapReduce Session 分治法）
+
+* 具体做法：将 9 人拆分为 3 个独立并发的“三人筹备小组”（前端组、后端组、合规组）。组内进行 broadcast 或轻量 review。每组由一个“组长角色”收敛出一份 1000 字的组别报告。第二阶段，由 3 个组长带着报告进入核心 panel 会诊。
+* 上下文降维：总调用次数微增，但单次最大上下文窗口缩小了 70%。
+* 副作用：抹杀了“9同框”在一瞬间由于多视角正面对撞而产生的跨界火花（涌现性降低）。
+
+## 3. 异步非阻塞评注（Asynchronous Side-Channel）
+
+* 具体做法：将串行 panel 改为：1 个核心建设类 AI 发表长篇大论，其余 8 个 AI 不再采用串行接力，而是并行对这第一篇方案发表不超过 300 字的短评（类似论文 Peer Review）。
+* 上下文降维：将串行时间拉平，总上下文增长量由 $N^2$ 降为 $N$。
+* 副作用：AI 之间无法进行第二轮的相互反驳，只存在对初稿的单向反馈。
+
+------------------------------
+## Q8：人工中转席位"该怎么建模？
+必须在你的 core/providers/ 下，新建一个名为 human-relay 的一等公民渠道（First-Class Provider）。它绝对不是一条普通的 message，而是一个具备特殊行为的状态机节点。
+## 字段级管道契约设计（human-relay-provider.js）：
+
+class HumanRelayProvider {
+  constructor(config) {
+    this.id = config.id;
+    this.type = 'human-relay';
+    this.pendingPayloads = []; // 存储人工粘贴进来的外部回答暂存区
+  }
+
+  // 核心差异 A：它不走自动化网络请求，它的 waitForResponse 挂起一个由前端触发的 Promise
+  async waitForResponse(timeoutMs) {
+    return new Promise((resolve) => {
+      // 暴露一个全局或 IPC 钩子，等待用户在通辽会议 UI 上点击“确认中转分发”
+      this.resolveCurrentTurn = (payload) => {
+        resolve({
+          status: 'completed',
+          // 自动将用户粘贴的多家外部 AI 回答聚合成标准结构化数组
+          data: payload 
+        });
+      };
+    });
+  }
+
+  // 核心差异 B：支持一次性注入多份外部素材
+  injectExternalData(rawTextFromYuanbao, rawTextFromKimi) {
+    this.pendingPayloads.push({ source: 'yuanbao', content: rawTextFromYuanbao });
+    this.pendingPayloads.push({ source: 'kimi', content: rawTextFromKimi });
+    
+    // 格式化组装，假装自己是一个“外部专家调研团”
+    const aggregatedContent = this.pendingPayloads.map(p => `【外部渠道 ${p.source} 独立反馈】:\n${p.content}`).join('\n\n');
+    
+    this.resolveCurrentTurn(aggregatedContent);
+    this.pendingPayloads = []; // 清空
+  }
+}
+
+编排上的核心差异：在模式的 phases 定义中，如果某个阶段的 seat 属于 human-relay，编排器会执行 cancelTimeout()，完全废除自动化完成检测器与 45 秒超时闭麦机制。时间主导权彻底移交给人类。
+------------------------------
+## Q9：从文本到可运行软件，中间最少需要哪几个环节？谁当集成者？
+最少环节清单与严格责任分配表：
+
+[环节 1: 契约冻结] ──► 由【架构师】产出全局 IInterface 契约定义与模块依赖树 JSON
+       │
+[环节 2: 分头实现] ──► 9 个 AI 并行消费 SLICE.CONTRACT，输出单个物理文件的真代码文本
+       │
+[环节 3: 产物落盘] ──► 由【Node Core 编排器】执行物理写盘，依据契约中的 path 自动创建本地目录树
+       │
+[环节 4: 静态编译] ──► 由【Node Core 编排器】启动子进程执行本地工具链（如 tsc / npm run check）
+       │
+[环节 5: 集成裁决] ──► 由【独立新角色：集成工程师（Integrator）】消费静态编译的 stdout/stderr 报错日志
+       │
+       ├─── (编译报错) ──► 触发 [修复回路]：由【集成工程师】精准指派原作者 AI 认领错误，限轮数修补
+       │
+       └─── (编译通过) ──► 结束，交付给用户运行
+
+## 谁当集成者？
+必须设立独立的新角色：集成工程师（Integrator）。
+为什么不能复用主持助理？ 主持助理的认知基底是“文本语义的归纳与行政总结”（Textual Convergence）。而集成工程师需要极度强化的认知门槛是 「代码查错、日志解析、依赖纠错（Debug & Log Structuralization）」。
+
+* 模型要求：结构化 = 5，推理 = 5。
+* 修复逻辑：当编译失败时，集成工程师解析出第 42 行报错，它不应该自己去修，而是发出定向指令：“【系统指派】DeepSeek-Web，你实现的 UserStorage.ts 在编译时报了类型不匹配错误，请限时修复第 42 行。”
+
+------------------------------
+## ── 第二部分：全新硬核模式字段级设计 ──
+为了满足你“下一步就要改代码”的硬性要求，我为你直接重构并输出两个全新模式的字段级定义代码。这完全遵循你的 Node 编排内核规范（零外部依赖、通过配置文件直接加载）。
+## 1. 招标评审模式配置文件（core/modes/tournament.js）
+
+module.exports = {
+  modeId: "tournament",
+  name: "招标评审模式",
+  description: "针对复杂卡点生成N个平行候选方案，盲审打分后择优定向迭代。",
+  
+  // 成本预估维度字段（解决缺口三，让用户在UI启动前对开销完全有数）
+  costProfile: {
+    complexityTier: "HIGH",
+    baseCallsPerRound: "N + N + 1", // 第一轮出标N次 + 第二轮评标N次 + 第三轮定标1次
+    contextGrowthRate: "LINEAR_FLAT", // 盲审隔离确保上下文不发生叠加
+    estimatedTokensPerRound: (N, L) => (2 * N * L) + 4000,
+    warningThreshold: 7 // 超过 7 人时在 UI 弹出高额 Token 开销警告
+  },
+
+  // 状态机运行时变量
+  runtimeState: {
+    maxIterations: 4,
+    currentRound: 1,
+    bestProposalId: null,
+    terminationCondition: "PROPOSAL_RANK_CONVERGENCE" // 启用 Delta 算术判停
+  },
+
+  // 阶段流严格定义
+  phases: [
+    {
+      step: 1,
+      name: "各出投标方案",
+      eligibleRoles: ["architect", "反方", "基准与会者"], // 必须包含建设类与对立类
+      speakBehavior: "PARALLEL",
+      slice: "TASK", // 每个 AI 只看原始任务，确保自发涌现差异
+      outputArtifact: "PROPOSAL"
+    },
+    {
+      step: 2,
+      name: "分布式盲审评标",
+      eligibleRoles: ["cost_analyst", "红队", "用户代言"], // 必须包含质证类
+      speakBehavior: "PARALLEL_MATRIX", // 触发 Q2 详述的 $N \times N$ 双向盲审隔离总线
+      slice: "PROPOSAL_ONLY", // 特殊切片：只看当前被分配的那一个方案，禁止看别的方案和评分
+      outputArtifact: "SCORE_CARD"
+    },
+    {
+      step: 3,
+      name: "合议定标",
+      eligibleRoles: ["host_assistant"], // 只能由收敛席位一把手定夺
+      speakBehavior: "SEQUENTIAL",
+      slice: "ALL_MATRICES", // 灌入完整的方案与盲审矩阵数据
+      outputArtifact: "WINNING_DECISION" // 必须强制输出 Q3 指定的严格 JSON 名次
+    },
+    {
+      step: 4,
+      name: "胜出方案定向改进",
+      eligibleRoles: ["architect"], // 原方案作者或首席架构师
+      speakBehavior: "SEQUENTIAL",
+      slice: "CRITIQUES_ONLY", // 只投喂评标阶段针对该方案的红队挑错卡片
+      outputArtifact: "PROPOSAL_V2"
+    }
+  ]
+};
+
+------------------------------
+## 2. 工程交付模式配置文件（core/modes/build.js）
+
+module.exports = {
+  modeId: "build",
+  name: "工程交付模式",
+  description: "从原始想法出发，经需求澄清与架构契约冻结，分头写盘代码并执行静态编译集成。",
+  
+  costProfile: {
+    complexityTier: "CRITICAL",
+    baseCallsPerRound: "1 + 1 + 1 + N + 1",
+    contextGrowthRate: "SANDBOXED", // 依赖 SLICE.CONTRACT，隔离代码噪音
+    estimatedTokensPerRound: (N, L) => (5 * L) + (N * 2000)
+  },
+
+  runtimeState: {
+    maxIterations: 5,
+    buildCommand: "npm run check", // 触发物理集成的本地 Shell 命令
+    targetDirectory: "./dist-software"
+  },
+
+  phases: [
+    {
+      step: 1,
+      name: "需求边界澄清",
+      eligibleRoles: ["product_manager", "用户代言"],
+      speakBehavior: "SEQUENTIAL",
+      slice: "TASK",
+      outputArtifact: "REQUIREMENT_SPEC" // 产出物必须包含明确的 Scope 与“不做清单”
+    },
+    {
+      step: 2,
+      name: "系统架构划分",
+      eligibleRoles: ["architect"],
+      speakBehavior: "SEQUENTIAL",
+      slice: "REQUIREMENT_SPEC",
+      outputArtifact: "ARCHITECTURE_TREE" // 产出模块拓扑 JSON 结构
+    },
+    {
+      step: 3,
+      name: "冻结契约规范",
+      eligibleRoles: ["architect", "host_assistant"],
+      speakBehavior: "SEQUENTIAL",
+      slice: "ALL",
+      outputArtifact: "INTERFACE_CONTRACT" // 核心输出：Q5 要求的 TypeScript 强类型定义单文件
+    },
+    {
+      step: 4,
+      name: "沙箱分头编码",
+      eligibleRoles: ["all"],
+      speakBehavior: "PARALLEL",
+      slice: "CONTRACT", // 激活 Q6 详述的契约沙箱切片（仅自身契约+直系上游，零全局噪音）
+      outputArtifact: "PHYSICAL_FILE" // 强制输出结构：{ path: "src/user.ts", content: "..." }
+    },
+    {
+      step: 5,
+      name: "物理集成编译",
+      eligibleRoles: ["integrator"], // 由高门槛集成工程师上场
+      speakBehavior: "SEQUENTIAL",
+      slice: "COMPILER_LOGS", // 灌入写盘后的 Shell 报错日志文本
+      outputArtifact: "PATCH_INSTRUCTION", // 如果失败，输出定向修补指派
+      terminationCondition: "COMPILER_SUCCESS_EXIT" // 核心判停：Shell 编译返回码为 0
+    }
+  ]
+};
+
+------------------------------
+## 🎯 第三部分：向提问者的下一步代码施工建议
+既然你的纯 Node 编排内核已经拥有了极其稳健的单测地基，下一步请直接在你的测试台中，为 core/modes/ 新建上述两个文件，并追加以下 2 个核心测试用例（Test Cases） 来进行防御性演进：
+
+   1. 验证 tournament 的矩阵隔离性：编写单测，断言在 step: 2 (盲审评标) 阶段，传给 Kimi-Web 的 Prompt 字符串中，不仅绝对不包含 ChatGPT 的审评内容，而且当处理方案 1 时，绝对检索不到方案 2 的任何字符。
+   2. 验证 build 模式的代码写盘安全性：编写单测，模拟 AI 返回了恶意或畸形的 path: "../../../../etc/passwd" 字符串，断言你的 Node Core 路径解析器（使用 path.resolve 与沙箱根路径比对）能够精准识别并抛出 PathTraversalException 越界拦截，确保桌面端单机运行时的绝对安全。
+
+这两个模式字段一旦在你的 MeetingModel 状态机里冻结，通辽会议系统就将正式从一个“多AI聊天室”跨越成为一个真正的“分布式软件工程协作网”！你可以立刻按照该字段设计着手重构代码。
+

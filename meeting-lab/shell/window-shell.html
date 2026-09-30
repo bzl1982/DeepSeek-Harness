@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>多AI协作台 · V3 指挥台悬浮设计 + 统一窗口壳</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body { background:#eceef2; color:#1f2937; overflow:hidden;
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    display:flex; flex-direction:column; }
+
+  /* ═══ 顶部小工具条（每排窗口数 3/4/5/6，照 18:734）═══ */
+  .toolbar { flex:0 0 auto; display:flex; align-items:center; gap:10px;
+    padding:8px 16px; background:#f7f8fa; border-bottom:1px solid #e2e5ea; }
+  .toolbar .t { font-size:12px; color:#6b7280; }
+  .colbtn { width:26px; height:26px; border-radius:8px; border:1px solid #d8dce3;
+    background:#fff; color:#374151; font-size:12px; cursor:pointer; }
+  .colbtn.on { background:#16233a; color:#fff; border-color:#16233a; }
+  .toolbar .note { margin-left:auto; font-size:11px; color:#9aa3b2; }
+
+  /* ═══ 窗口网格：等分填满，不滚动 ═══ */
+  .grid { flex:1; min-height:0; display:grid; gap:8px; padding:10px; }
+
+  /* ═══ 统一窗口壳（照 18:734：结构一致，区分内容区原生视觉）═══ */
+  .ws { background:#fff; border:1px solid #e2e5ea; border-radius:12px; overflow:hidden;
+    display:flex; flex-direction:column; position:relative; min-height:0; min-width:0;
+    transition:box-shadow .3s, border-color .3s; }
+  .ws.zoom { grid-column:1 / -1; grid-row:1 / -1; }
+  .ws-head { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:6px 10px;
+    border-bottom:1px solid #eef0f4; }
+  .ws-head .nm { font-size:12px; font-weight:700; color:#1f2937;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ws-head .sp { flex:1; }
+  .ws-head button { width:22px; height:22px; border-radius:6px; border:1px solid #e2e5ea;
+    background:#fff; color:#6b7280; font-size:11px; cursor:pointer; line-height:1; }
+  .ws-head button:hover { color:#16233a; border-color:#16233a; }
+  .ws-body { flex:1; min-height:0; position:relative; background:#e9ebef; }
+  .ws-body .mark { position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; font-size:44px; font-weight:800; color:#b7bec9;
+    letter-spacing:2px; user-select:none; }
+  .ws-body webview { position:absolute; inset:0; width:100%; height:100%; border:none; background:#fff; }
+  .ws-fallback { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    color:#9aa3b2; font-size:11px; }
+
+  /* 生成型画廊 + 生成中 */
+  .ws.gallery-body { display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+    gap:6px; padding:8px; background:#f2f3f6; }
+  .ws.gallery-body .ph { background:#e4e7ec; border:1px dashed #c9cfda; border-radius:8px;
+    display:flex; align-items:center; justify-content:center; color:#9aa3b2; font-size:10px; }
+  .ws-gen { position:absolute; inset:0; display:none; flex-direction:column; gap:10px;
+    align-items:center; justify-content:center; background:#f2f3f6; z-index:6; }
+  .ws.generating .ws-gen { display:flex; }
+  .ws-ring { width:40px; height:40px; border-radius:50%; border:4px solid #d8dce3;
+    border-top-color:#7c5cfc; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .ws-gen .t { font-size:11px; color:#7c5cfc; }
+  .ws-gen .cancel { font-size:10px; padding:3px 10px; border-radius:7px; border:1px solid #d8dce3;
+    background:#fff; color:#374151; cursor:pointer; }
+
+  /* 底部 WorkBuddy 式输入条：＋ + 模型胶囊 + 圆形发送 */
+  .ws-foot { flex:0 0 auto; display:flex; align-items:center; gap:6px; padding:6px 8px;
+    border-top:1px solid #eef0f4; background:#fff; }
+  .ws-add { width:24px; height:24px; border-radius:50%; border:1px solid #d8dce3; background:#fff;
+    color:#6b7280; font-size:14px; cursor:pointer; line-height:1; flex:0 0 auto; }
+  .ws-model { font-size:10px; color:#374151; background:#f2f3f6; border:1px solid #e2e5ea;
+    border-radius:12px; padding:3px 8px; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; max-width:45%; }
+  .ws-foot input { flex:1; min-width:0; border:none; outline:none; font-size:11px;
+    color:#1f2937; background:transparent; font-family:inherit; }
+  .ws-foot input::placeholder { color:#b7bec9; }
+  .ws-go { width:24px; height:24px; border-radius:50%; border:none; background:#16233a;
+    color:#fff; font-size:11px; cursor:pointer; flex:0 0 auto; }
+  .ws-chip { display:none; margin-bottom:5px; }
+  .ws.attached .ws-chip { display:block; }
+  .ws-chip span { display:inline-flex; align-items:center; gap:5px; font-size:10px;
+    background:#f2f3f6; border:1px solid #e2e5ea; color:#374151; padding:2px 8px; border-radius:7px; }
+  .ws-chip b { cursor:pointer; color:#e05656; }
+
+  /* 拖文件进单个窗口 → 只发给这一个 */
+  .ws-drop { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    flex-direction:column; gap:6px; background:rgba(23,180,110,.12); border:2px dashed #17b46e;
+    color:#0e7a4b; font-size:13px; font-weight:700; z-index:7; }
+  .ws-drop small { font-size:10px; font-weight:400; color:#0e7a4b; }
+  .ws.dragging .ws-drop { display:flex; }
+
+  /* 发送成功高亮（场景3：绿色高亮 + 已发送角标，2 秒） */
+  .ws.sent { border-color:#17b46e; box-shadow:0 0 0 2px rgba(23,180,110,.35), 0 0 18px rgba(23,180,110,.25); }
+  .ws.sent::after { content:'已发送'; position:absolute; top:6px; left:50%; transform:translateX(-50%);
+    background:#17b46e; color:#fff; font-size:10px; padding:2px 10px; border-radius:10px; z-index:9; }
+
+  /* ═══ 指挥台：贴边悬浮球（场景1）═══ */
+  .ball { position:fixed; right:0; top:50%; transform:translateY(-50%); width:26px; height:64px;
+    background:#16233a; border-radius:22px 0 0 22px; border:none; cursor:pointer; z-index:300;
+    color:#fff; font-size:13px; box-shadow:-3px 3px 10px rgba(0,0,0,.25); }
+  .ball:hover { width:32px; }
+
+  /* ═══ 指挥台：展开悬浮面板（场景2，不抢占主布局）═══ */
+  .deck { position:fixed; top:52px; right:14px; width:430px; max-height:calc(100vh - 70px);
+    background:#fff; border-radius:14px; box-shadow:0 12px 40px rgba(15,25,45,.28);
+    z-index:310; display:none; flex-direction:column; overflow:hidden; }
+  .deck.show { display:flex; }
+  .deck-head { flex:0 0 auto; display:flex; align-items:center; gap:8px; background:#16233a;
+    color:#fff; padding:10px 14px; }
+  .deck-head .t { font-size:13px; font-weight:700; }
+  .deck-head .x { margin-left:auto; font-size:11px; background:rgba(255,255,255,.14); color:#fff;
+    border:none; border-radius:8px; padding:4px 10px; cursor:pointer; }
+  .deck-sub { flex:0 0 auto; font-size:10px; color:#9aa3b2; padding:7px 14px 0; }
+  .deck-lamps { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:6px; padding:8px 14px; }
+  .pill { display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:4px 9px;
+    border-radius:16px; border:1px solid #e2e5ea; background:#fff; color:#6b7280;
+    cursor:pointer; user-select:none; }
+  .pill .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+  .pill.joined { color:#1f2937; border-color:#c9cfda; }
+  .pill.picked { color:#fff; border-color:transparent; }
+  .pill .st { font-size:9px; opacity:.75; }
+
+  .deck-scope { flex:0 0 auto; display:flex; gap:6px; align-items:center; padding:2px 14px 6px; }
+  .scope { font-size:11px; padding:4px 12px; border-radius:14px; border:1px solid #e2e5ea;
+    background:#fff; color:#6b7280; cursor:pointer; }
+  .scope.on { background:#16233a; color:#fff; border-color:#16233a; }
+
+  .deck-input { flex:1; min-height:0; margin:0 14px 12px; background:#f2f3f6;
+    border:1px solid #e2e5ea; border-radius:12px; display:flex; flex-direction:column; position:relative; }
+  .deck-input textarea { flex:1; min-height:74px; resize:none; border:none; outline:none;
+    background:transparent; padding:10px 12px 4px; font-size:12px; color:#1f2937;
+    font-family:inherit; }
+  .deck-input textarea::placeholder { color:#b7bec9; }
+  .deck-bar { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:6px 10px 8px; }
+  .deck-bar .mini { width:24px; height:24px; border-radius:50%; border:1px solid #d8dce3;
+    background:#fff; color:#6b7280; font-size:12px; cursor:pointer; line-height:1; }
+  .deck-bar .sp { flex:1; }
+  .deck-bar .goball { width:30px; height:30px; border-radius:50%; border:none; background:#16233a;
+    color:#fff; font-size:13px; cursor:pointer; box-shadow:0 3px 8px rgba(22,35,58,.35); }
+
+  /* 拖文件进指挥台 → 发给已选中的 N 个 AI（场景4） */
+  .deck-drop { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    flex-direction:column; gap:4px; background:rgba(23,180,110,.12); border:2px dashed #17b46e;
+    border-radius:12px; color:#0e7a4b; font-size:13px; font-weight:700; z-index:5; }
+  .deck-drop small { font-size:10px; font-weight:400; }
+  .deck-input.dragging .deck-drop { display:flex; }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <span class="t">每排窗口数</span>
+    <button class="colbtn" data-c="3">3</button>
+    <button class="colbtn" data-c="4">4</button>
+    <button class="colbtn" data-c="5">5</button>
+    <button class="colbtn" data-c="6">6</button>
+    <span class="note">窗口等宽平铺 · 指挥台贴边悬浮球 → 点击展开</span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <!-- 场景1：贴边悬浮球（默认收起） -->
+  <button class="ball" id="ball" title="指挥台">⚡</button>
+
+  <!-- 场景2：展开悬浮控制面板（不抢占主布局） -->
+  <div class="deck" id="deck">
+    <div class="deck-head"><span class="t">⚡ 指挥台</span><button class="x" id="deckHide">收起</button></div>
+    <div class="deck-sub">快速会话：对已参会的模型与 AI 统一发送消息，此处创建唯一到达所有 AI 的通道</div>
+    <div class="deck-lamps" id="lamps"></div>
+    <div class="deck-scope">
+      <button class="scope on" data-s="all" id="scAll">所有参会</button>
+      <button class="scope" data-s="picked" id="scPick">已勾选 <b id="pickN">0</b> 人</button>
+    </div>
+    <div class="deck-input" id="deckInput">
+      <textarea id="deckText" placeholder="输入指令、追加消息、支持图片…"></textarea>
+      <div class="deck-bar">
+        <button class="mini" title="附件">📎</button>
+        <button class="mini" title="图片">🖼️</button>
+        <span class="sp"></span>
+        <button class="goball" id="deckSend" title="统一发送">➤</button>
+      </div>
+      <div class="deck-drop">发给已选中的 <b id="dropN">0</b> 个 AI<small>与拖进单个窗口（只发给这一个）区分开</small></div>
+    </div>
+  </div>
+
+<script src="window-shell-data.js"></script>
+<script>
+  const V = window.WS_VENDORS || [];
+  const grid = document.getElementById('grid');
+  const lampsEl = document.getElementById('lamps');
+  const deck = document.getElementById('deck');
+  const ball = document.getElementById('ball');
+  const deckInput = document.getElementById('deckInput');
+  const deckText = document.getElementById('deckText');
+
+  // 顺序：网页版置顶 → 对话型 → 生成型。状态机：0未参会 → 1参会+勾选 → 2参会未勾 → 0
+  const order = [...V].sort((a,b)=>{
+    const r = x => x.variant==='web' ? 0 : (x.kind==='chat' ? 1 : 2);
+    return r(a)-r(b);
+  }).map(v=>v.id);
+  const state = {}; // id -> 0|1|2
+  order.forEach(id => state[id] = 0);
+  V.filter(v=>v.variant==='web').forEach(v => state[v.id] = 1); // 网页版默认参会+勾选
+  let cols = 3, scope = 'all';
+
+  const byId = id => V.find(v=>v.id===id);
+  const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const joined = () => order.filter(id=>state[id]>0);
+  const picked = () => order.filter(id=>state[id]===1);
+
+  function buildShell(v){
+    const el = document.createElement('div');
+    el.className = 'ws'; el.dataset.id = v.id;
+    let body;
+    if(v.kind==='generative'){
+      el.classList.add('gallery-body');
+      body = `<div class="ph">生成结果 1</div><div class="ph">生成结果 2</div>
+              <div class="ph">生成结果 3</div><div class="ph">生成结果 4</div>
+              <div class="ws-gen"><div class="ws-ring"></div><div class="t">生成中…预计还需 30 秒</div>
+              <button class="cancel">取消生成</button></div>`;
+    } else if(v.variant==='web'){
+      body = `<webview src="${esc(v.webUrl)}" partition="persist:ws-${esc(v.id)}" allowpopups="false"></webview>
+              <div class="ws-fallback">网页加载中 / 需登录</div>`;
+    } else {
+      body = `<div class="mark">${esc(v.brandShort)}</div>`;
+    }
+    el.innerHTML = `
+      <div class="ws-head">
+        <span class="nm">${esc(v.brandShort)}</span><span class="sp"></span>
+        <button data-act="zoom" title="放大（占满全区）">⤢</button>
+        <button data-act="pop" title="弹出独立窗口（评估版未接）">⧉</button>
+      </div>
+      <div class="ws-body">${body}</div>
+      <div class="ws-foot">
+        <div class="chipline" style="display:flex;flex-direction:column;flex:1;min-width:0">
+          <div class="ws-chip"><span>📎 示例附件.png <b>×</b></span></div>
+          <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+            <button class="ws-add" title="添加附件">＋</button>
+            <span class="ws-model" title="${esc(v.fullName||'')}">${esc(v.fullName||v.brandShort)} ▾</span>
+            <input type="text" placeholder="对 ${esc(v.brandShort)} 说…" />
+            <button class="ws-go" title="发送（仅此窗口）">➤</button>
+          </div>
+        </div>
+      </div>
+      <div class="ws-drop">松开即发给 ${esc(v.brandShort)}<small>只发给这一个（与拖进指挥台区分）</small></div>`;
+    // ⤢ 放大 / ＋ 附件演示 / 单窗发送 / 生成中取消 / webview 兜底 / 单窗拖拽
+    el.querySelector('[data-act=zoom]').onclick = ()=> el.classList.toggle('zoom');
+    el.querySelector('[data-act=pop]').onclick = ()=>{};
+    el.querySelector('.ws-add').onclick = ()=> el.classList.toggle('attached');
+    el.querySelector('.ws-chip b').onclick = ()=> el.classList.remove('attached');
+    el.querySelector('.ws-go').onclick = ()=>{
+      el.classList.add('sent'); setTimeout(()=>el.classList.remove('sent'), 2000);
+    };
+    const cancelBtn = el.querySelector('.cancel');
+    if(cancelBtn) cancelBtn.onclick = ()=> el.classList.remove('generating');
+    const wv = el.querySelector('webview');
+    if(wv) wv.addEventListener('did-fail-load', ()=>{
+      const fb = el.querySelector('.ws-fallback'); if(fb) fb.style.display='flex';
+    });
+    el.addEventListener('dragover', e=>{ e.preventDefault(); el.classList.add('dragging'); });
+    el.addEventListener('dragleave', ()=> el.classList.remove('dragging'));
+    el.addEventListener('drop', e=>{ e.preventDefault(); el.classList.remove('dragging');
+      el.classList.add('sent'); setTimeout(()=>el.classList.remove('sent'), 2000); });
+    return el;
+  }
+
+  function renderLamps(){
+    lampsEl.innerHTML = '';
+    order.forEach(id=>{
+      const v = byId(id), st = state[id];
+      const p = document.createElement('span');
+      p.className = 'pill' + (st>0?' joined':'') + (st===1?' picked':'');
+      p.innerHTML = `<span class="dot" style="background:${esc(v.logoColor)};${st===1?'':'opacity:.45'}"></span>` +
+        `${esc(v.brandShort)}<em class="st">${st===0?'点击参会':(st===1?'已勾选':'参会·本次不发')}</em>`;
+      p.title = '点击切换：未参会 → 参会+勾选 → 参会·本次不发 → 退会';
+      p.onclick = ()=>{ state[id] = (state[id]+1)%3; renderLamps(); relayout(); updateScope(); };
+      lampsEl.appendChild(p);
+    });
+  }
+
+  function updateScope(){
+    document.getElementById('pickN').textContent = picked().length;
+    document.getElementById('dropN').textContent = scope==='all' ? joined().length : picked().length;
+  }
+
+  function relayout(){
+    const vis = joined();
+    grid.innerHTML = '';
+    const n = vis.length;
+    if(!n){
+      grid.style.gridTemplateColumns='1fr'; grid.style.gridTemplateRows='1fr';
+      grid.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;color:#9aa3b2;font-size:13px">在指挥台（右侧贴边小球）里点击模型参会，窗口才会出现</div>';
+      return;
+    }
+    const rows = Math.ceil(n/cols);
+    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    vis.forEach(id=> grid.appendChild(buildShell(byId(id))));
+  }
+
+  // 场景1→2：点球展开 / 收起
+  ball.onclick = ()=>{ deck.classList.add('show'); ball.style.display='none'; updateScope(); };
+  document.getElementById('deckHide').onclick = ()=>{ deck.classList.remove('show'); ball.style.display='block'; };
+
+  // 发送范围
+  document.querySelectorAll('.scope').forEach(b=>{
+    b.onclick = ()=>{
+      document.querySelectorAll('.scope').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); scope = b.dataset.s; updateScope();
+    };
+  });
+
+  // 场景3：发送 → 面板收回贴边 + 目标窗口绿色高亮反光 2 秒
+  document.getElementById('deckSend').onclick = ()=>{
+    const targets = scope==='all' ? joined() : picked();
+    if(!targets.length) return;
+    deck.classList.remove('show'); ball.style.display='block';
+    targets.forEach(id=>{
+      const el = grid.querySelector(`.ws[data-id="${id}"]`);
+      if(el){ el.classList.add('sent'); setTimeout(()=>el.classList.remove('sent'), 2000); }
+    });
+    deckText.value = '';
+  };
+
+  // 场景4：拖文件进指挥台输入区
+  deckInput.addEventListener('dragover', e=>{ e.preventDefault(); deckInput.classList.add('dragging'); updateScope(); });
+  deckInput.addEventListener('dragleave', ()=> deckInput.classList.remove('dragging'));
+  deckInput.addEventListener('drop', e=>{
+    e.preventDefault(); deckInput.classList.remove('dragging');
+    const targets = scope==='all' ? joined() : picked();
+    targets.forEach(id=>{
+      const el = grid.querySelector(`.ws[data-id="${id}"]`);
+      if(el){ el.classList.add('sent'); setTimeout(()=>el.classList.remove('sent'), 2000); }
+    });
+  });
+
+  // 每排窗口数
+  document.querySelectorAll('.colbtn').forEach(b=>{
+    b.onclick = ()=>{
+      document.querySelectorAll('.colbtn').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); cols = +b.dataset.c; relayout();
+    };
+  });
+  document.querySelector('.colbtn[data-c="3"]').classList.add('on');
+
+  renderLamps();
+  relayout();
+  updateScope();
+</script>
+</body>
+</html>

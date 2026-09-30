@@ -1,0 +1,201 @@
+这是一个典型的 **Electron Webview / Playwright 自动化注入** 中的前端框架（React / Vue / Svelte 等）防篡改与事件绑定的适配问题。
+
+导致上述绝大多数问题的原因主要有三个：
+
+1. **React / Vue 响应式状态未更新**：直接修改 `input.value` 或 `innerText` 无法触发框架底层的 setter 和内部 State，导致点发送时文本框被判定为空。
+2. **定位元素不精准**：使用了基于通用规则的启发式搜索（如按 placeholder / offsetParent），容易落入 Shadow DOM、隐藏层或布局更替后的非活跃节点。
+3. **按钮状态联动与模拟按键**：很多 AI 网页的发送按钮在输入框无内容时为 `disabled` 状态，未触发状态更新时点击无效；或者只监听了特定的原生 `InputEvent`。
+
+针对各家 AI 网页版注入问题，为你总结一套**通用突破方案**以及**针对 9 家 AI 网页的特定选择器与注入逻辑**：
+
+---
+
+### 一、 通用突破方案（关键技术点）
+
+#### 1. 突破 React / Vue 的状态绑定（最核心）
+
+对于 React (如 ChatGPT, DeepSeek, Kimi 等) 构筑的 `textarea` / `input`，单纯设置 `value` 并触发 `input` 事件会被 React 重设回原 State。需要使用底层的 HTMLNativeSetter：
+
+```javascript
+function setNativeValue(element, value) {
+  const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
+  const prototype = Object.getPrototypeOf(element);
+  const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+
+  if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+    prototypeValueSetter.call(element, value);
+  } else if (valueSetter) {
+    valueSetter.call(element, value);
+  } else {
+    element.value = value;
+  }
+  
+  // 触发原生 input 与 change 事件
+  element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  element.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+}
+
+```
+
+对于 **ProseMirror / Slate / Monaco** 等富文本编辑框（`contenteditable="true"`，如 Kimi, Gemini 等）：
+
+```javascript
+function setContentEditable(element, text) {
+  element.focus();
+  // 推荐使用 execCommand 模拟真实的文本插入，这样富文本编辑器（ProseMirror 等）会自动同步 State
+  document.execCommand('selectAll', false, null);
+  document.execCommand('insertText', false, text);
+  
+  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+}
+
+```
+
+#### 2. 发送逻辑：优先回车事件模拟，后备按钮点击
+
+模拟回车时需要完整的 `isTrusted` 风格按键事件序列：
+
+```javascript
+function triggerEnter(element) {
+  const keyEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+  element.dispatchEvent(new KeyboardEvent('keydown', keyEventInit));
+  element.dispatchEvent(new KeyboardEvent('keypress', keyEventInit));
+  element.dispatchEvent(new KeyboardEvent('keyup', keyEventInit));
+}
+
+```
+
+---
+
+### 二、 各 AI 网页适配指南与选择器表
+
+1. **ChatGPT:** React + ProseMirror / Textarea.
+* **输入框选择器**：`#prompt-textarea` 或 `textarea[data-id]`
+* **注入方式**：若为 `textarea` 使用 `setNativeValue`，若为 `contenteditable` 使用 `execCommand('insertText')`。
+* **发送方式**：`button[data-testid="send-button"]` 或回车。
+
+
+2. **DeepSeek:** React.
+* **输入框选择器**：`textarea#chat-input` 或 `textarea[placeholder*="DeepSeek"]`
+* **未查找到原因**：DeepSeek 可能会在未登录/首页与对话页切换 DOM。请使用 `document.querySelector('textarea#chat-input')`。
+* **发送方式**：`div[class*="send-button"]` 或包含发送图标的按钮，触发 `setNativeValue` 后直接按 `Enter` 最稳定。
+
+
+3. **Kimi (月之暗面):** ProseMirror 富文本.
+* **输入框选择器**：`div.ProseMirror` 或 `div[contenteditable="true"]`
+* **失效原因**：第二轮对话后 DOM 重建，且为 ProseMirror 编辑器，修改 `innerText` 会丢掉编辑状态。
+* **注入方式**：先 `focus()`，然后用 `document.execCommand('insertText', false, text)`。
+* **发送方式**：`.send-button` 或直接触发 `Enter`。
+
+
+4. **豆包 (Doubao):** React + SVG 按钮.
+* **输入框选择器**：`textarea[data-testid="chat_input_input"]` 或 `div[contenteditable="true"]`
+* **填了未发原因**：发送按钮在输入前为禁用或半透明状态，需要触发真实的 `input` 事件唤醒按钮。
+* **发送方式**：使用 `setNativeValue` 填值并分发事件后，点击 `[data-testid="chat_input_send_button"]` 或回车。
+
+
+5. **通义千问 (Qwen):** Vue / Custom Component.
+* **输入框选择器**：`textarea[placeholder*="通义"]` 或 `textarea.ant-input`
+* **发送方式**：点击 `.send-btn` / `button[type="button"]`，或对 `textarea` 触发 `KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })`。
+
+
+6. **腾讯元宝:** Vue / React.
+* **输入框选择器**：`div[contenteditable="true"]` 或 `textarea`
+* **注入方式**：`execCommand('insertText')` / `setNativeValue`。
+* **发送方式**：寻找类名包含 `send` 的按钮或回车。
+
+
+7. **Gemini:** Angular + Custom Web Components / Rich Text.
+* **输入框选择器**：`div.ql-editor` 或 `rich-textarea div[contenteditable="true"]`
+* **未找到原因**：Gemini 使用了 Quill / Custom Element 封装，外层不是 `textarea`。
+* **注入方式**：定位 `div.ql-editor[contenteditable="true"]` 或 `p` 标签，使用 `execCommand('insertText')`。
+* **发送方式**：`button.send-button` 或 `button[aria-label*="Send"]` / `button[aria-label*="发送"]`。
+
+
+8. **百度文心一言:** React.
+* **第二轮失效原因**：第二轮对话生成完毕前输入框会被禁用/替换，或者处于生成中的 `disabled` 状态。
+* **输入框选择器**：`div[contenteditable="true"]` 或 `textarea`
+* **解决方案**：注入前等待生成结束（判断发送按钮是否恢复为可用状态）。
+
+
+9. **Google 搜索:** 网页重定向问题.
+* **问题排查**：打开的是 `google.com` 普通搜索而非 Google AI Overviews / Gemini。
+* **解决方案**：将 URL 替换为 `[https://gemini.google.com](https://gemini.google.com)`，或跳转至 Google 搜索的 AI 模式 `[https://www.google.com/search?q=](https://www.google.com/search?q=)...`。
+
+
+---
+
+### 三、 自动化广播通用脚本注入模板
+
+你可以将以下脚本封装后通过 Electron 的 `webview.executeJavaScript()` 注入到各页面中执行：
+
+```javascript
+(async function broadcastMessage(text) {
+  // 1. 尝试查找通用输入框（按优先级排列）
+  const selectors = [
+    '#prompt-textarea',                            // ChatGPT
+    'textarea#chat-input',                        // DeepSeek
+    'div.ProseMirror[contenteditable="true"]',    // Kimi
+    'textarea[data-testid="chat_input_input"]',   // 豆包
+    'div.ql-editor[contenteditable="true"]',      // Gemini
+    'textarea',
+    'div[contenteditable="true"]'
+  ];
+
+  let inputEl = null;
+  for (const selector of selectors) {
+    const els = Array.from(document.querySelectorAll(selector)).filter(el => el.offsetWidth > 0 && el.offsetHeight > 0);
+    if (els.length > 0) {
+      inputEl = els[els.length - 1]; // 选最后一个可见的
+      break;
+    }
+  }
+
+  if (!inputEl) {
+    console.error("未找到输入框");
+    return false;
+  }
+
+  // 2. 填充内容
+  inputEl.focus();
+  if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+    // 处理 React Native Setter
+    const valueSetter = Object.getOwnPropertyDescriptor(inputEl, 'value')?.set;
+    const prototype = Object.getPrototypeOf(inputEl);
+    const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    
+    if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+      prototypeValueSetter.call(inputEl, text);
+    } else if (valueSetter) {
+      valueSetter.call(inputEl, text);
+    } else {
+      inputEl.value = text;
+    }
+    
+    inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  } else if (inputEl.isContentEditable) {
+    // 富文本框处理
+    document.execCommand('selectAll', false, null);
+    document.execCommand('insertText', false, text);
+    inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  }
+
+  // 3. 等待 UI 响应并发送
+  await new Promise(r => setTimeout(r, 200));
+
+  // 尝试点击发送按钮或回车
+  const sendBtn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], [data-testid*="send"], button[type="submit"]');
+  if (sendBtn && !sendBtn.disabled) {
+    sendBtn.click();
+  } else {
+    // 触发 Enter
+    const enterInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+    inputEl.dispatchEvent(new KeyboardEvent('keydown', enterInit));
+    inputEl.dispatchEvent(new KeyboardEvent('keyup', enterInit));
+  }
+
+  return true;
+})();
+
+```

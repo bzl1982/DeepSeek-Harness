@@ -102,14 +102,29 @@ function patchModelSelection(file) {
   if (!src.includes(anchorDef)) throw new Error('模型选择器锚点（ModelSelect 定义）缺失');
   src = src.replace(anchorDef, AGENT_GROUP_COMPONENT + '\n\t\t' + anchorDef, 1);
 
-  // b) 分组渲染：groups.map 之后、empty 之前（indexOf 定位，避免正则转义坑）
-  const tailAnchor = 'state.status === "ready" && choices.length === 0 && (0, react_jsx_runtime.jsx)("div", {';
-  const tailIdx = src.indexOf(tailAnchor);
-  if (tailIdx === -1) throw new Error('模型选择器锚点（groups 渲染）缺失');
-  const insertAt = src.lastIndexOf('}),', tailIdx);
-  if (insertAt === -1 || insertAt < tailIdx - 200) throw new Error('模型选择器锚点（groups 结束）缺失');
-  const after = src.slice(insertAt + 3, tailIdx); // 应全为空白/换行
-  src = src.slice(0, insertAt + 3) + '\n' + after + '(0, react_jsx_runtime.jsx)(AgentWebGroup, {}),\n' + src.slice(tailIdx);
+  // b) 把「网页版智能体」分组插入到 API 分组所在的**同一个滚动容器内部**（2026-09-22 关键修复）
+  //
+  // 问题（Bug1：「API 模型全被隐藏」的真因）：
+  //   div._7KE1Ra_groups.scrollable 是菜单 flex-column 的子项，官方给它 overflow-y:auto。
+  //   旧写法把 AgentWebGroup 当作它的**兄弟节点**插到菜单里 —— 而新分组 overflow:visible，
+  //   flex 布局下 min-height:auto 会取内容高（9 行 ≈ 368px）且不可压缩，
+  //   于是 flex 把 div._7KE1Ra_groups.scrollable 压成 **0 高**（实测 clientHeight=0,
+  //   scrollHeight=1530），DeepSeek / Agne / google 三组 API 模型全部变成"看得见 DOM、
+  //   看不见像素"，用户看到的就是只有「网页版智能体」的弹窗。
+  //   修法：作为 scrollable 容器的最后一个 child，与 API 分组共用同一滚动区。
+  const mapAnchor = 'children: state.groups.map((group) => {';
+  const mapCount = src.split(mapAnchor).length - 1;
+  if (mapCount !== 1) throw new Error(`模型选择器锚点（groups.children）数量异常: ${mapCount}`);
+  src = src.replace(mapAnchor, 'children: [state.groups.map((group) => {', 1);
+
+  // groups.map(...) 的收尾（9 个 tab 缩进），在其后补上 AgentWebGroup 并闭合数组
+  const mapClose = '}, group.id);\n\t\t\t\t\t\t\t\t\t})';
+  const closeIdx = src.indexOf(mapClose);
+  if (closeIdx === -1) throw new Error('模型选择器锚点（groups.map 结束）缺失');
+  const insertPos = closeIdx + mapClose.length;
+  src = src.slice(0, insertPos)
+    + ', (0, react_jsx_runtime.jsx)(AgentWebGroup, {}, "dsh-agent-web-group")]'
+    + src.slice(insertPos);
 
   fs.writeFileSync(file, src, 'utf8');
   console.log(`[patch-dsh-agent] 模型选择器补丁已写入: ${file}`);
@@ -213,17 +228,17 @@ function patchSettingsModels(file) {
   if (!src.includes(anchorDef)) throw new Error('设置-模型锚点（Loaded 定义）缺失');
   src = src.replace(anchorDef, AGENT_SETTINGS_COMPONENT + '\n\t\t' + anchorDef, 1);
 
-  // b) 区块渲染：intro 之后插入 AgentWebSection（indexOf 定位）
-  const introAnchor = 'children: t("intro")';
-  const introIdx = src.indexOf(introAnchor);
-  if (introIdx === -1) throw new Error('设置-模型锚点（intro 渲染）缺失');
-  // 找到该 p 元素结束的 "})"，其后通常紧跟数组分隔符 ","
-  const closeIdx = src.indexOf('})', introIdx);
-  if (closeIdx === -1 || closeIdx - introIdx > 200) throw new Error('设置-模型锚点（intro 元素结束）缺失');
-  let cut = closeIdx + 2;
-  let comma = '';
-  if (src[cut] === ',') { comma = ','; cut += 1; }
-  src = src.slice(0, closeIdx + 2) + comma + '\n\t\t\t\t\t(0, react_jsx_runtime.jsx)(AgentWebSection, {}),' + src.slice(cut);
+  // b) 区块渲染：插到官方 footer 插槽**之后**（= children 数组末尾）
+  //    2026-09-22：原来是插在 intro 之后 → 网页版区块跑到最顶部、压在 API 区块上面；
+  //    用户要求「设置-模型里网页版要排在 API 接口下面」，故改为紧跟官方
+  //    renderSlot("settings.models.footer", {}) 之后（该插槽是官方数组的最后一项）。
+  const footerAnchor = 'renderSlot("settings.models.footer", {})';
+  const footIdx = src.indexOf(footerAnchor);
+  if (footIdx === -1) throw new Error('设置-模型锚点（footer 插槽）缺失');
+  const insertAt = footIdx + footerAnchor.length;
+  src = src.slice(0, insertAt)
+    + ', (0, react_jsx_runtime.jsx)(AgentWebSection, {})'
+    + src.slice(insertAt);
 
   fs.writeFileSync(file, src, 'utf8');
   console.log(`[patch-dsh-agent] 设置-模型补丁已写入: ${file}`);

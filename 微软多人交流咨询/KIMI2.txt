@@ -1,0 +1,243 @@
+核实完毕：评审文档的地基属实——AutoGen 已于 2025 年 10 月进入维护模式（最后一次发版 v0.7.5，官方 README 明确"不再新增功能"），MAF 1.0 于 2026 年 4 月 3 日 GA。另外有一个**对评审结论的重要修正**：MAF 1.0 实际上**保留了 Group Chat 作为五大编排模式之一**（Sequential / Concurrent / Handoff / Group Chat / Magentic-One），——"GroupChat 被彻底设计掉"的说法过重了，被设计掉的是 AutoGen 那种"完全涌现、无 checkpoint"的原生 GroupChatManager，MAF 的版本是建在图式工作流引擎上的受控群聊。这不改变"Phase 0 不引入运行时"的裁决，但升级路径的叙事要修正。
+
+以下是我的方案 v2。
+
+---
+
+# 通辽会议 × 多智能体编排：方案 v2（修订版）
+
+## 〇、相对 v1 的修正清单
+
+| v1 的错误 | v2 的修正 |
+|---|---|
+| 基于 AutoGen v0.4 提接入方案，前提已过期 | 已确认维护模式；**不引入任何运行时**，只抄编排模型 |
+| 假设在 Python 里另起 Playwright 控制 9 个浏览器 | **Electron 已经拥有浏览器**。Playwright 方案 = 丢掉 9 宫格 UI + 重新登录 9 个账号，产品倒退 |
+| 把网页 AI **伪装成 ModelClient**（模型级） | 改为 **Agent 级抽象**（`BaseChatAgent` 思路）：消息历史怎么消化由自己决定，状态控制权留在自己手里，避免"双重上下文叠加" |
+| `asyncio.to_thread` 包同步 Playwright | 不适用（无 Python）；Node 侧天然异步，但要防 webview 主线程阻塞——所有 DOM 操作走 CDP/executeJavaScript，不进主进程 |
+| 建议 Selector 调度器用 API 模型 | **保留**（这是 v1 正确的部分） |
+| `page.expect_response` 抓网络流 | **升级为 CDP `Network` 域抓流结束**，作为完成检测的信号 D 保留 |
+| ToS 限速、错峰、失败隔离 | **保留** |
+
+**v2 一句话**：Electron 管手和眼，Node Meeting Core 管会议规则，Adapter 管翻译。编排模型抄 AutoGen（`Turn`/`Round`/`SpeakerStrategy`/`TerminationPolicy`），运行时不引 AutoGen 也不引 MAF，Meeting Core 与编排层之间用协议隔离，给 MAF sidecar 留好升级缝。
+
+## 一、为什么仍然不引 MAF（v2 重新论证）
+
+评审裁决二成立，但理由要更新：
+
+1. **场景错配依然存在**：MAF 的 Group Chat 是受控模式，跑在图式 workflow 引擎上，有 checkpoint、有类型边。你的"9 个网页 AI 自由开会"是**高延迟（5–30 秒/轮）、不可重放、随时有人闭麦**的涌现式场景——MAF 的受控群聊假设参与者是可靠的 API 模型，这个假设对网页版不成立。**框架帮你处理的（重试、checkpoint、恢复）恰恰是你这里最难标准化的部分。**
+2. **工程成本不变**：MAF 是 Python/.NET，你的铁律是纯 Node CommonJS 无编译。sidecar = 进程管理 + IPC + 打包 Python 运行时。
+3. **Phase 0 验证的三个不确定性（完成检测、附件握手、失败隔离）没有一个是编排问题**，先引框架是在流沙上盖楼。
+
+**升级缝怎么留**：Meeting Core 对外只暴露 `runRound(ctx) → RoundResult` 这一个接口。将来要换 MAF sidecar，只需要新写一个进程，消费同样的会议消息流，产出同样的 `RoundResult`。Adapter、Electron、UI 全部不动。
+
+## 二、架构（与评审定案一致，补实现细节）
+
+```
+meeting.html (UI)
+   │ IPC
+Meeting Core (Node, 纯 CommonJS)
+   ├─ MeetingModel    — MeetingMessage / Round / 状态机
+   ├─ CompletionDetector — 多信号联合完成检测 ★
+   ├─ AttachmentBus   — 附件登记 + ACK 门闩 ★
+   ├─ AgentRuntime    — per-AI 状态机 ★
+   ├─ SpeakerStrategy — broadcast / round_robin / chairman
+   └─ TerminationPolicy — 可组合的终止条件
+   │ Adapter 统一接口（扩展 3 个方法）
+9 × Electron webview (persist:agent-*，已登录)
+```
+
+## 三、三个核心组件的落地实现
+
+### 3.1 完成检测器（CompletionDetector）—— 全系统命门
+
+不固定 sleep，多信号联合，**能走 CDP 就不走 DOM**：
+
+```javascript
+// core/completion.js — 纯 Node 可单测
+class CompletionDetector {
+  /**
+   * @param {import('electron').WebContents} wc
+   * @param {object} signals  该 AI 的可用信号集（来自 adapter 契约）
+   */
+  constructor(wc, signals) {
+    this.wc = wc;
+    this.signals = signals; // { stopBtn, sendEnabled, domStableMs, cdpNetwork }
+    this._stabilityTimer = null;
+  }
+
+  /** 返回 Promise<'completed'|'timeout'|'error'> */
+  async wait({ timeoutMs = 60000, pollMs = 500 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let lastText = null, stableCount = 0;
+
+    while (Date.now() < deadline) {
+      const flags = await this._sample();  // 一次采样所有信号
+      // 信号A: Stop 按钮消失 && 信号B: Send 恢复 → 最强组合
+      if (flags.stopGone && flags.sendEnabled) return 'completed';
+      // 信号C: 内容连续 N 次采样不变（流中可能短暂稳定，所以要求多次）
+      if (flags.assistantText === lastText) stableCount++;
+      else { stableCount = 0; lastText = flags.assistantText; }
+      if (stableCount >= 3 && flags.stopGone) return 'completed';
+      await sleep(pollMs);
+    }
+    return 'timeout'; // 调用方标记"闭麦"，会议继续
+  }
+
+  async _sample() {
+    // 全部走 executeJavaScript，不进主进程，不阻塞 UI
+    return this.wc.executeJavaScript(`(${this.signals.sampleFn})()`);
+  }
+}
+```
+
+**关键设计决策**：
+
+- **信号按 AI 分档**：不是每个 AI 都能提供全部 4 个信号。adapter 契约里每个 AI 必须声明自己提供哪些信号，检测器按"≥2 个独立信号"自适应。豆包/通义有 Shadow DOM → `sampleFn` 里用 `shadowRoot.querySelector` 穿透，或干脆只依赖信号 D（CDP）。
+- **信号 D（CDP Network 域）是最稳的**：`wc.debugger`（CDP session）监听 `Network.responseReceived`，匹配该站点的流式 completion 端点，等 `data: [DONE]` 或连接关闭。这就是 v1 里 `expect_response` 技巧的 Electron 版。**建议优先实现信号 D，DOM 信号做兜底**——因为网页改版 DOM 必挂，网络端点相对稳定。
+- **采样用 `executeJavaScript` 注入采样函数**，而不是在主进程拼 selector——selector 是 adapter 的数据，不是 core 的逻辑，符合"DOM 选择器不进编排层"的共识。
+
+### 3.2 附件握手协议（AttachmentBus）—— 治"文件收不全"
+
+```javascript
+// core/attachment-bus.js
+class AttachmentBus {
+  constructor() { this.attachments = new Map(); }
+
+  /** 会议层统一接管拖拽，只登记一次 */
+  register(file) {
+    const att = {
+      attachmentId: 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      name: file.name, size: file.size, mime: file.type,
+      localPath: file.path,           // Electron 里直接有真实路径，无需 FileReader 转 buffer
+      acks: new Map(),                // agentId -> 'pending'|'acked'|'failed'
+    };
+    this.attachments.set(att.attachmentId, att);
+    return att;
+  }
+
+  /**
+   * 门闩：分发到所有参会 AI，等全部 ACK 或超时
+   * @returns {Promise<{ready: string[], failed: string[]}>}
+   */
+  async distributeAndWait(att, agentIds, adapterOf, timeoutMs = 20000) {
+    const uploads = agentIds.map(async (id) => {
+      const adapter = adapterOf(id);
+      try {
+        // CDP DOM.setFileInputFiles，你已有的 uploadFileToWebview 逻辑挪进来
+        await adapter.uploadFiles(att.localPath, { timeoutMs });
+        // ACK 不是"CDP 调用返回"，而是"DOM 里真的出现了附件卡片"
+        await adapter.waitForAttachmentVisible(att.name, { timeoutMs: 5000 });
+        att.acks.set(id, 'acked');
+      } catch {
+        att.acks.set(id, 'failed');
+      }
+    });
+    await Promise.allSettled(uploads);          // 单点失败不阻塞整体
+    const ready = agentIds.filter(id => att.acks.get(id) === 'acked');
+    const failed = agentIds.filter(id => att.acks.get(id) !== 'acked');
+    return { ready, failed };
+  }
+}
+```
+
+**两个必须钉死的语义**：
+
+1. **ACK 的定义是"DOM 可见"，不是"CDP 调用返回"**。`DOM.setFileInputFiles` 返回只代表文件塞进了 input 元素，不代表站点上传完成、解析完成。等附件卡片节点出现（每个 adapter 契约里声明 `attachmentCardSelector`），才算真收到。
+2. **超时降级策略**：failed 的 AI 本轮**改用文本摘要发送**（`【附件：xxx.pdf，3.2MB，因上传失败本次仅发送摘要】`），并在 UI 状态灯标黄。绝不让一个 AI 卡住整场会议。
+
+另外顺手修评审发现的死代码 bug：`meeting.html:672` 的 `model.charLimit` 在 `agentCatalog.js` 里没有定义 → `undefined` 比较恒 false。修法是**在 `agentCatalog.js` 里补 `charLimit` 字段**（各 provider 一个数），而不是改 HTML 里的比较逻辑——adapter 目录是唯一数据源，这个原则不能破。
+
+### 3.3 AgentRuntime —— per-AI 状态机
+
+```javascript
+// core/agent-runtime.js
+const STATES = ['idle','uploading','sending','waiting','streaming','completed','muted','error'];
+
+class AgentRuntime {
+  constructor(id, adapter, detector) {
+    this.id = id; this.adapter = adapter; this.detector = detector;
+    this.state = 'idle';
+    this.failCount = 0;
+  }
+
+  async handleMessage(msg, attachments) {
+    this.state = 'uploading';
+    if (attachments.length) {
+      // 每个附件过一次门闩；本 AI 失败 → 摘要降级
+      for (const att of attachments) {
+        try { await this.adapter.uploadFiles(att.localPath, {timeoutMs: 15000}); }
+        catch { msg = msg + `\n【附件降级】${att.name} 上传失败，仅提供摘要`; }
+      }
+    }
+    this.state = 'sending';
+    await this.adapter.sendUserMessage(msg);
+    this.state = 'waiting';
+    const result = await this.detector.wait({ timeoutMs: 90000 });
+    if (result === 'completed') {
+      this.state = 'completed'; this.failCount = 0;
+      return { status: 'completed', text: await this.adapter.readAssistantMessage() };
+    }
+    // timeout / error → 闭麦，会议继续
+    this.state = 'muted'; this.failCount++;
+    return { status: this.failCount >= 3 ? 'error' : 'muted', text: null };
+  }
+}
+```
+
+**状态机是 UI 状态灯的数据源**：`idle` 灰、`waiting` 转圈、`completed` 绿、`muted` 黄（闭麦）、`error` 红。你现在的"加载中……"就是缺了这个模型。
+
+## 四、编排层：抄 AutoGen 的四个抽象（Node 实现，各约 50 行）
+
+```javascript
+// core/speaker.js — 策略模式
+const strategies = {
+  broadcast:  async (ctx) => ctx.participants,                    // 你现在的模式
+  round_robin:async (ctx) => [ctx.participants[ctx.round % ctx.participants.length]],
+  chairman:   async (ctx) => {                                    // 主持人点名 ★推荐
+    // 主持人是 API 模型（DeepSeek API，便宜稳定），不是网页 AI
+    const pick = await ctx.chairmanLLM.chooseNext(ctx.minutes);
+    return [pick];
+  },
+};
+
+// core/termination.js — 可组合
+const terminations = {
+  keyword:   (kw) => (ctx) => ctx.lastContent.includes(kw),        // '散会'
+  maxRounds: (n)  => (ctx) => ctx.round >= n,
+  silence:   (n)  => (ctx) => ctx.consecutiveMuted >= n,           // 连续 n 人闭麦
+};
+// any(...terms) / all(...terms) 组合，等价于 AutoGen 的 TerminationCondition
+```
+
+**主持人为什么必须走 API**（v1 保留的判断，现在更有依据）：网页 AI 一轮 5–30 秒，主持人每轮要点名一次，走网页版主持人会把每轮会议拉长到分钟级；且主持人需要读全场纪要，走网页版上下文不可控。DeepSeek API 一次调用几分钱，这个钱不能省错地方。
+
+**upgrade 路径**：`broadcast → round_robin → chairman` 三步走，前两者零依赖，chairman 需要接一个 API key——正好你研究 DeepSeek harness，自家 API 现成。
+
+## 五、上下文边界（五个开放问题里我最想先回答的一个）
+
+评审提的"网页端自带上下文 vs 注入会议记录"两套记忆打架，我的明确建议：
+
+- **网页端上下文是缓存，MeetingModel 是真相**。每轮开新话题时对该 AI 调 `new_conversation()`（adapter 补这个方法，大多数站点是刷新或点"新对话"按钮）。
+- **注入策略：只注入"会议纪要"，不注入原始聊天记录**。纪要由主持人（API 模型）在每轮结束后压缩生成，注入每个参会者的 prompt 前缀。纪要上限 ~2000 字，超了先压缩旧纪要再加新内容。
+- **何时重置**：会议纪要超 3 轮、或单个 AI 上下文明显跑偏（表现为答非所问）时重置该 AI。不要 9 个一起重置——会议记忆是分布式的，单点重置不影响其他 8 个。
+
+## 六、落地顺序（合并评审的 Phase 划分 + v1 的"先通一个"原则）
+
+| 步骤 | 内容 | 验收标准 |
+|---|---|---|
+| 0 | meeting-lab 独立测试台，core 纯 Node + `node --test` | 不碰 desktop/ 一行代码 |
+| 1 | **只接 DeepSeek 网页版一个 AI**，跑通：发消息 → 完成检测 → 读回复 | 连续 20 轮零误判完成/漏判 |
+| 2 | 加附件握手，验证"先齐后发" | 50 次文件发送，0 丢失；1 个 AI 超时降级不影响其他 |
+| 3 | 扩到 3 个 AI（DeepSeek + 一个 DOM 规整的 + 一个 Shadow DOM 难的），验证并发扇出 + 闭麦隔离 | 1 个卡死，其余正常完成 |
+| 4 | 抽 Meeting Core 为正式模块，接回 meeting.html（broadcast + 状态灯 + 附件总线） | 替换现有广播逻辑，行为等价 + 文件不丢 |
+| 5 | 上 round_robin / chairman，会议从"广播"升级成"开会" | 主持人在 API 上跑通 3 轮以上点名讨论 |
+| 6 | （可选，协议已隔离）评估 MAF sidecar | 仅当需要 checkpoint / 人工介入暂停续跑时 |
+
+## 七、风险与纪律（从 v1 保留 + 评审共识）
+
+1. **ToS/封号**：限速 ≥8–15 秒/轮/AI、9 个账号天然错峰（轮流发言）、单点失败隔离。这是纪律，不是功能。
+2. **网页改版**：selector 全部集中在 adapter 契约文件，core 零 selector；CI 每日跑一次"连通性检查"（9 个 adapter 各发一条"ping"，能收到回复即绿）。
+3. **别踩的坑**（Hy4 那份唯一的真知）：AutoGen 的 `cache_seed` 缓存陷阱——我们自己实现时不存在这个问题，但如果将来接任何框架，**第一件事情就是关缓存**，否则同样的 prompt 返回旧答案、根本不会真去请求网页。
+4. **信号 D 优先级**：DOM 信号每几个月会随改版失效，CDP Network 信号以端点为准，失效慢一个数量级。能抓网络就不解析 DOM。
+
+**总结**：v1 我给你的"把网页 AI 包装进编排框架"方向对了一半——"包装"和"编排模型"是对的，"用 AutoGen 运行时"和"另起 Playwright"是错的。v2 的本质是：**微软的项目给你的是一张设计图（Agent 抽象、Turn/Round、发言策略、终止条件），不是一车砖。你已经有砖（Electron + 9 个已登录 webview + CDP 文件上传），按图施工即可。**

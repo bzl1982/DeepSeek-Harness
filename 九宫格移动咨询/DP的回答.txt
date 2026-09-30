@@ -1,0 +1,210 @@
+针对你遇到的两个问题，我整理了以下更具体的排查思路和实现方案。
+
+---
+
+## 问题一：主窗口「通辽会议」按钮的 UI 统一
+
+### 核心思路：cloneNode 深度克隆 + CSS 变量继承
+
+你之前用 `computedStyle` 逐项复制的做法，根本问题在于**把内联样式写死在了元素上**，而 React 组件的外观实际由**外部 CSS 类 + CSS 变量**驱动。一旦页面主题切换或状态变化，克隆按钮就脱节了。
+
+更可靠的做法是**深度克隆设置按钮的整棵 DOM 子树**，然后只替换文字和图标：
+
+```js
+function injectMeetingButton(settingsBtn) {
+  // 1. 深度克隆设置按钮的完整结构（保留所有 class、data 属性）
+  const clone = settingsBtn.cloneNode(true);
+  
+  // 2. 移除 id（避免重复）
+  clone.removeAttribute('id');
+  
+  // 3. 用 TreeWalker 替换文本节点
+  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const text = walker.currentNode;
+    if (text.textContent.trim()) {
+      text.textContent = '通辽会议';
+      break;
+    }
+  }
+  
+  // 4. 替换图标（保留原有 svg 的 class，只换 path）
+  const icon = clone.querySelector('svg, img, [class*="icon"]');
+  if (icon && icon.tagName === 'svg') {
+    icon.innerHTML = '<path d="你的图标路径..."/>'; // 替换图标路径
+  }
+  
+  // 5. 绑定点击事件
+  clone.addEventListener('click', () => {
+    // 打开会议窗口
+  });
+  
+  // 6. 插入到设置按钮之后
+  settingsBtn.parentNode.insertBefore(clone, settingsBtn.nextSibling);
+}
+```
+
+**为什么这样能解决"颜色与底色同色"的问题？** 克隆节点会**完整继承设置按钮的 class 属性和 CSS 变量上下文**，颜色由页面 CSS 级联决定，而不是你手动写死的内联样式。如果设置按钮在暗色主题下是浅色文字，克隆按钮也会自动继承同一套样式规则。
+
+**图标对齐问题**：克隆后不要手动改 `padding-top/bottom`。设置按钮的图标对齐由它自己的 CSS（如 `display: flex; align-items: center`）控制，克隆节点完全复用同一套规则即可。你之前的方案 C 手动算 `paddingTop` 之所以让按钮"消失"，很可能是因为读取到的 `getBoundingClientRect()` 在 SPA 渲染过程中返回了 0 或异常值，导致 `padding` 被设成了极端值。
+
+### 注入时机：用 MutationObserver 替代轮询
+
+`dom-ready` 时设置按钮可能尚未渲染。与其用 `setTimeout` 轮询（你方案 D 的做法），不如用 `MutationObserver` 监听 DOM 变化：
+
+```js
+const observer = new MutationObserver(() => {
+  const settingsBtn = document.querySelector('button[aria-label*="设置"]');
+  if (settingsBtn && !document.querySelector('[data-meeting-btn]')) {
+    injectMeetingButton(settingsBtn);
+    observer.disconnect();
+  }
+});
+observer.observe(document.body, { childList: true, subtree: true });
+```
+
+这样按钮一旦被 React 渲染出来，注入就会立即执行，不会空跑。
+
+### 关于 hover/active 状态
+
+`cloneNode` 不会复制动态状态（hover 等）的样式，但**这正是你想要的**——克隆按钮共享设置按钮的 CSS 规则，hover 时会自动获得同样的视觉反馈，不需要你手动读取多状态样式。唯一需要确认的是：设置按钮的 hover 效果是否依赖某个 React 内部状态（比如 `aria-expanded`）。如果依赖，可以在克隆按钮上同步添加相同的属性。
+
+---
+
+## 问题二：9 个 webview 的自由拖拽排序
+
+### 为什么模拟成功、真实鼠标失败？
+
+这是问题的关键。`executeJavaScript` 构造的 `DragEvent` 走的是**纯 DOM 事件路径**，不涉及 Chromium 的拖放会话管理和 Windows 原生 OLE 拖放层。而真实鼠标拖拽时：
+
+1. **Chromium 的拖放会话**：鼠标按下并移动超过阈值后，Chromium 会启动一个**系统级拖放会话**。这个会话由浏览器进程管理，`webview` 的 guest 进程有自己的拖放处理器，拖拽进入 webview 区域时，事件会被路由到 guest 的 `RenderWidgetHostView`，而不是宿主的 `document`。
+2. **Windows OLE 拖放**：在 Windows 上，拖放最终会转换为 OLE 拖放消息（`DoDragDrop` / `IDropTarget`）。Electron 的 `webview` 是独立的 `WebContents`，在 OLE 层有自己注册的 drop target。宿主的全屏遮罩虽然 z-index 很高，但在 OLE 消息路由层面无法拦截已经"交给" guest 的拖放会话。
+
+简单说：**模拟的 DragEvent 是"假"的，没有启动真正的拖放会话；真实拖拽启动了会话，而会话的目标解析在 Chromium/OLE 层面被 guest 接管了。**
+
+### 可靠方案：Pointer Events + `pointer-events: none` 禁用 webview 指针事件
+
+这是目前社区验证过最可靠的绕过方案。核心思想：**拖拽开始时，临时给所有 webview 设置 `pointer-events: none`**，让指针事件不再被 guest 消费，宿主全屏 overlay 就能正常接收 `pointermove` 和 `pointerup`。
+
+有一份来自真实 Electron 项目的 PR 记录了这个修复方案：
+
+> 在 `html` 元素上添加 `data-dragging` 属性，在 `index.css` 中添加规则：`[data-dragging] webview, [data-dragging] iframe { pointer-events: none }`。这绕过了 z-index 堆叠上下文问题，对 Electron OOPIF webview 有效。
+
+对应的 issue 也明确说：**Electron `<webview>` 在指针事件路由上与 iframe 行为相同**，拖拽进入 webview 边界时，`pointermove` 会被路由到 guest 的 document，导致宿主拖拽处理器失去跟踪。
+
+**完整实现方案：**
+
+```js
+// 在 meeting.html 中实现 Pointer Events 拖拽
+let dragState = null;
+
+function startDrag(e, cell, providerId) {
+  e.preventDefault();
+  
+  // 关键：禁用所有 webview 的指针事件
+  document.documentElement.setAttribute('data-dragging', 'true');
+  
+  const mask = document.createElement('div');
+  mask.id = 'dnd-overlay';
+  mask.style.cssText = `
+    position: fixed; inset: 0; z-index: 999999;
+    background: transparent; cursor: grabbing;
+  `;
+  document.body.appendChild(mask);
+  
+  const rect = cell.getBoundingClientRect();
+  dragState = {
+    cell,
+    providerId,
+    offsetX: e.clientX - rect.left,
+    offsetY: e.clientY - rect.top,
+    placeholder: createPlaceholder(cell)
+  };
+  
+  // 在 overlay 上监听 pointermove / pointerup
+  mask.addEventListener('pointermove', onDragMove);
+  mask.addEventListener('pointerup', onDragEnd);
+  mask.addEventListener('pointercancel', onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!dragState) return;
+  // 实时更新幽灵元素位置
+  updateGhostPosition(e.clientX, e.clientY);
+  // 高亮目标 cell
+  const target = cellAtPoint(e.clientX, e.clientY);
+  highlightTarget(target);
+}
+
+function onDragEnd(e) {
+  if (!dragState) return;
+  
+  const target = cellAtPoint(e.clientX, e.clientY);
+  if (target && target !== dragState.cell) {
+    // 交换位置
+    const parent = dragState.cell.parentNode;
+    const targetNext = target.nextSibling;
+    parent.insertBefore(dragState.cell, target);
+    if (targetNext) parent.insertBefore(target, targetNext);
+    else parent.appendChild(target);
+  }
+  
+  cleanupDrag();
+}
+
+function cleanupDrag() {
+  document.documentElement.removeAttribute('data-dragging');
+  const mask = document.getElementById('dnd-overlay');
+  if (mask) mask.remove();
+  dragState = null;
+}
+```
+
+配套的 CSS：
+
+```css
+[data-dragging="true"] webview {
+  pointer-events: none !important;
+}
+```
+
+**为什么这个方案能工作？** 拖拽开始时（在名牌 label 上 `pointerdown`），立即给根元素加 `data-dragging` 属性，CSS 规则让所有 webview 的 `pointer-events` 变为 `none`。此时鼠标移动到 webview 区域上方，指针事件不再被 guest 消费，而是被宿主页面的全屏 overlay 接收。`pointermove` 和 `pointerup` 全程在宿主页面内完成，不依赖 HTML5 DnD 的拖放会话。
+
+### 需要处理的边界情况
+
+1. **拖拽结束在窗口外**：在 `mask` 上同时监听 `pointerup` 和 `window` 上的 `pointerup` 作为兜底，确保 overlay 和 `data-dragging` 属性被清理。
+2. **Escape 取消拖拽**：监听 `keydown`，按下 Escape 时调用 `cleanupDrag()`。
+3. **Pointer Capture**：在 overlay 上调用 `mask.setPointerCapture(e.pointerId)`，确保即使指针移出 overlay 边界也能持续接收事件。
+4. **性能**：`pointermove` 触发频繁，高亮目标 cell 时只更新 class，不要做重排。
+
+### 备选方案：SortableJS + 拖拽手柄
+
+如果 Pointer Events 方案在你的 Electron 33 环境中仍有问题，可以尝试 **SortableJS**。它是一个成熟的拖拽排序库，支持拖拽手柄、动画、跨列表拖拽。关键配置：
+
+```js
+new Sortable(grid, {
+  handle: '.np-label',        // 只有名牌上的 label 可拖拽
+  draggable: '.cell',         // 可拖拽的单元
+  animation: 150,
+  ghostClass: 'drag-ghost',
+  onStart: () => {
+    document.documentElement.setAttribute('data-dragging', 'true');
+  },
+  onEnd: () => {
+    document.documentElement.removeAttribute('data-dragging');
+  }
+});
+```
+
+配合上面的 `[data-dragging] webview { pointer-events: none }` CSS，SortableJS 内部的指针跟踪就不会被 guest 打断。SortableJS 在 Electron 项目中有实际使用案例。
+
+### 如果以上方案都无效
+
+检查 Electron 版本是否存在相关 bug。有一个已知问题：**Electron 在 webview 拖拽交互上存在 bug，在 v1.6.2 中拖拽文本时事件会被"冻结"，v1.6.5 修复**。你用的是 33.2.0，理论上不受这个老 bug 影响，但值得确认是否有类似的版本特定问题。
+
+最后，如果拖拽交互在这个多 webview 环境下确实无法稳定工作，可以考虑**退而求其次的交互方案**：
+- **点选交换**：点击一个窗口的名牌，再点击另一个窗口的名牌，两者交换位置
+- **方向键微调**：选中窗口后，用方向键交换相邻窗口
+- **拖拽到固定排序区**：在页面底部或侧边放一个排序条，把窗口拖到排序条上完成排序
+
+这些方案完全避开了 webview 区域的指针事件问题，实现起来也更简单可靠。

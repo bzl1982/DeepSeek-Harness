@@ -94,8 +94,13 @@ function createApiAdapter({
   // ── 会话内的状态 ──
   let inflight = null;        // 当前请求的 AbortController
   let lastRequestText = null; // 本轮发出的文本（用于诊断，不落日志）
+  let pendingPrepared = emptyPrepared(); // uploadFiles → waitForResponse 的一次性附件准备结果
   let ready = !!(closed.key && closed.url && closed.chosenModel);
   let lastError = null;
+
+  function emptyPrepared() {
+    return { failed: [], textParts: [], imageParts: [] };
+  }
 
   /* ─────────── 附件：API 的"上传"其实是内联准备 ─────────── */
 
@@ -105,17 +110,18 @@ function createApiAdapter({
     const imageParts = [];
 
     for (const att of attachments) {
+      const fail = (error) => failed.push({ attachmentId: att.attachmentId || att.name, name: att.name, error });
       const p = att.localPath;
-      if (!p) { failed.push({ name: att.name, error: 'NO_LOCAL_PATH' }); continue; }
+      if (!p) { fail('NO_LOCAL_PATH'); continue; }
 
       let st;
       try { st = fs.statSync(p); } catch (e) {
-        failed.push({ name: att.name, error: `STAT_FAIL: ${e.message}` });
+        fail(`STAT_FAIL: ${e.message}`);
         continue;
       }
-      if (!st.isFile()) { failed.push({ name: att.name, error: 'NOT_A_FILE' }); continue; }
+      if (!st.isFile()) { fail('NOT_A_FILE'); continue; }
       if (st.size > MAX_INLINE_BYTES) {
-        failed.push({ name: att.name, error: `TOO_LARGE_TO_INLINE (${st.size}B > ${MAX_INLINE_BYTES}B)` });
+        fail(`TOO_LARGE_TO_INLINE (${st.size}B > ${MAX_INLINE_BYTES}B)`);
         continue;
       }
 
@@ -132,10 +138,10 @@ function createApiAdapter({
           textParts.push(`【附件 ${att.name}】\n${txt}`);
         } else {
           // pdf/docx/xlsx/zip 等：API 无法内联，明确报失败让上游降级
-          failed.push({ name: att.name, error: 'UNSUPPORTED_FORMAT_FOR_API' });
+          fail('UNSUPPORTED_FORMAT_FOR_API');
         }
       } catch (e) {
-        failed.push({ name: att.name, error: `READ_FAIL: ${e.message}` });
+        fail(`READ_FAIL: ${e.message}`);
       }
     }
     return { failed, textParts, imageParts };
@@ -274,18 +280,22 @@ function createApiAdapter({
      *   让上游的取数门闩不会被 API 席位拖住。
      */
     async uploadFiles(attachments = [], { onAck = null } = {}) {
+      pendingPrepared = emptyPrepared(); // 新一批准备取代旧批，不能串入下一次请求
       const prep = await prepareAttachments(attachments);
+      pendingPrepared = prep;
       if (prep.failed.length) {
         log('warn', `[${adapterId}] 附件内联失败 ${prep.failed.length} 项`, {
           detail: prep.failed.map((f) => `${f.name}:${f.error}`),
         });
       }
       const okNames = attachments.length - prep.failed.length;
-      // 每个成功项都回调 ACK（上游按 attId ACK 计数）
+      // 成功和失败都按附件 ID 回报，不能仅凭同名文件匹配。
       if (onAck) {
         for (const att of attachments) {
-          const bad = prep.failed.find((f) => f.name === att.name);
-          if (!bad) { try { onAck(att.attachmentId || att.name); } catch (_) {} }
+          const bad = prep.failed.find((f) => f.attachmentId === (att.attachmentId || att.name));
+          try {
+            onAck(att.attachmentId || att.name, !bad, bad ? { error: bad.error } : {});
+          } catch (_) {}
         }
       }
       lastError = prep.failed.length ? `INLINE_PARTIAL:${prep.failed.length}` : null;
@@ -305,9 +315,11 @@ function createApiAdapter({
      */
     async waitForResponse({ detector = null, timeoutMs = 120000 } = {}) {
       const started = Date.now();
-      const text = lastRequestText || '';
+      const prepared = pendingPrepared;
+      pendingPrepared = emptyPrepared(); // 请求开始即消费；失败重试也必须显式重新准备附件
+      const text = [lastRequestText || '', ...prepared.textParts].filter(Boolean).join('\n\n');
 
-      const r = await callStream({ text, timeoutMs });
+      const r = await callStream({ text, imageParts: prepared.imageParts, timeoutMs });
 
       if (detector) {
         try {
@@ -319,6 +331,7 @@ function createApiAdapter({
       if (!r.ok) lastError = r.error;
       const completion = {
         done: r.ok,
+        result: r.ok ? 'COMPLETED' : 'TIMEOUT',
         reason: r.ok ? 'api-stream-end' : r.error,
         signals: {
           // API 通道的三个信号都是"协议级事实"，不是启发式
@@ -337,6 +350,7 @@ function createApiAdapter({
 
     /** 中止当前请求（闭麦） */
     async cancel() {
+      pendingPrepared = emptyPrepared();
       if (inflight) {
         try { inflight.abort(); } catch (_) { /* 已结束 */ }
         return true;
@@ -350,6 +364,7 @@ function createApiAdapter({
     },
 
     dispose() {
+      pendingPrepared = emptyPrepared();
       try { if (inflight) inflight.abort(); } catch (_) {}
     },
   };

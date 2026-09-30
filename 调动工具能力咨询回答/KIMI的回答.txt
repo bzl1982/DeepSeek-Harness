@@ -1,0 +1,91 @@
+晚上好。这个方向能做成，但关键不是“把 200 多个插件直接塞给模型”，而是把信任边界切清楚：**Kimi 网页版只负责意图与工具调用请求；真正碰本地文件/进程/插件的必须是用户本机已授权的控制面**。推荐路线如下。
+
+## 推荐总架构：Harness 做 Control Plane，Kimi 只做 Tool Caller
+
+```text
+Kimi Web 会话
+   │  function/tool_use 请求（JSON Schema，不含本地权限）
+   ▼
+DeepSeek Harness 客户端/本地 Gateway  ← localhost/WebSocket/SSE，启动 token 绑定
+   │  tool manifest / registry / policy / audit
+   ▼
+Tool Host / MCP Server
+   ├─ 文件系统（白名单路径）
+   ├─ Shell/脚本（沙箱 + dry-run + confirm）
+   ├─ 浏览器自动化（CDP/Playwright）
+   └─ DeepSeek Harness 200+ 插件 Adapter
+```
+
+核心原则：**浏览器网页没有也不该天然拥有本地能力**。网页可以通过 `localhost` 或已安装客户端与你本机服务通信，但每一次高危操作都要走：发现 → 声明风险 → 用户确认或策略放行 → 执行 → 审计。
+
+## 协议层：不要硬编码 200 个工具，用统一 Tool Manifest
+
+建议把所有能力统一成一种“ Esperanto ”，优先 MCP；如果 DeepSeek Harness 插件不是 MCP，就写 shim/adapter。每个插件/工具都注册成 manifest：
+
+```json
+{
+  "name": "harness.fs.read_text",
+  "description": "读取白名单内文本文件",
+  "schema": {"type":"object","properties":{"path":{"type":"string"}},"required":["path"]},
+  "risk": "low|medium|high",
+  "side_effect": false,
+  "network": false,
+  "fs_scope": ["~/notes", "/tmp/kimi"],
+  "timeout_ms": 8000,
+  "cost_hint": "low",
+  "confirmation": "never|once|always"
+}
+```
+
+然后网页端模型侧不要收到 200 个 schema。只给模型一个 `tool_search` / `tool_describe` 能力：模型根据任务检索 top-k 工具，拿到参数 schema 后再调用。否则上下文会被工具描述撑爆，误调用率也会上升。
+
+## 适配 DeepSeek 200+ 插件：先做“质量分层”，不要平铺
+
+建议分四类：
+
+1. **只读观察类**：列目录、读文件、查进程、抓页面 DOM、看日志。低风险，可策略放行。
+2. **可逆写类**：改文件、写草稿、移动文件到回收区、建任务。需要 dry-run + diff + 确认。
+3. **不可逆/外部副作用类**：删除、发送消息、提交代码、支付、发布。必须显式确认，最好二次确认。
+4. **高危系统类**：sudo、改环境变量、装依赖、访问密钥链。默认禁用，只能用户手动开启单会话。
+
+执行层要有超时、并发上限、资源配额、取消传播；尤其是长任务，网页断开后 Harness 端要知道是继续、暂停还是回滚。
+
+## 安全边界是成败点
+
+必须把这些做进 Harness Control Plane，而不是写进 prompt：
+
+- `127.0.0.1` 绑定，启动时生成一次性 token；浏览器握手要带 token。
+- 高危工具默认 `confirmation: always`；只读工具按策略白名单。
+- 文件路径白名单/规范化，防 `../`、symlink、NTFS alternate stream 这类绕过。
+- Shell 不拼字符串，传 argv；禁 `eval`/管道解释器；必要时进容器/firejail/低权用户。
+- 密钥从系统 keychain/环境隔离读取，不进模型上下文，不回传网页。
+- 每次调用记录：who/session/tool/args_hash/result_status/duration/confirm 状态；支持导出和撤销。
+- 速率限制 + 每日预算 + “一键熔断”，一键收回网页端全部本地能力。
+
+## 最小可行落地顺序
+
+**Phase 0：盘点接口**  
+摸清 DeepSeek Harness 插件到底是什么协议：函数签名、事件流、权限模型、是否能本地运行、是否有取消/进度回调。没有这一步，后面会返工。
+
+**Phase 1：只打通一条链路**  
+先做 3 个工具：`fs.list_allowed`、`fs.read_text`、`shell.exec_dry_run`。让 Kimi 网页 → Harness → 本地 → 返回结果 → 审计，全流程跑通，包括取消和超时。
+
+**Phase 2：上 MCP/统一 manifest**  
+把 10 个高频插件包成 MCP tools，跑 tool_search 检索式调用，而不是全量注入。
+
+**Phase 3：批量接入但分级暴露**  
+用 adapter 接 200+ 插件，但网页侧按任务动态装载；默认只暴露只读和低危可逆工具。中高危工具放到“需要用户点击确认”的队列里。
+
+**Phase 4：体验与可靠性**  
+工具调用卡片化：展示“要做什么、改哪、影响面、能否撤销”；长任务给进度；失败给可重试/降级方案；支持“这次允许/本会话允许/总是允许/禁止”。
+
+**Phase 5：观测与硬化**  
+加指标：工具成功率、误调用率、确认取消率、p95 延迟、上下文 token 占用、审计告警。再做容器化/签名插件/供应链校验。
+
+## 两个可选方案取舍
+
+- **首选：Harness 本地 Control Plane**：最自然，因为插件已经在 Harness 侧；Kimi 网页只发结构化 tool_use。
+- **次选：浏览器扩展 + Native Messaging**：能贴近网页上下文，但跨浏览器、安装、更新和审核成本高。
+- **不建议：远程 Agent 桥**：延迟、隐私和命令注入风险都更差；除非本机完全不能跑服务。
+
+一句话路线：**用 MCP/manifest 统一描述，用 Harness 做授权控制面，用 tool_search 动态装载，用分级确认和审计兜底**。先把一条安全链路打穿，再谈 200 个插件。

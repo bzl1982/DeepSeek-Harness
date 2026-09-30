@@ -1,0 +1,90 @@
+The codebase is now clear. Let me summarize the actual state and produce the round-7 response. First, let me quickly verify whether `#dispatchdeck` is actually in the DOM flow (where it renders relative to the grid) and confirm the `.side` column still exists.
+
+From what I've read, the situation is:
+
+**Current actual state (verified in code):**
+1. `index.html:139` — old `.side { width: 380px }` right column still exists (extbox/tmbox/log/summary all in there)
+2. `index.html:217` — `#dispatchdeck` exists, F1 floating layer implemented (line 37-39, z-index:200, absolute), but it's a **separate module** sitting between `.header` and `.flowwrap` in the main column flow, not part of the four-container TopDeck
+3. L1/L2/L3 in `dispatch-job.js` is defined but **L1 is main path** (line 2309: `ddDispatchSeat(id, D.TRANSPORT.L1)`), L2/L3 only for fallback on failure — this is precisely what R7-1 demands to invert
+4. The four containers TopDeck/Grid/LogDock/LogDock + switcher + per-seat view / tooldock are **all unimplemented**
+5. 415 test cases all green
+
+Now I'll write up the round-7 response.
+
+---
+
+# Round 7 response (Agnes)
+
+**Opening**: This round is not about debate — it's about confirming that "the layout is on paper, and R7-1's direction is correct but insufficient." I'll first lay out the on-device facts, then answer Q1-Q4, and finally add what I consider the **one L-level issue** that all 8 firms missed this round: **Gate C's "independent floating window" fallback is actually a violation of Fixed Decision 2 (horizontal collapse prohibition), and Gate C needs to be corrected**.
+
+## Opening: On-device fact verification (not repeating F7, but supplementing a new fact F7-4)
+
+**F7-4 | L1 is not only unreliable, it's "silently succeeding"** (verified from `index.html:2269-2285` code):
+The current L1 flow is "first attach files → then send text" (the iron rule "first stuff attachments, then send text"), **but after `driver.setFiles()` succeeds, there is no read-back verification** — the `setFiles` in `web-adapter.js` only returns `true` (CDP call succeeded), **it does not verify whether the file actually appeared in the site's input box / attachment chip**. This is exactly the "silent success" behind F7-1's `hasChip` misjudgment: CDP call ok ≠ file attached.
+- **Implication**: The "best-effort attempt" layer of R7-1 cannot just be "try L1, demote to L2 on failure" — **even if L1 "succeeds" (no exception thrown), it must go through a read-back verification before being treated as success**; otherwise, when L1 is in best-effort mode, the misjudgment probability of "success but new file not sent" is even higher than in main-path mode (in main-path mode at least someone is watching, in best-effort mode it's fire-and-forget).
+- **Conclusion**: R7-1 is missing a "L1 read-back verification" step — this is a **precondition for making L1 usable in best-effort mode** (even in best-effort mode, if you don't know whether it succeeded or not, "best-effort" = "silently fails"). This step belongs to the Provider adaptation layer (corresponding to gap A in §2 of Round 9), not a layout issue.
+
+## Q1: Is R7-1 correct? Per-site judgment
+
+**Accept R7-1's "demote L1 to best-effort" main direction, accept Agnes's per-site ordering (L2 base + per-site best-effort ordering), supplement one hard constraint**:
+
+Per-site judgment (aligning with Agnes's answer in the independent advisor seat, with a supplement):
+
+| Site | L1 best-effort attempt? | Starting point | Basis |
+|---|---|---|---|
+| Gemini | ✅ Try L1 first (dedicated menu channel stable) | L1→read-back→L2 | §2 fact 2 ✅ true receipt |
+| Yuanbao | ✅ Try L1 first (dedicated menu channel stable) | L1→read-back→L2 | §2 fact 2 ✅ true receipt |
+| Doubao | ✅ Try L1 first (dedicated menu channel stable) | L1→read-back→L2 | §2 fact 2 ✅ true receipt (accept contains image) |
+| Kimi | ❌ Skip L1, start at L2 | L2 | §2 fact 2 input.files empty, direct stuffing ineffective |
+| DeepSeek | ❌ Skip L1, start at L2 | L2 | §2 fact 2 input.files empty (after receipt, site clears it → judgment false negative) |
+| Google | ❌ Skip L1, start at L2 | L2 | §2 fact 2 input.files empty, all 3 strategies unable to stuff into input (gap C) |
+| Tongyi / Wenxin / ChatGPT | ⚠️ Try L1 once (probe can attach) | L2 preferred, L1 once + read-back verification | Gap D: probe succeeds but true round fails (residual pollution + chooser state); **F7-4: even if L1 doesn't throw an exception, read-back is required to confirm the true file is attached** |
+
+**Why Tongyi/Wenxin/ChatGPT "try L1 once" rather than "skip L1"**: These 3 firms have drop/menu strategies, probe (`_test_img.png`) can attach successfully — L1 isn't structurally dead, it's "stateful" (residual files / chooser state cause the true round to fail). **Best-effort layer "try once + read-back" is zero-cost** (CDP call already exists), failure cost is one 1.2s delay; but **skip = permanently lose the chance for these 3 firms to automate**. So "try once" is strictly better than "skip" — except that read-back verification is mandatory (F7-4), otherwise "try once" = "silently misjudge once."
+
+**Kimi/DeepSeek/Google "skip L1" is a hard decision**: These 3 firms have no dedicated channel (Kimi/DeepSeek) or all 3 strategies ineffective (Google, gap C), L1 success rate ≈ 0, trying once just wastes 1.2s×3 seats = 3.6s/round, and worse: **the misjudgment of "success but not sent" (F7-4) pollutes the "sent" state, and C2's idempotency causes it to not be re-sent** — this is not a "waste 3.6s" problem, it's a "false sent state poisons the retry chain" problem. So these 3 firms skip L1.
+
+**Hard constraint (supplement to R7-1)**: **The "L1 best-effort attempt" and "L2 base" must be 2 independent code paths, not "L1 with a fallback to L2"** — i.e., each seat's dispatch function = `if (seat in L1_WHITELIST) { tryL1(); if (verified) return; } L2();` (L1_WHITELIST = Gemini/Yuanbao/Doubao/Tongyi/Wenxin/ChatGPT, Kimi/DeepSeek/Google not in the list). **Reason**: if L1 failure directly falls through to L2 (the current code's `try { L1 } catch { L2 }` structure), then **L1's "success but not sent" (F7-4 misjudgment) won't throw an exception → won't enter catch → won't demote to L2 → the seat is permanently marked as "sent" but the user actually has nothing to receive**. The whitelist + explicit verification structure makes "L1 success = read-back verification passed," cutting off the misjudgment path. This is a **code structure fix**, ~30 lines, P0 item.
+
+## Q2: Is Gate C necessary? Does fallback floating window overturn default A?
+
+**Accept Gate C's necessity. Fallback "independent floating window" does not overturn default A — but I must correct Gate C's phrasing: fallback should be "independent overlay panel (fixed overlay, not a new window)," not "independent floating window (BrowserWindow)."**
+
+Reason (this is what Agnes missed this round, and also what the 8 firms' "fallback to independent floating window" phrasing collectively missed):
+
+1. **"Independent floating window" = BrowserWindow = a new webview / renderer process**. Fixed Decision 3 (Fixed Decisions 23 articles): **9 webviews are never unloaded / never rebuilt** — if fallback "floating window" is a BrowserWindow loading the same `#dispatchdeck` DOM, it's a new renderer process loading a new page, **not** the floating layer of the main window's `#dispatchdeck`. This **violates Fixed Decision 3** (webview count is capped at 9, and the new window's webview is a 10th).
+2. **Fallback phrasing should be "independent overlay panel"**: i.e., `#dispatchdeck`'s `.dd-body` is **already implemented as an absolute overlay layer** (line 37: `position:absolute; z-index:200`), the fallback is simply "detach the overlay from topdeck, fix it to viewport right side" (change CSS `left:0;right:0` to `right:0;left:auto;width:420px`) — **same DOM, same renderer process, only one CSS switch**. This is exactly Wenxin's "main / auxiliary separated, same node CSS switch" approach (Round 5), 0 new DOM, 0 new renderer process, 0 webview impact — fully consistent with Fixed Decision 3.
+3. **Does not overturn default A**: default A's claim is "dispatch component is in topdeck" — Gate C's pass/fail only determines "the L2 per-seat heavy interaction is inside topdeck or inside an overlay layer," **topdeck itself remains** (global trigger set + broadcast control entry + sent k/N global progress are all inside topdeck and unrelated to L2 per-seat interaction — this is also the point Agnes made in the independent advisor seat "topdeck is never empty"). **The only thing Gate C blocks is "L2 per-seat heavy interaction squeezed to death by the narrow topdeck," not "topdeck's existence."**
+
+**One supplement to Gate C's acceptance criteria**: Gate C acceptance = "the 4 steps of L2 base walkable in topdeck layout: seat check → snapshot generation → per-seat copy / simulated click → progress disk write," I add **one 5th step: "topdeck collapsed (28px) state, user can expand the floating layer from the summary row and complete the above 4 steps"** — because **F1's floating layer and Gate C's L2 per-seat interaction are the same floating layer** (`.dd-body`), if Gate C only verifies "when topdeck is expanded L2 is usable" but not "when topdeck is collapsed L2 is usable," then **when topdeck is collapsed (the common state under running, Fixed Decision 14) L2 per-seat interaction is unavailable** — this is exactly the failure scenario of Tongyi's "third state." So Gate C = 5 steps, 5th step = "from 28px collapsed state, expand the floating layer and complete L2."
+
+## Q3: 5-gap layer attribution (agreeing with Agnes in the independent advisor seat, supplementing one new coupling risk)
+
+Agree with Agnes's attribution: **all 5 gaps are Provider adaptation layer / transport layer, unrelated to layout, all to be resolved first in type A**. Supplement:
+
+**New layout coupling risk #2 (Agnes only identified one, "L2 per-seat interaction needs clickable space, too-narrow topdeck squeezes it out")**:
+- **Risk #1 (Agnes)**: L2 per-seat interaction squeezed out by narrow topdeck → Gate C blocks (already stated above).
+- **Risk #2 (new)**: **F1 floating layer and LogDock (bottom-docked log)'s z-index stacking relationship undefined**. F1 floating layer `z-index:200` (line 37) — **but the z-index of the LogDock (to be built, bottom-docked log + summary) is currently not defined in the spec**. If LogDock is also `position:relative` (bottom dock, occupies layout row height), **F1 floating layer (absolute, anchored to topdeck bottom edge, expanding downward) might "float" over LogDock** (when window is short, floating layer max-height = min(60vh, ...) reaches the LogDock area). This is **not** Risk #1 (narrow topdeck squeezing out L2), but **floating layer and LogDock's z-stacking / geometric overlap** — **newly introduced by "moving to topdeck"** (in the old layout, LogDock is the right column, no overlap with top area; in the new layout, LogDock is bottom-docked, and topdeck's floating layer expands downward, the two might meet).
+- **Fix**: Add to R4's four-container definition: **LogDock z-index=100 (below F1's 200)**; **F1 floating layer max-height dynamic calculation = min(60vh, distance from floating layer anchor to LogDock top edge)** (not just 60vh — need to subtract LogDock's current height (expanded 32% / collapsed 28px)). This is **~5 lines of JS** (read LogDock's current `flex-basis` on each expansion), belongs to "addressed while writing code" tier but **needs to be fixed in R4** (otherwise four-container skeleton is built with an undefined LogDock z-index, and F1's Gate A acceptance will encounter the "floating layer covers log" misjudgment).
+
+**Conclusion on layer attribution**: 5 gaps are all transport layer (type A, to be resolved first, layout-unrelated); newly introduced layout coupling risks are 2 (Risk #1 L2 squeezed out by narrow topdeck → Gate C; Risk #2 F1 floating layer and LogDock z-stacking → R4 LogDock z-index fix). **The latter is what all 8 firms missed this round** (because LogDock has not been built yet, and no one calculated the geometric relationship of "F1 expanding downward + LogDock bottom-docked").
+
+## Q4: L-level remaining + transparent broadcast 23-item reordering
+
+**L-level remaining: I submit one new L-level (the 8 firms' "no L-level" judgment is missing this)**:
+
+**L-new-1 | "Fallback to independent overlay panel" (Gate C fallback) needs a Fixed Decision 3 conformance fix** (i.e., the correction I gave in Q2: fallback = same-node CSS switch to overlay, not BrowserWindow). **Why L-level**: this is a **data structure / state machine issue** (fallback state is a "layout variant flag" inside `#dispatchdeck`'s state, or a new "floating window" instance?), **not a parameter / config issue** — if at coding time someone writes fallback as `new BrowserWindow()`, it violates Fixed Decision 3 (webview cap / never unload) and Gate B (switching is pure CSS zero reflow / zero webview destruction, Fixed Decision §5 Gate B) **simultaneously**, and Gate B's "wv survival assertion" will catch it — but **catching it at Gate B = after the 4-container skeleton + floating layer is built**, the cost of rework is 1 round's work. **Fixing it now (writing "fallback = CSS overlay switch, not BrowserWindow" in R7-2) = 0 cost**, fixing it after Gate B = 1 round's rework. **This is the "must be re-debated" level, not "addressed while coding."**
+
+In addition, I agree with "promoting #19 to P0" (Agnes's independent advisor seat made it L2 base step 0 + Gate C acceptance precondition) — **I supplement one more: #19 should also be the precondition for R7-1's "L1 read-back verification" (F7-4)** — read-back verification = "before sending, clear `input.files` + read back" (i.e., gap E clearing + gap A read-back verification, the same action), so **#19 is not just Gate C's precondition, it's R7-1's precondition** (without clearing, L1 best-effort layer is "stuffing a new file into a input that already has residuals" = gap D's root cause).
+
+**Transparent broadcast 23-item reordering (only reorder, no new items)**:
+- **Promote to P0 (with L2 base / R7-1)**: #19 (clear + read-back verification, R7-1 precondition + Gate C precondition), #2 (three-state tracking, L2 base state carrier).
+- **The rest maintains the existing order of §7 (first P0 batch silent pollution category / P1 / P2)**, no other reordering.
+
+## Ending one-liner (judgment of "how many more rounds are still needed")
+
+**One more round (round 8) is still needed, but not to debate Q3 default value (already frozen), to fix two new facts**:
+1. **My correction of Gate C fallback phrasing** ("independent floating window" → "independent overlay panel, same-node CSS switch," avoid violating Fixed Decision 3 + Gate B) — this is a **data structure / state machine level** fix, all 8 firms missed it, needs round 8 confirmation (if the tech lead accepts the correction directly, no round 8 needed for this item).
+2. **My supplement of F7-4 (L1 "silent success" → read-back verification as L1 best-effort's precondition) + R4 LogDock z-index fix (F1 floating layer and LogDock geometric overlap)** — the former is a Provider adaptation layer fix (write in P0 step 0), the latter is an R4 clause supplement (write in 4-container definition).
+
+**If the tech lead directly accepts the above 3 corrections (Gate C phrasing / F7-4 read-back verification / R4 LogDock z-index), there's no round 8, can start on topdeck** — order is: **P0 step 0 = Provider adaptation layer #19 (clear + read-back verification, solving gap A+E+L1 read-back verification in one action) → 4-container skeleton (with R4 LogDock z-index fix) → Gate C 5-step on-device walk-through → Gate A/F1 acceptance**. If corrections are not accepted, then round 8 debates "fallback is BrowserWindow or CSS overlay" (this item is 1 data structure decision, not worth a full round, I recommend direct confirmation).

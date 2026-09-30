@@ -1,0 +1,113 @@
+文件已收到，连同追加的诉求 5 一起答复。完整方案如下（存档副本见文末文件）。
+
+## 〇、先定三条主线
+
+1. **dsh 是你们自己的 SPA，最优解是改 dsh 前端源码 + 后端接口，不是在主窗口注入脚本。** 注入脚本与 React 抢 DOM，是诉求 2/3 所有怪现象（排序"不生效"、API 被压成一行、3 秒轮询闪烁）的总根源。源码可改的话，`MODEL_SORT_JS` 这类注入可以全删。
+2. **登录检测做成主进程"状态服务"，会议窗口只读缓存。** 模型切换器在主窗口，会议窗口关闭时也必须能用——检测不能挂在会议窗口上。
+3. **拖拽文件的根因**：OS 级文件拖拽不会穿透 `<webview>`，宿主的 drop 都不触发（Electron 2014/2017 年的老 issue，至今 webview 文件投递没有一等支持）。官方 issue 里的标准绕法就是"宿主收到 drop 后转发给 webview"。
+
+## A. 命名统一（问题 1、2）
+
+最终命名表——规则一句话：**公司用官方中文名；产品有官方中文名用中文，没有就保留官方英文品牌名，不生造译名**：
+
+| id | 最终名牌名 | 备注 |
+|---|---|---|
+| deepseek-web | 深度求索-DeepSeek | 公司与产品同名，规则自然覆盖 |
+| chatgpt-web | OpenAI-ChatGPT | 不译"开放人工智能" |
+| kimi-web | 月之暗面-Kimi | Kimi 保留英文 |
+| doubao-web | 字节跳动-豆包 | 已是中文 |
+| tongyi-web | 阿里巴巴-通义千问 | 按你的要求 |
+| yuanbao-web | 腾讯-元宝 | 已是中文 |
+| gemini-web | 谷歌-Gemini | 不叫"双子座" |
+| google-search | 谷歌-搜索 | 按你的要求 |
+| wenxin-web | 百度-文心一言 | 与"通义千问"对齐，**这点请你确认** |
+
+单一数据源：建一个 `agents.config.js` 只写这份数组，main 进程读取后——会议窗口经 contextBridge 暴露 `getAgents()` 渲染名牌；dsh 主窗口优先走后端 `/api/web-agents` 让前端自己 fetch（可改源码时），注入只作兜底。一处改，三处同步。
+
+## B. 登录状态 + 登录名检测（问题 3~6）
+
+**3. 通用策略**：现状"找登录按钮/找头像"能用但不稳——登录字样常藏在 aria-label 而非按钮文字里；个别站登录后仍残留"登录"入口导致误判。升级为**逐站配置表 + 三态（已登录/未登录/未知）+ 信号打分**（命中登录信号 +2、登出信号 −2，阈值判定）。其中 **google-search 要豁免**：搜索引擎没有登录门槛，若参与"未登录隐藏"会被误藏。
+
+**4. 登录名提取，三级兜底**：
+- L1 站点定制选择器（头像 alt / aria-label / 用户菜单首行；Google/Gemini 头像 img 的 alt 常带"账号：姓名（邮箱）"）；
+- L2 localStorage 通用扫描——豆包/通义/Kimi/元宝这类国内站常把用户资料 JSON 缓存在 localStorage，注入一个通用函数遍历 key、JSON.parse、匹配 nickname/username/email 字段，零定制就能覆盖大半；
+- L3 会话 cookie 佐证（`session.cookies.get`），只提升置信度不提名字。
+
+选择器务必**外置成 userData 下的 JSON**——站点改版只改配置不重打包。这不是危言耸听：2025 年 ChatGPT 改版把头部模型切换器整个挪进输入区，一堆依赖旧 DOM 的适配集体失效；Claude 2025 年 12 月又改了消息 DOM 标记。
+
+**5. 传递链路**：推荐主进程定时创建**离屏 WebContents**，`partition` 用同名 `persist:agent-xxx`（partition 同名则 cookie/localStorage 与 webview 完全共享，登录态一致），加载 → 注入检测 → 拿结果 → 销毁。轮询错峰分级（已登录的站 10 分钟、未登录的 2 分钟），did-finish-load 必测，状态快照变化才 IPC 广播；启动先读落盘的 `login-status.json` 立即渲染，后台核实替换。会议窗口的名牌圆点改为向 main 订阅，删掉它自己 8 秒 × 9 路的检测。
+
+**6. 动态变化**：靠"分级轮询 + 变更推送 + 落盘缓存"解决，UI 自身不轮询。
+
+## C. 面板与切换器（问题 7~9）
+
+**7.** "API 只显示一行"按序排查：① 弹层 max-height/overflow 不对、写死的网页版区块占满高度；② 3 秒 appendChild 与 React diff 打架；③ 虚拟列表下注入节点不在 state 里被重置。根治（可改源码）：排序放数据层 sort，弹层 `max-height: min(70vh, 640px); overflow-y:auto`，加分组标题"API 模型 / 网页版智能体"，网页版组限高 40% 自滚动。只能注入则：删轮询改 MutationObserver、只注入 `<style>` 改高度。
+
+**8.** "仅登录才显示"必须做在**数据层**（selector 过滤），不闪不炸；注入兜底时只 `display:none`、**绝不增删节点**（增删破坏 React key 对应关系）。google-search 豁免。
+
+**9.** 先确认"写死的网页版模型"来自 dsh 前端内置列表还是 `agent:listProviders`；无论哪种，让两个界面吃同一个 status Map + agents.config，排序 compare 函数只写一份。
+
+## D. 落地顺序
+
+① 确认 dsh 源码可改性（决定 70% 走向，半天）→ ② agents.config 单一数据源 + 命名三处替换（半天）→ ③ 主进程登录状态服务（1~2 天，含 9 站实测）→ ④ dsh 面板/切换器改造（1 天）→ ⑤ 拖拽转发（0.5~1 天）→ ⑥ 打包实测。
+
+坑位：Cloudflare 挑战页要归"未知"不能归"未登录"（离屏检测常吃到挑战页）；4K 屏弹层用 `vh` 不用固定 px；executeJavaScript 由宿主调用不受 guest sandbox 限制；**dsh 升级会冲掉注入脚本**，把注入做成启动时从 userData 读取拼接，升级只改配置。
+
+## E. 追加诉求：拖拽文件（宿主拦截 → 转发 → guest 合成投递）
+
+**第 1 步，meeting.html 宿主拦截**（必须 `preventDefault`，否则 Electron 可能直接弹出系统"文件打开"）：
+
+```js
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const tile = e.target.closest('.tile');
+  if (!tile) return;
+  const wv = tile.querySelector('webview');
+  [...e.dataTransfer.files].forEach(f =>
+    window.dshBridge.sendDroppedFile(wv.getWebContentsId(), f));
+});
+```
+
+**第 2 步，宿主 preload**（Electron 32 起 `File.path` 已移除，须用 webUtils，sandbox 下可用）：
+
+```js
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+contextBridge.exposeInMainWorld('dshBridge', {
+  sendDroppedFile: (guestId, file) =>
+    ipcRenderer.invoke('dnd:forward', { guestId, path: webUtils.getPathForFile(file) }),
+});
+```
+
+**第 3 步，main 分发**：小文件（<20MB）读 base64 → `webContents.fromId(guestId).executeJavaScript(...)`（webview 元素自带 executeJavaScript 方法，宿主可直接在 guest 上下文执行）；大文件复制到 `userData/dnd-temp/<uuid>/` → 注册一次性 `dsh-file://` protocol 让 guest 去 fetch，避免大 base64 穿 IPC。
+
+**第 4 步，guest 内合成投递**：
+
+```js
+async function dispatchFile(url, name, type) {
+  const blob = await fetch(url).then(r => r.blob());
+  const file = new File([blob], name, { type });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  const target = document.querySelector('[contenteditable], textarea, [class*="editor"], [class*="composer"]') || document.body;
+  const r = target.getBoundingClientRect();
+  const opts = { bubbles: true, cancelable: true, composed: true,
+    clientX: r.left + r.width/2, clientY: r.top + r.height/2, dataTransfer: dt, view: window };
+  target.dispatchEvent(new DragEvent('dragenter', opts));
+  target.dispatchEvent(new DragEvent('dragover',  opts));
+  target.dispatchEvent(new DragEvent('drop',      opts));
+  const input = document.querySelector('input[type="file"]');  // 兜底：隐藏 file input
+  if (input) { input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); }
+}
+```
+
+注意：合成事件 `isTrusted=false`，但主流目标站都是 React（root 代理监听、不校验 isTrusted），双路径大概率都通；个别校验的站只能降级提示手动拖。必须先 dragenter/dragover 再 drop；多文件逐个 `add`；谷歌-搜索那格跳过。需 9 站逐一实测。
+
+## F. 菜单栏
+
+「会议认证」建议改「通辽会议」（可加快捷键），顺手用 `Menu.setApplicationMenu` 把 File/Edit/View 等默认英文菜单换中文。
+
+---
+
+两个需要你拍板的点：**① 文心一言是否采用**（现为"文心"）；**② dsh 前端源码能否直接改**——能改的话整套方案会轻非常多，建议先确认这一点再动手。
+

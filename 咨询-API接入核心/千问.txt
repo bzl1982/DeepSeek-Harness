@@ -1,0 +1,680 @@
+### 2026-09-25 16:03:48 · 阿里巴巴-通义千问 · 网页采集
+
+这边还没收到任何文件——工作区里目前只有系统自带的几个配置文件，最近几小时没有新上传的合同或附件。
+麻烦你把待审合同重新发一下（Word / PDF / 图片都可以），文件一到我就直接开始条款审查和风险核查。如果这次要审的不止一份，或者你有特别关注的点（比如付款节点、违约责任、知识产权归属），一并发过来我会重点核对。
+
+---
+### 2026-09-25 16:07:03 · 阿里巴巴-通义千问 · 网页采集
+
+这是一个非常扎实且结构清晰的需求文档。针对你的 9 个问题，我将基于 Electron 33 + 原生 JS (Zero-dependency) 的技术约束，给出字段级设计和可运行代码。
+核心原则
+零依赖优先：利用 Node.js 内置 fetch, crypto, fs。
+协议适配器模式：将差异隔离在 Adapter 层，上层业务逻辑统一。
+流式渲染节流：50 席并发必须做 DOM 更新合并。
+Q1: 多协议支持：内置哪几个协议适配器？
+一句话结论：内置 OpenAI Chat Completions（覆盖 90% 中转/官方）、Anthropic Messages、Google Gemini Native。暂时放弃 OpenAI Responses API（生态未成熟，且 Chat Completions 已支持 o1/o3 系列）。中转站统一走 OpenAI 兼容接口。
+1.1 协议适配器接口设计 (TypeScript Interface 风格)
+typescript
+编辑
+1
+// core/protocols/types.ts
+
+2
+
+3
+// 统一的请求参数抽象
+
+4
+interface UnifiedChatParams {
+
+5
+  model: string;
+
+6
+  messages: Message[]; // 标准格式: { role: 'user'|'assistant'|'system', content: string | ContentPart[] }
+
+7
+  temperature?: number;
+
+8
+  max_tokens?: number;
+
+9
+  stream: boolean;
+
+10
+  // 思考等级抽象: 'off' | 'low' | 'medium' | 'high'
+
+11
+  reasoning_effort?: 'off' | 'low' | 'medium' | 'high'; 
+
+12
+}
+
+13
+
+14
+// 统一的流式事件回调
+
+15
+interface StreamCallbacks {
+
+16
+  onDelta: (content: string, reasoning?: string) => void;
+
+17
+  onUsage: (usage: TokenUsage) => void;
+
+18
+  onError: (error: ApiError) => void;
+
+19
+  onDone: () => void;
+
+20
+}
+
+21
+
+22
+// 适配器接口
+
+23
+interface ProtocolAdapter {
+
+24
+  name: string; // e.g., 'openai', 'anthropic', 'gemini'
+
+25
+  
+
+26
+  // 拉取模型列表
+
+27
+  listModels(config: ProviderConfig): Promise<ModelMeta[]>;
+
+28
+  
+
+29
+  // 发送聊天请求
+
+30
+  chatStream(
+
+31
+    config: ProviderConfig, 
+
+32
+    params: UnifiedChatParams, 
+
+33
+    callbacks: StreamCallbacks,
+
+34
+    signal: AbortSignal
+
+35
+  ): Promise<void>;
+
+36
+}
+1.2 差异点清单与映射策略
+表格
+下载为表格
+导出为图片
+特性
+	
+OpenAI Compatible
+	
+Anthropic Messages
+	
+Google Gemini Native
+
+Endpoint	/v1/chat/completions	/v1/messages	/v1beta/models/{model}:streamGenerateContent
+Auth Header	Authorization: Bearer <key>	x-api-key: <key>	URL Param ?key=<key> 或 Header
+Content Type	JSON	JSON	JSON
+System Prompt	messages[{role:'system'}]	system 独立字段	systemInstruction 对象
+Thinking/Reasoning	reasoning_effort (o1/o3) 或 max_completion_tokens	thinking.budget_tokens	thinkingConfig.thinkingBudget
+流式格式	SSE (data: {...})	SSE (data: {...})	NDJSON (每行一个 JSON 对象，无 data: 前缀)
+反例警告：不要试图为每个厂商写一套完整的 UI 逻辑。所有差异必须在 ProtocolAdapter 内部消化，对外暴露统一的 onDelta 和 onUsage。
+Q2: 模型列表自动拉取与降级
+一句话结论：优先调用 /v1/models (OpenAI 兼容) 或对应原生接口。失败时降级为“静态兜底列表”+“用户手动输入”。元数据（上下文窗口）优先从缓存读取，其次查官方文档硬编码表，最后给默认值（如 8k）。
+2.1 拉取与降级伪代码
+javascript
+编辑
+1
+// core/model-fetcher.js
+
+2
+
+3
+const FALLBACK_MODELS = {
+
+4
+  'openai': [{ id: 'gpt-4o', context_window: 128000, multimodal: true }],
+
+5
+  'anthropic': [{ id: 'claude-3-5-sonnet-20241022', context_window: 200000, multimodal: true }],
+
+6
+  'gemini': [{ id: 'gemini-1.5-pro', context_window: 2000000, multimodal: true }]
+
+7
+};
+
+8
+
+9
+async function fetchModels(provider) {
+
+10
+  try {
+
+11
+    const adapter = getAdapter(provider.protocol);
+
+12
+    const models = await adapter.listModels(provider.config);
+
+13
+    
+
+14
+    // 增强元数据：如果 API 没返回 context_window，查本地硬编码表
+
+15
+    return models.map(m => ({
+
+16
+      ...m,
+
+17
+      context_window: m.context_window || getContextWindowFromHardcodedTable(m.id) || 8192,
+
+18
+      multimodal: m.multimodal ?? checkMultimodalSupport(m.id)
+
+19
+    }));
+
+20
+  } catch (e) {
+
+21
+    console.warn(`Fetch models failed for ${provider.name}, using fallback.`, e);
+
+22
+    // 降级策略：返回上次缓存的列表，或者硬编码兜底
+
+23
+    return getCachedModels(provider.id) || FALLBACK_MODELS[provider.protocol] || [];
+
+24
+  }
+
+25
+}
+成本：每次启动或点击“刷新”时发起请求。
+反例：不要在每次切换模型下拉框时都去请求 API，必须本地缓存（LocalStorage 或 JSON 文件）。
+Q3: 密钥本地存储
+一句话结论：Electron safeStorage + JSON 文件。这是 Electron 官方推荐的标准做法，平衡了安全性与开发复杂度。
+理由：safeStorage 在 Windows 上使用 DPAPI，macOS 使用 Keychain，Linux 使用 libsecret。比明文 YAML 安全，比 keytar 少一个原生依赖编译步骤。
+什么时候不该用：如果应用需要跨机器同步配置（如通过 Git），加密后的 blob 无法迁移。此时应使用环境变量或提示用户每次启动输入密钥。
+3.1 最小实现代码
+javascript
+编辑
+1
+// core/secure-store.js
+
+2
+const { safeStorage } = require('electron');
+
+3
+const fs = require('fs');
+
+4
+const path = require('path');
+
+5
+
+6
+const CONFIG_PATH = path.join(app.getPath('userData'), 'providers.json');
+
+7
+
+8
+function encryptKey(plainText) {
+
+9
+  if (!safeStorage.isEncryptionAvailable()) {
+
+10
+    throw new Error('Safe storage encryption is not available on this system.');
+
+11
+  }
+
+12
+  return safeStorage.encryptString(plainText).toString('base64');
+
+13
+}
+
+14
+
+15
+function decryptKey(encryptedBase64) {
+
+16
+  const buffer = Buffer.from(encryptedBase64, 'base64');
+
+17
+  return safeStorage.decryptString(buffer);
+
+18
+}
+
+19
+
+20
+// 保存提供方配置
+
+21
+function saveProvider(provider) {
+
+22
+  const providers = loadProviders();
+
+23
+  // 如果 apiKey 变化，重新加密
+
+24
+  if (provider.apiKey && provider.apiKey !== '__ENCRYPTED__') {
+
+25
+    provider.apiKeyEnc = encryptKey(provider.apiKey);
+
+26
+    delete provider.apiKey; // 不存明文
+
+27
+  }
+
+28
+  // 更新或添加
+
+29
+  const index = providers.findIndex(p => p.id === provider.id);
+
+30
+  if (index >= 0) providers[index] = provider;
+
+31
+  else providers.push(provider);
+
+32
+  
+
+33
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(providers, null, 2));
+
+34
+}
+
+35
+
+36
+function getApiKey(providerId) {
+
+37
+  const providers = loadProviders();
+
+38
+  const p = providers.find(x => x.id === providerId);
+
+39
+  if (!p || !p.apiKeyEnc) return null;
+
+40
+  return decryptKey(p.apiKeyEnc);
+
+41
+}
+Q4: 50 个席位的并发与性能
+一句话结论：全局信号量限制并发数（默认 10） + requestAnimationFrame (rAF) 批量渲染 DOM。50 路 HTTP 流可以同时存在（TCP 连接开销不大），但 DOM 更新必须节流。
+4.1 并发控制设计
+HTTP 层：使用 AbortController 管理生命周期。不需要复杂的信号量库，一个简单的计数器即可。
+渲染层：每个席位维护一个 pendingUpdates 队列。requestAnimationFrame 每帧清空队列并一次性更新 innerHTML 或 TextNode。
+4.2 代码示例：渲染节流器
+javascript
+编辑
+1
+// ui/render-throttle.js
+
+2
+
+3
+class SeatRenderer {
+
+4
+  constructor(domElement) {
+
+5
+    this.dom = domElement;
+
+6
+    this.buffer = '';
+
+7
+    this.isScheduled = false;
+
+8
+  }
+
+9
+
+10
+  append(text) {
+
+11
+    this.buffer += text;
+
+12
+    if (!this.isScheduled) {
+
+13
+      this.isScheduled = true;
+
+14
+      requestAnimationFrame(() => this.flush());
+
+15
+    }
+
+16
+  }
+
+17
+
+18
+  flush() {
+
+19
+    if (this.buffer) {
+
+20
+      // 关键优化：使用 textContent 或追加 TextNode，避免重解析 HTML
+
+21
+      // 如果是 Markdown 渲染，这里需要更复杂的虚拟 DOM 或增量解析库
+
+22
+      // 简单场景下，直接追加到 pre/code 块
+
+23
+      const node = document.createTextNode(this.buffer);
+
+24
+      this.dom.appendChild(node); 
+
+25
+      this.buffer = '';
+
+26
+    }
+
+27
+    this.isScheduled = false;
+
+28
+  }
+
+29
+}
+成本：内存中每个席位约占用 1-5MB（取决于历史长度）。50 席约 250MB，Electron 完全扛得住。
+反例：不要在 onDelta 回调里直接操作 DOM（如 div.innerHTML += chunk），这会导致每秒数百次重排（Reflow），CPU 飙升。
+Q5: 会话上下文管理
+一句话结论：内存为主，JSON 落盘为辅。SQLite 对于这种读写频率低、数据结构简单的场景是过度设计。接近上限时，采用“滑动窗口截断”策略（保留最近 N 轮 + 系统提示词）。
+5.1 存储结构字段设计
+json
+编辑
+1
+{
+
+2
+  "seatId": "seat_01",
+
+3
+  "history": [
+
+4
+    { "role": "system", "content": "You are a helper..." },
+
+5
+    { "role": "user", "content": "Hello", "timestamp": 1710000000 },
+
+6
+    { "role": "assistant", "content": "Hi!", "timestamp": 1710000005, "usage": { "prompt": 10, "completion": 5 } }
+
+7
+  ],
+
+8
+  "totalUsage": { "prompt": 100, "completion": 50 }
+
+9
+}
+5.2 Usage 累计统一方案
+由于各协议 Usage 返回时机不同（OpenAI 在最后，Anthropic 可能在中间或最后），建议：
+实时估算：前端根据 token 计数库（如 tiktoken 的 JS 移植版，或简单按字符数/4 估算）显示“预估用量”。
+最终校准：当 onDone 触发且收到准确 usage 时，更新数据库中的 totalUsage。
+反例：不要依赖 API 返回的 usage 来实时更新 UI 进度条，因为延迟太高。
+Q6: 思考等级跨厂商映射
+一句话结论：统一抽象为 reasoning_effort: 'off' | 'low' | 'medium' | 'high'。UI 上，如果当前模型不支持推理，将该控件置灰（Disabled）并显示 Tooltip 说明。
+6.1 映射表
+表格
+下载为表格
+导出为图片
+统一参数
+	
+OpenAI (o1/o3)
+	
+Anthropic (Claude 3.7+)
+	
+Gemini (2.0 Flash Thinking)
+
+off	使用非推理模型 (gpt-4o)	thinking.type: disabled	thinkingConfig.thinkingBudget: 0
+low	reasoning_effort: low	thinking.budget_tokens: 1024	thinkingConfig.thinkingBudget: 1024
+medium	reasoning_effort: medium	thinking.budget_tokens: 4096	thinkingConfig.thinkingBudget: 4096
+high	reasoning_effort: high	thinking.budget_tokens: 16384	thinkingConfig.thinkingBudget: 16384
+UI 降级建议：
+在模型元数据中标记 supports_reasoning: boolean。
+javascript
+编辑
+1
+// UI 逻辑
+
+2
+if (!currentModel.supports_reasoning) {
+
+3
+  reasoningSelect.disabled = true;
+
+4
+  reasoningSelect.title = "Current model does not support reasoning control";
+
+5
+}
+Q7: 权限管理
+一句话结论：单机单用户场景，“能力开关”是唯一合理的权限维度。不要搞角色/RBAC。
+7.1 最小可用权限模型
+每个席位配置包含 permissions 对象：
+typescript
+编辑
+1
+interface SeatPermissions {
+
+2
+  allow_file_upload: boolean;   // 是否允许该席位接收文件
+
+3
+  allow_image_upload: boolean;  // 是否允许该席位接收图片
+
+4
+  allow_system_prompt_edit: boolean; // 用户能否修改该席位的 System Prompt
+
+5
+  max_token_limit: number;      // 硬限制，超过则拒绝发送
+
+6
+}
+过度设计警示：
+❌ 用户组/角色：只有你一个用户，没必要。
+❌ 网络隔离：Electron 进程本身就在沙箱里，除非你担心 AI 执行代码后反向控制你的电脑（那是另一层面的安全，不是应用层权限）。
+❌ 配额计费：单机本地跑，不涉及真金白银的实时扣费监控，只需事后看账单。
+Q8: 对话界面布局
+一句话结论：复用宫格，原地展开。点击席位卡片，卡片内部布局从“只读摘要”切换为“完整对话界面”。保持 50 席的网格视图不变，避免 Tab 切换带来的上下文丢失感。
+8.1 ASCII 布局示意
+text
+编辑
+1
++---------------------------------------------------------------+
+
+2
+
+3
+|  [Global Controls: Send to All | Clear All | Settings]        |
+
+4
++---------------------------------------------------------------+
+
+5
+
+6
+|  Grid View (5 columns x 10 rows)                              |
+
+7
+|                                                               |
+
+8
+|  +------------------+  +------------------+                   |
+
+9
+|  | Seat 1 (Active)  |  | Seat 2           |                   |
+
+10
+|  |                  |  |                  |                   |
+
+11
+|  | [Chat History]   |  | [Last Reply]     |                   |
+
+12
+|  |                  |  |                  |                   |
+
+13
+|  |------------------|  |------------------|                   |
+
+14
+|  | [Input Area]     |  | [Click to Chat]  |                   |
+
+15
+|  | [+] [Text...]    |  |                  |                   |
+
+16
+|  |------------------|  |                  |                   |
+
+17
+|  | [Params Bar]     |  |                  |                   |
+
+18
+|  | Model: GPT-4o v  |  |                  |                   |
+
+19
+|  | Think: Medium v  |  |                  |                   |
+
+20
+|  | Tokens: 1.2k/8k  |  |                  |                   |
+
+21
+|  +------------------+  +------------------+                   |
+
+22
+|                                                               |
+
+23
++---------------------------------------------------------------+
+理由：
+直观对比：你可以同时看到 50 个 AI 对同一问题的不同反应。
+状态保持：每个格子独立维护自己的会话状态，切换视图不会丢失上下文。
+技术实现：CSS Grid 布局，每个格子是一个独立的 Custom Element 或 Component。
+Q9: 附件注入的协议差异
+一句话结论：建立统一的 Attachment 抽象层，在 Adapter 层进行转换。PDF 处理最复杂，建议前端先转文本或图片，再传给 API。
+9.1 附件抽象设计
+typescript
+编辑
+1
+interface Attachment {
+
+2
+  id: string;
+
+3
+  type: 'image' | 'text' | 'pdf';
+
+4
+  mimeType: string;
+
+5
+  data: string; // Base64 或 文本内容
+
+6
+  name: string;
+
+7
+}
+9.2 协议映射表
+表格
+下载为表格
+导出为图片
+类型
+	
+OpenAI Compatible
+	
+Anthropic
+	
+Gemini
+
+Image	content: [{ type: "image_url", image_url: { url: "data:image/png;base64,..." } }]	content: [{ type: "image", source: { type: "base64", media_type: "...", data: "..." } }]	parts: [{ inlineData: { mimeType: "...", data: "..." } }]
+Text File	读取内容，拼接到 user message 的文本中	同上	同上
+PDF	不建议直接传二进制。前端使用 pdf.js 提取文本或截图，转为 Text/Image 处理	同上	同上
+反例：不要尝试把几 MB 的 PDF 二进制直接塞进 JSON 请求体，这会触发 API 的大小限制或超时。务必在前端预处理。
+§6 方案审查与建议实施顺序
+你提出的 §6 草案方向完全正确，无需推翻。特别是“蹭读配置”转为“独立配置”是必经之路。
+建议实施顺序表
+表格
+下载为表格
+导出为图片
+步骤
+	
+任务
+	
+为什么
+	
+预估代码量
+
+1	重构配置存储 (core/secure-store.js)	所有功能的基础，先解决密钥安全和配置持久化。	~150 行
+2	实现协议适配器接口 (core/protocols/)	先实现 OpenAI 兼容和 Anthropic 两个最典型的，打通发送链路。	~300 行
+3	模型拉取与缓存 (core/model-fetcher.js)	让用户能看到并选择模型，这是设置界面的核心。	~100 行
+4	席位管理与 UI 骨架 (ui/seat-grid.js)	实现 50 宫格的渲染和点击交互，先不做对话，只做占位。	~200 行 CSS/JS
+5	对话窗口组件 (ui/chat-window.js)	实现输入框、附件按钮、参数栏。集成渲染节流器。	~400 行
+6	会话历史与上下文管理 (core/session-store.js)	接入多轮对话，实现滑动窗口截断。	~150 行
+7	附件预处理与映射	实现图片 Base64 转换和 PDF 文本提取。	~200 行
+8	全局并发控制与优化	加入信号量和 rAF 渲染优化，确保 50 席不卡死。	~100 行
+总结
+你的项目缺口识别非常准确。最大的风险点在于 Q4 的渲染性能和 Q9 的附件处理复杂性。
+立即行动：先写 secure-store.js 和 openai-adapter.js，跑通第一个 API 席位的发送和接收。
+不要过早优化：SQLite 可以等到历史记录超过 1000 条再考虑。
+UI 策略：坚持“宫格内展开”，这是多 AI 对比测试的核心体验。
+如果需要具体的 openai-adapter.js 完整实现代码，请告知，我可以为你生成一个包含 SSE 解析和错误处理的完整类。

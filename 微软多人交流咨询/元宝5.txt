@@ -1,0 +1,408 @@
+第五轮咨询案回复：模式与角色体系的场景定义
+
+以下逐条回应你的 9 个问题。重点在 Q1 / Q4 / Q5 / Q7（你标了最高优先级），其余按序展开。
+
+每个建议都附了成本估算和反例，凡是涉及新增/修改模式的地方都给了字段级设计。
+
+Q1 · 工作流 A 该新建模式还是组合？
+
+结论：新建 tournament（招标评审）模式。组合方案不成立。
+
+为什么组合不行：
+
+尝试的组合 断裂点
+
+broadcast + iterate iterate 的 needs: ['draft'] 要求输入是单份草稿，无法接收 N 份候选
+
+review + iterate review 的产出是"审阅结论+分歧点清单"，不是"选出的胜出方案"——缺选优这个原子动作
+
+debate + iterate debate 假设只有 2~3 个对立方案，工作流 A 可能产生 5~9 份候选，对辩阶段会爆炸
+
+核心论点："从 N 份候选里选 1 份再定向改进"是一个独立的编排语义，它既不是 broadcast（只产不出选），也不是 iterate（只改不重选），也不是 review（只挑不选）。组合需要在编排层写大量胶水代码来模拟"选优→改进→复评"的闭环，最终代码复杂度会超过原生实现。
+
+tournament 字段级设计：
+mode:
+  id: "tournament"
+  name: "招标评审"
+  phases:
+    - id: "bidding"
+      name: "出标"
+      seat: "all"
+      speak: "parallel"
+      slice: "TASK"
+      output_format: "proposal"           # 候选方案
+      
+    - id: "evaluation"
+      name: "评标"
+      seat: "reviewers"                   # 质证类席位（可配置）
+      speak: "parallel"
+      slice: "ALL_PROPOSALS_ONLY"         # ★ 新切片：只看所有方案，不看别人的评分
+      output_format: "scorecard"          # { proposal_id, rank, critique }
+      
+    - id: "award"
+      name: "定标"
+      seat: "converge"
+      speak: "sequential"
+      slice: "ALL_SCORES"                 # 所有评分卡
+      output_format: "award_result"       # { winner_id, runner_up_id, rationale }
+      
+    - id: "improvement"
+      name: "改进"
+      seat: "builders"                    # 建设类席位（可配置）
+      speak: "sequential"
+      slice: "CRITIQUES"
+      output_format: "improved_proposal"
+      
+    - id: "re_evaluation"
+      name: "复评"
+      seat: "reviewers"
+      speak: "parallel"
+      slice: "DRAFT"
+      output_format: "critique_list"
+      
+  termination:
+    type: "no_new_critique_or_stable_winner"
+    params:
+      stable_rounds: 2                    # 连续 2 轮胜出者不变
+      max_rounds: 5
+      critique_stability_threshold: 2     # 复评阶段新增批评 ≤ 2 条
+      
+  cost_profile:
+    calls_per_round: "N + n_reviewers + 1 + n_builders + n_reviewers"
+    context_growth: "O(N × L_proposal + n_reviewers × L_scorecard)"
+    estimated_tokens_per_round: "≈ 15K-40K（9人规模）"
+
+
+反例：如果你只有 2~3 份候选且不需要多轮迭代，broadcast + 人工选优 + 单次 iterate 就够了。引入 tournament 的额外编排复杂度在候选 ≤ 3 时是净亏损。
+
+Q2 · 评标如何防止锚定？
+
+机制：两阶段隔离——先独立评分，后公开讨论。
+
+具体做法：
+
+1. 评标阶段（独立）：评审者切片 = ALL_PROPOSALS_ONLY（只看方案原文，不注入任何已有评分）。这确保每份评分是独立判断。
+2. 定标阶段（公开）：收敛者切片 = ALL_SCORES（看到所有评分卡），负责综合。
+
+为什么这和 review 模式同理但不同构：
+
+review 防锚定 tournament 防锚定
+
+锚定源 看到别人审阅意见 → 趋同 看到别人评分 → 跟票（从众效应）
+
+解法 第一阶段并行 + MATERIAL 切片 评标并行 + ALL_PROPOSALS_ONLY 切片
+
+差异 review 不需要比较材料 tournament 必须比较方案（否则无法评分）
+
+关键区别：评标必须看到所有方案（否则无法排序），但不能看到别人的评分。这就是 ALL_PROPOSALS_ONLY 切片存在的理由——它注入方案全文，但过滤掉所有 scorecard 类型的消息。
+
+Q3 · 打分 vs 淘汰？跨模型校准？
+
+结论：用强制排序（ranking），不用打分。
+
+为什么打分不行：不同 AI 的评分尺度天然不同（有的 3 分制有的 10 分制，有的严格有的宽松）。归一化（减均值除方差）需要多轮数据才能稳定，单轮 tournament 样本量不够。
+
+推荐方案：强制全排序（forced full ranking）
+
+每个评审者为 N 份方案排出 1~N 的完整名次。然后：
+
+• 综合排序：用 Borda count（第 1 名得 N 分，第 2 名得 N-1 分…）或 Copeland 方法（两两对决胜场数）汇总
+
+• 校准问题彻底消失：因为排序是 ordinal 的，不存在"尺度不一致"
+
+字段设计：
+scorecard:
+  proposal_rankings:                      # 强制全排序，不是打分
+    - proposal_id: "prop_001"
+      rank: 1                             # 第 1 名
+      critique: "接口设计最清晰，但缺少错误处理"
+    - proposal_id: "prop_002"
+      rank: 3
+      critique: "..."
+  # 注意：没有 score 字段，只有 rank
+
+
+反例：如果方案数 > 7，全排序的认知负担会让 AI 质量骤降（它记不住 9 份方案的细节来排）。此时退化为两两对决（pairwise）：每次只比较 2 份，Elo 积分汇总。
+
+Q4 · 工作流 A 的可计算终止判据（重点）
+
+结论：用"胜出者稳定 + 批评收敛"双条件 AND 组合。
+
+你的候选分析：
+
+候选方案 评价
+
+① 最优方案得分增幅 < 阈值 ❌ 我们不用打分，此判据失效
+
+② 没有评审者提出新的反对意见 ✅ 可计算，但单独用会空转（AI 可能重复旧批评但措辞不同）
+
+③ 强制人工确认 ✅ 必须作为兜底，但不能是唯一判据
+
+落地方案：双信号终止
+termination:
+  type: "stable_winner_and_critique_convergence"
+  conditions:
+    - signal: "winner_stability"
+      logic: "winner_id 连续 K 轮不变"
+      params:
+        K: 2                              # 连续 2 轮同一胜出者
+        
+    - signal: "critique_convergence"
+      logic: "本轮新增批评集合相对上轮无实质新增"
+      params:
+        normalization: "strip_whitespace_punctuation_truncate_60"
+        similarity_threshold: 0.85        # 语义相似度 > 0.85 视为同一批评
+        max_new_critiques: 2             # 新增 ≤ 2 条
+        
+  operator: "AND"                         # 两个条件同时满足才停
+  hard_cap: 5                             # 无论如何 5 轮封顶
+
+
+为什么 AND 而不是 OR：
+• 只用 winner_stability：可能胜出者没变但每轮还在发现新 bug（没真正收敛）
+
+• 只用 critique_convergence：可能批评收敛了但换了个胜出者（还没稳定）
+
+成本：每轮终止检测 = 1 次轻量文本比较（无额外 LLM 调用），可以忽略。
+
+反例：如果候选方案差异极小（比如只是代码风格不同），critique_convergence 会永远不满足（AI 总能找到新措辞说同一个问题）。此时应退化为 hard_cap 封顶 + 人工确认。
+
+Q5 · 接口契约由谁写、写成什么形态（重点）
+
+结论：由"架构师"角色写，收敛类角色做格式校验。形态 = TypeScript Interface + 一句话摘要。
+
+为什么不是收敛类写：架构师有技术可行性判断力（它的硬约束是"只谈技术可行性"），能写出可实现的契约。收敛类（主持助理）的约束是"只做归并，不引入新观点"——它不应该发明接口设计。
+
+契约形态的分界线（核心设计决策）：
+
+太细（框死 AI） 刚好（推荐） 太粗（约束不住）
+
+完整实现代码 TypeScript Interface + 错误约定 + 一句话摘要 只有模块名
+
+算法步骤 输入输出签名 + 数据结构定义 自然语言描述"做什么"
+
+内部变量命名 公开 API 签名 + 副作用约定 无
+
+字段设计：
+contract:
+  format: "typescript_interface"
+  sections:
+    - module_id: "auth"
+      owner: "seat_3"                     # 负责实现的席位
+      interface: |
+        interface AuthModule {
+          login(credentials: Credentials): Promise<AuthResult>
+          logout(): Promise<void>
+          onAuthChange(callback: (state: AuthState) => void): Unsubscribe
+        }
+      errors: ["AUTH_INVALID_CREDENTIALS", "AUTH_EXPIRED_TOKEN"]
+      dependencies: ["storage", "api_client"]
+      summary_for_others: "处理用户登录态，暴露 3 个方法，依赖 storage 和 api_client"
+      
+  validation:
+    checker: "converge_seat"              # 收敛类席位校验
+    rules:
+      - "每个 exported 函数必须有明确的 input/output 类型"
+      - "每个模块必须列出 errors"
+      - "每个模块必须有 summary_for_others"
+
+
+成本：契约编写 = 1 次调用（架构师），校验 = 1 次调用（收敛类）。总计 2 次额外调用，约 3K-5K tokens。这是整个 build 模式里性价比最高的 2 次调用——省掉它会导致后续分头实现全部返工。
+
+反例：如果你做的是"写文档"类任务（不是写代码），不需要接口契约。此时 divide 的 TASK 切片够用，不要强行引入 CONTRACT 切片。
+
+Q6 · 分头实现时每个 AI 该看到什么上下文？
+
+结论：契约全文 + 自己模块详情 + 其他模块一句话摘要。需要新增 CONTRACT 切片。
+
+字段设计：
+slice_types:
+  CONTRACT:
+    description: "接口契约切片"
+    content_filter:
+      include:
+        - "contract.full_text"            # 完整契约
+        - "contract.modules[self].full"   # 自己负责的模块完整定义
+        - "contract.modules[others].summary"  # 其他模块的一句话摘要
+      exclude:
+        - "contract.modules[others].full" # 不注入其他模块的完整定义
+        - "contract.implementation_notes" # 不注入实现建议（那是 AI 自己要做的）
+
+
+每个 AI 实际看到的上下文大小：
+
+内容 大小估算
+
+契约全文（9 个模块的 interface） ≈ 3K-5K tokens
+
+自己模块完整定义 ≈ 500-1K tokens
+
+其他 8 个模块的一句话摘要 ≈ 800 tokens
+
+总计 ≈ 4.3K-6.8K tokens
+
+对比原来 TASK 切片（只给原始任务，≈ 1K tokens），多了约 4K-6K tokens，但换来了模块间接口一致性——这是从"9 份互不相干的半成品"到"可拼装产物"的关键差价。
+
+反例：如果模块间耦合度高（> 3 层依赖），一句话摘要不够用。此时应退化为 ALL 切片（但成本回到 O(N²)），或者重新拆分模块（降低耦合）。
+
+Q7 · 降成本：9 人 panel 的 O(N²) 怎么破（重点）
+
+按有效性排序的 3 个手段：
+
+🥇 第一名：摘要压缩（最有效，副作用最小）
+
+原理：第 k 个发言者不需要看前 k-1 份完整发言，只需要看摘要。
+
+做法：每轮发言结束后，立即用一次轻量调用（可以是小模型）生成摘要，存入 messages 的 summary 字段。后续发言者注入的是摘要而非原文。
+compression:
+  trigger: "after_each_speaker"
+  model: "gemini-3.6-flash"               # 用最便宜的模型做摘要
+  prompt: "用 3 句话总结以下发言的核心观点，保留所有具体主张和论据："
+  max_tokens: 200
+  
+context_injection:
+  original_speakers: 2                    # 最近 2 人的原文
+  older_speakers: "summary"              # 更早的用摘要
+
+
+效果：O(N²L) → O(2L + (N-2)·S)，其中 S = 摘要长度（≈ L/10）。9 人时从 ≈ 36L 降到 ≈ 4.2L，压缩比 ~8.5x。
+
+副作用：摘要可能丢失细节论据。对"疑难故障排查"类任务，丢失一个关键线索会导致后续分析全偏。
+
+成本：每轮 +1 次轻量调用做摘要，9 人 ≈ +9 次额外调用。但每次只有 ~200 tokens 输出，净成本增加可忽略。
+
+🥈 第二名：分组合并（有效性高，但改变会议结构）
+
+原理：9 人不直接串行，而是分 3 组（每组 3 人）先组内讨论，每组产出一个归并结论，再 3 个结论上会。
+grouping:
+  group_size: 3
+  intra_group_mode: "panel"               # 组内用 panel
+  inter_group_mode: "panel"               # 组间用 panel（3 人，O(9) 而非 O(81)）
+
+
+效果：9 人 panel 的 36L → 3 组 × 3L + 3 人 panel 的 3L = 12L，压缩比 3x。
+
+副作用：组内讨论可能遗漏跨组洞察。组间交流只有 3 个归并结论，信息瓶颈严重。
+
+🥉 第三名：硬性限制 N ≤ 5 + 超限自动降级
+
+原理：panel 模式在 N > 5 时自动降级为 chairman（主席点名），只让有分歧的 AI 发言。
+mode_constraints:
+  panel:
+    max_participants: 5
+    overflow_strategy: "auto_downgrade_to_chairman"
+
+
+效果：直接消除 O(N²) 问题（因为 N 永远 ≤ 5）。
+
+副作用：9 人时你被迫用 chairman 模式，成本不可预测（§5.3 已指出）。但 chairman 的 no-new-question 终止判据比 panel 的"跑完即止"更智能——它会在没有新分歧时自动停。
+
+Q8 · 人工中转席位怎么建模？
+
+结论：建模为"外部消息注入"，不是席位。
+
+设计理由：人工中转的本质是"用户把外部 AI 的回答粘贴进来"——这不是一个 AI 席位在自动发言，而是一个消息来源。把它建模为席位会导致编排层试图对它调用 waitForResponse()，而人肉粘贴没有"完成检测"信号。
+
+字段设计：
+message_source:
+  type: "external_paste"
+  fields:
+    source_label: string                  # 用户标注的来源（如 "元宝-20260922"）
+    content: string                       # 粘贴的原文
+    attached_to_round: int                # 属于哪一轮
+    injected_by: "human"                  # 注入者
+    
+  integration:
+    inject_into: "messages"               # 进入消息流
+    participate_in_slice: true           # 参与切片计算（其他 AI 能看到它）
+    auto_tag_as: "external"               # 自动标记为外部消息
+    
+  ui_hint: "请粘贴外部 AI 的回答，系统将自动识别并纳入会议上下文"
+
+
+编排差异：
+
+维度 普通席位 人工中转
+
+waitForResponse 自动等待 webview/API 响应 等待用户粘贴操作
+
+完成检测 CDP 信号 / SSE [DONE] 用户点击"确认提交"
+
+超时处理 标记 timeout，继续会议 标记 pending，可稍后补交
+
+切片参与 正常参与 作为 external 消息参与
+
+反例：不要把它建模为"特殊 provider 类型"（如 provider: "human_paste"）。这会污染 provider 抽象——provider 应该是"能自动收发消息的通道"，人肉粘贴不是通道，是消息来源。
+
+Q9 · 从文本到可运行软件，最少几个环节？谁当集成者？
+
+结论：5 个环节。集成者 = 独立新角色「集成工程师」。
+
+环节清单
+
+# 环节 产出形态 责任者
+
+1 需求冻结 功能清单 + "不做什么"列表 代表类角色
+
+2 架构设计 模块划分 + 依赖图 架构师
+
+3 接口契约冻结 TypeScript Interface + 错误约定 架构师写 + 收敛类校验
+
+4 分头实现 { path, content }[] 文件列表 建设类席位（每人一个模块）
+
+5 集成验证 编译/运行结果 + 修复后的最终产物 集成工程师（新角色）
+
+集成者设计
+
+role:
+  id: "integration_engineer"
+  name: "集成工程师"
+  category: "converge"
+  responsibilities:
+    - "接收所有模块的实现产物（文件列表）"
+    - "拼装成完整项目结构"
+    - "执行编译/类型检查"
+    - "将错误信息分发给对应原作者"
+    - "验证修复后的产物能通过编译/运行"
+  hard_constraints:
+    - "禁止修改模块的业务逻辑（只改接口适配）"
+    - "禁止引入新的功能模块"
+    - "必须给出具体的编译/运行错误日志"
+  capability_requirements:
+    structured: 4
+    stability: 4
+
+
+为什么不复用主持助理：主持助理的硬约束是"只做归并，不引入新观点"。集成需要技术判断（哪个错误该找谁修、接口不匹配时怎么适配），这不是归并，是工程决策。
+
+修复回路的责任分配：
+
+错误类型 谁修 理由
+
+接口签名不匹配 原作者 它写的实现不符合自己签的契约
+
+跨模块数据格式不一致 双方协商，集成者仲裁 需要技术判断
+
+编译/类型错误 原作者 它写的代码有类型错误
+
+集成者拼装错误 集成者自己 它搞错了文件结构
+
+总结：你下一步动手改代码的优先级
+
+优先级 动作 工作量估计
+
+🔴 P0 实现 tournament 模式（Q1 结论） 2-3 天
+
+🔴 P0 实现 CONTRACT 切片 + 摘要压缩（Q5+Q7） 2 天
+
+🟡 P1 双信号终止判据（Q4） 1 天
+
+🟡 P1 强制全排序评分卡（Q3） 1 天
+
+🟢 P2 外部消息注入（Q8） 1 天
+
+🟢 P2 集成工程师角色 + 产物 {path, content} 模型（Q9） 2-3 天
+
+总计约 9-11 个工作日，可以并行推进。
+
+需要我针对其中某个模式（比如 tournament 的阶段流转状态机）给出更详细的伪代码，或者对 build 模式的"产物落盘→编译验证"环节做技术栈层面的具体设计吗？

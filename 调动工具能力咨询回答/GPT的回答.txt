@@ -1,0 +1,502 @@
+晚上好。您这个方向其实已经不是“给网页 AI 加几个工具”了，而是在做一个**个人 AI 操作系统 / Agent Runtime**。
+
+结合您现在的状态：
+
+* ✅ ChatGPT 网页端已经接入 DeepSeek Harness 客户端
+* ✅ DeepSeek Harness 本身有插件体系（Cordis）
+* ✅ 已经有大量工具插件生态（工具、浏览器、代码执行、文件、子 Agent、工作流等）([深度求索][1])
+* 目标：
+
+  > 让网页版 AI（ChatGPT、Claude、Gemini、DeepSeek 等）可以调用本机能力 + Harness 插件能力
+
+我建议不要走“网页直接控制电脑”的路线，而应该设计成：
+
+# 总体架构：AI 浏览器 + Agent Gateway + Harness Runtime
+
+```
+┌──────────────────────────┐
+│      ChatGPT Web         │
+│      Claude Web          │
+│      Gemini Web          │
+└─────────────┬────────────┘
+              │
+              │ 浏览器扩展
+              │
+┌─────────────▼────────────┐
+│      AI Bridge Extension │
+│  (Chrome Extension)      │
+│                          │
+│ - 捕获AI请求              │
+│ - 注入工具描述            │
+│ - 接收Tool Call           │
+└─────────────┬────────────┘
+              │ WebSocket
+              │ localhost
+              ▼
+
+┌──────────────────────────┐
+│      Agent Gateway       │
+│      本地守护进程         │
+│                          │
+│ Tool Router              │
+│ Permission Manager       │
+│ Session Manager          │
+└─────────────┬────────────┘
+
+              │
+
+┌─────────────▼────────────┐
+│   DeepSeek Harness       │
+│                          │
+│ Cordis Runtime           │
+│ Plugins                  │
+│ MCP                      │
+│ Workflow                 │
+│ Sandbox                  │
+└─────────────┬────────────┘
+
+              │
+
+┌─────────────▼────────────┐
+│        本机能力           │
+│                          │
+│ 文件系统                 │
+│ Docker                   │
+│ NAS                      │
+│ adb手机                  │
+│ Git                      │
+│ 浏览器自动化             │
+│ 摄像头                   │
+│ OCR                      │
+└──────────────────────────┘
+```
+
+---
+
+# 第一阶段：不要改 ChatGPT，本地做“工具代理层”
+
+这是关键。
+
+不要试图修改 ChatGPT 网页。
+
+原因：
+
+网页 AI 本身不是 Agent Runtime。
+
+它只是：
+
+```
+用户
+ ↓
+模型
+ ↓
+文本输出
+```
+
+而 Harness 是：
+
+```
+模型
+ ↓
+工具选择
+ ↓
+工具执行
+ ↓
+结果回传
+ ↓
+继续推理
+```
+
+DeepSeek Harness 的设计本身就是把工具、Session、Loop、插件组合成 Agent Runtime。([GitHub][2])
+
+所以应该让：
+
+```
+ChatGPT
+    |
+    |
+你的 Bridge
+    |
+    |
+DeepSeek Harness
+```
+
+成为：
+
+ChatGPT = 大脑
+Harness = 手脚
+
+---
+
+# 第二阶段：建立统一 Tool API
+
+建议设计一个自己的协议：
+
+例如：
+
+## Tool Manifest
+
+```json
+{
+"name":"open_project",
+"description":"打开Android项目",
+"parameters":{
+"path":"string"
+}
+}
+```
+
+然后你的 Gateway 自动转换：
+
+### 给 AI 看：
+
+```
+你拥有以下工具：
+
+open_project()
+run_terminal()
+read_file()
+adb_install()
+docker_restart()
+```
+
+---
+
+AI 输出：
+
+```json
+{
+"tool":"adb_install",
+"args":{
+"apk":"app-release.apk"
+}
+}
+```
+
+Gateway 接收：
+
+↓
+
+调用 Harness:
+
+```
+tool.call(
+ adb_install
+)
+```
+
+↓
+
+返回：
+
+```
+安装成功
+```
+
+---
+
+# 第三阶段：充分利用 Harness 插件，而不是重新造轮子
+
+您现在最大的优势就是 Harness。
+
+不要自己写：
+
+* 文件工具
+* Shell
+* 浏览器
+* Git
+* Workflow
+* 子 Agent
+
+这些 Harness 已经有插件体系。
+
+例如：
+
+已有：
+
+```
+bash
+web_search
+web_fetch
+subagent
+workflow
+todo
+session
+browser-use
+lsp
+```
+
+等工具。([GitHub][3])
+
+您的工作应该是：
+
+## 写 Adapter
+
+例如：
+
+```
+ChatGPT Adapter Plugin
+
+        ↓
+
+DeepSeek Harness Tool API
+
+        ↓
+
+已有插件生态
+```
+
+---
+
+# 第四阶段：加入“电脑控制层”
+
+这个是您真正想要的。
+
+类似：
+
+> “帮我修改小白密盒代码”
+
+AI：
+
+1. 打开 VSCode
+2. 查看代码
+3. 修改文件
+4. 编译
+5. adb安装
+6. 测试
+
+需要：
+
+## Computer Agent
+
+建议：
+
+```
+Computer Control Plugin
+
+├── mouse
+├── keyboard
+├── screenshot
+├── OCR
+├── window manager
+└── app launcher
+```
+
+实现：
+
+Windows：
+
+* AutoHotkey
+* Win32 API
+* UI Automation
+
+Linux：
+
+* xdotool
+* DBus
+
+Android：
+
+* adb
+
+---
+
+# 第五阶段：做一个“AI 控制中心”
+
+我觉得这更符合您的长期方向。
+
+类似：
+
+```
+              AI控制中心
+
+        ┌────────────┐
+        │ ChatGPT    │
+        ├────────────┤
+        │ Claude     │
+        ├────────────┤
+        │ Gemini     │
+        ├────────────┤
+        │ DeepSeek   │
+        └────────────┘
+
+              ↓
+
+       Agent Router
+
+              ↓
+
+       DeepSeek Harness
+
+
+       Plugins:
+       
+       Android开发
+       NAS管理
+       视频整理
+       Docker
+       Git
+       OCR
+       浏览器
+       文件管理
+
+```
+
+以后您一句：
+
+> “MediaForge增加TMDB智能匹配”
+
+AI 自动：
+
+* 查代码
+* 建计划
+* 调 Git
+* 改文件
+* 测试
+
+---
+
+# 第六阶段：安全设计必须提前做
+
+因为您这个系统权限会非常大。
+
+一定增加：
+
+## 权限等级
+
+例如：
+
+### Level 0
+
+只读：
+
+```
+查看文件
+查看日志
+搜索
+```
+
+---
+
+### Level 1
+
+普通操作：
+
+```
+创建文件
+修改代码
+运行测试
+```
+
+---
+
+### Level 2
+
+危险：
+
+```
+删除文件
+Docker重启
+系统命令
+NAS操作
+```
+
+必须确认：
+
+```
+AI请求：
+
+删除 /media/movie
+
+[允许]
+[拒绝]
+```
+
+---
+
+# 我认为您的最佳路线
+
+按照投入产出：
+
+## V1（1个月）
+
+完成：
+
+```
+Chrome Extension
++
+Local Gateway
++
+Harness Tool Bridge
+```
+
+目标：
+
+ChatGPT 能调用：
+
+* 文件
+* Shell
+* Git
+* Docker
+
+---
+
+## V2
+
+加入：
+
+```
+Computer Vision Agent
+
+截图
+OCR
+点击
+输入
+```
+
+实现电脑自动操作。
+
+---
+
+## V3
+
+打造：
+
+```
+个人 Jarvis
+
+ChatGPT
++
+DeepSeek
++
+Harness
++
+NAS
++
+手机
++
+家庭服务器
+```
+
+---
+
+结合您之前做的小白密盒、MediaForge、LORLA，其实您非常适合走这个方向，因为您的项目本身就是：
+
+* Android开发
+* NAS
+* Docker
+* 媒体处理
+* UI逆向
+* 自动化
+
+这些全部可以变成 Agent 的工具。
+
+我觉得下一步最值得设计的是：
+
+**“AI Bridge Gateway 的详细技术白皮书（目录结构、通信协议、插件接口、Chrome扩展方案、Node/Python实现路线）”**。
+
+这个会成为整个系统的地基。
+
+[1]: https://deepseek.com/harness/en/?utm_source=chatgpt.com "DeepSeek Harness developer preview: Everything is a plugin"
+[2]: https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/README.md?utm_source=chatgpt.com "deepseek-harness/packages/core/README.md at master · deepseek-ai/deepseek-harness · GitHub"
+[3]: https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/tool-catalog.md?utm_source=chatgpt.com "deepseek-harness/docs/tool-catalog.md at master · deepseek-ai/deepseek-harness · GitHub"

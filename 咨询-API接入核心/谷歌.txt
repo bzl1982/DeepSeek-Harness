@@ -1,0 +1,635 @@
+## Q1 多协议支持：核心适配器与接口设计
+一句话结论：
+内置 3 个 原生适配器（openai-chat, anthropic-messages, gemini-native）即可覆盖全球 99% 的主流 API；中转站只需按 openai-chat 兼容处理即可完全足够。openai-responses 接口（Beta 阶段）当前不建议内置，其结构变化可由 openai-chat 适配器在流解析层兼容。
+## 1. 协议适配器的字段级接口设计
+
+// 统一的提供商配置结构interface Provider {
+  id: string;          // 唯一标识
+  protocol: 'openai-chat' | 'anthropic-messages' | 'gemini-native';
+  baseURL: string;     // 端点地址
+  apiKey: string;      // 解密后的明文密钥
+}
+// 统一的席位配置与请求参数interface ChatParams {
+  temperature?: number;
+  maxTokens?: number;
+  reasoningEffort?: 'off' | 'standard' | 'max'; // 映射核心参数
+}
+// 统一的流式输出事件回调结构interface StreamCallbacks {
+  onDelta: (data: { content: string; reasoningContent?: string }) => void;
+  onUsage: (data: { promptTokens: number; completionTokens: number; totalTokens: number }) => void;
+  onError: (error: { code: string; message: string }) => void;
+  onDone: () => void;
+}
+// 接口契约：所有适配器必须实现的方法签名interface ProtocolAdapter {
+  listModels(provider: Provider): Promise<Array<{ id: string; contextWindow?: number; multimodal?: boolean }>>;
+  chatStream(provider: Provider, modelId: string, messages: any[], params: ChatParams, callbacks: StreamCallbacks, signal: AbortSignal): Promise<void>;
+}
+
+## 2. 各协议的“差异点清单”与中转站评估
+
+* OpenAI Chat (/v1/chat/completions): SSE 数据流返回 choices[0].delta.content。最新推理模型（如 DeepSeek-R1、o1）在 delta 中增加了 reasoning_content。中转站（New-API / OpenRouter）完美兼容此逻辑。
+* Anthropic Messages (/v1/messages): 鉴权头使用 x-api-key 和 anthropic-version。SSE 采用类型化事件（content_block_delta，内含 delta.text 或 delta.thinking）。
+* Gemini Native (/v1beta/models/...:streamGenerateContent): 鉴权通过 URL 参数 ?key=API_KEY 实现。返回纯 JSON 数组流，而非标准 SSE 文本行，且数据外层包裹在 candidates[0].content.parts[0].text 中。
+* 中转站评估: one-api、new-api、OpenRouter 的核心价值在于将各种非标协议转换成标准 openai-chat 格式。因此，中转站不需要单独开发适配器，将其配置为 openai-chat 类型并修改 baseURL 即可。
+
+## 3. 成本与反例
+
+* 成本: 代码量约 400 行（纯原生 fetch 实现）。几乎无维护负担。零外部依赖性能开销极小。
+* 反例（什么时候不该直接用原生适配器）: 如果用户处于严格的内网环境环境，且完全通过企业内部的统一网关（如自建的 LiteLLM 或专属中转路由）进行流量控制、安全审计和日志留存，此时不应允许用户配置原生端点，而应强制闭环在 openai-chat 适配器中，将 baseURL 锁定为网关地址。
+
+## 4. 可运行的 Node.js 最小代码 (实现 Gemini Native 兼容流解析)
+
+// gemini-adapter.js// 运行命令：node gemini-adapter.js (需替换有效 API_KEY 和模型名称)const { Readable } = require('stream');
+const GeminiAdapter = {
+  async chatStream(provider, modelId, messages, params, callbacks, signal) {
+    const url = `${provider.baseURL}/v1beta/models/${modelId}:streamGenerateContent?key=${provider.apiKey}`;
+    
+    // 将标准消息转换为 Gemini 格式
+    const contents = messages.map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    }));
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents }),
+        signal
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return callbacks.onError({ code: 'SERVER_ERROR', message: errText });
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Gemini 返回的是 JSON 数组流，可能会以 [ 或 , 开头
+        // 这里使用正则或简单切分提取合法的 JSON 对象块
+        let match;
+        // 匹配流中的完全 JSON 对象 {...}
+        while ((match = buffer.match(/\{[\s\S]*?\}(?=\s*(,|\s*\]|\s*\{|\$))/))) {
+          const jsonStr = match[0];
+          buffer = buffer.substring(match.index + jsonStr.length);
+          try {
+            const obj = JSON.parse(jsonStr);
+            if (obj.candidates?.[0]?.content?.parts?.[0]?.text) {
+              const text = obj.candidates[0].content.parts[0].text;
+              callbacks.onDelta({ content: text });
+            }
+            // Gemini 1.5 某些版本会在流末尾包含 usageMetadata
+            if (obj.usageMetadata) {
+              callbacks.onUsage({
+                promptTokens: obj.usageMetadata.promptTokenCount,
+                completionTokens: obj.usageMetadata.candidatesTokenCount,
+                totalTokens: obj.usageMetadata.totalTokenCount
+              });
+            }
+          } catch (e) {
+            // 允许解析未闭合 JSON 失败时继续积攒 buffer
+          }
+        }
+      }
+      callbacks.onDone();
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      callbacks.onError({ code: 'FETCH_FAILED', message: err.message });
+    }
+  }
+};
+// 测试运行用例 (可根据实际情况替换合法参数)/*
+const mockProvider = { baseURL: 'https://googleapis.com', apiKey: 'YOUR_GEMINI_KEY' };
+const mockMessages = [{ role: 'user', content: '你好，请输出10个字' }];
+GeminiAdapter.chatStream(mockProvider, 'gemini-1.5-flash', mockMessages, {}, {
+  onDelta: (d) => process.stdout.write(d.content),
+  onUsage: (u) => console.log('\nToken使用量:', u),
+  onError: (e) => console.error('\n错误:', e),
+  onDone: () => console.log('\n流结束。')
+}, new AbortController().signal);
+*/
+module.exports = GeminiAdapter;
+
+------------------------------
+## Q2 模型列表自动拉取：清洗、降级与元数据建设
+一句话结论
+各协议 /v1/models 响应结构完全不通（OpenAI 返回对象列表，Gemini 返回带 models/ 前缀的数据），中转站往往会夹杂无效废弃模型；元数据（上下文大小等）必须依赖本地硬编码静态表进行二次左外连接（Left Join）清洗。
+## 1. 各协议 /v1/models 响应差异
+
+* OpenAI: { data: [ { id: "gpt-4o", object: "model" }, ... ] }
+* Gemini: { models: [ { name: "models/gemini-1.5-flash", displayName: "...", ... } ] }
+* Anthropic: 原生无此端点，官方模型列表通过文档静态提供。
+
+## 2. 拉取+缓存+降级设计
+
+// 统一模型缓存结构 (存入提供商数据块中)interface ModelMeta {
+  id: string;               // 统一处理后的模型 ID（如清洗掉 Gemini 的 models/ 前缀）
+  displayName: string;
+  contextWindow: number;    // 上下文窗口
+  multimodal: boolean;      // 是否支持多模态
+  isReasoning: boolean;     // 是否是思考/推理模型
+}
+
+## 流程伪代码与策略：
+
+   1. 发起请求：根据协议类型请求 /v1/models（Anthropic 直接跳过，直接返回内置静态列表）。
+   2. 清洗过滤异常：
+   * 排除包含 deprecated、vision-preview、test 等明显属于临时或废弃测试模型的 ID。
+      * 如果是中转站（New-API），返回列表中常有几百个模型。只保留匹配静态元数据表中拥有的模型，或者默认给予保守元数据设置（如 8K 窗口，不支持多模态）。
+   3. 降级策略：若接口超时、报错、或返回空列表，立刻读取 adapters/dsh-config.js 原有的硬编码 DEFAULT_MODELS 兜底。
+   4. 元数据表的来源：单机应用最靠谱的来源是内置一份静态的本地元数据知识表。任何试图从线上动态拉取完备元数据的做法都会遭遇网络边界问题或中转站不透明问题。
+
+## 3. 成本与反例
+
+* 成本: 增加本地一个约 100 行的 models-meta.js 静态映射字典。网络交互仅在用户进入设置页点击“刷新”或首次初始化时触发，维护和运行时性能开销极低。
+* 反例（什么时候不该自动拉取）: 不要在每次应用启动时静默全量拉取。对于拥有 50 个席位的用户，应用一启动就瞬间并发向数个中转站或官方渠道请求 /v1/models，一旦某个端点遭遇网络阻断，会导致主线程初始化逻辑挂起、或者因触发中转站的高频频繁访问限制（Rate Limit）直接封禁 IP。
+
+## 4. 可运行的 Node.js 最小代码 (OpenAI 协议列表清洗与本地合并)
+
+// models-resolver.jsconst LOCAL_META_DB = {
+  'gpt-4o': { contextWindow: 128000, multimodal: true, isReasoning: false },
+  'deepseek-chat': { contextWindow: 64000, multimodal: false, isReasoning: false },
+  'deepseek-reasoner': { contextWindow: 64000, multimodal: false, isReasoning: true },
+  'gemini-1.5-flash': { contextWindow: 1048576, multimodal: true, isReasoning: false }
+};
+async function fetchAndCleanModels(protocol, baseURL, apiKey) {
+  // 降级兜底数据
+  const fallback = [ { id: 'default-model', contextWindow: 8192, multimodal: false, isReasoning: false } ];
+
+  if (protocol !== 'openai-chat') {
+    // 简化处理：非 OpenAI 协议直接返回本地匹配或兜底
+    return Object.keys(LOCAL_META_DB).map(id => ({ id, ...LOCAL_META_DB[id] }));
+  }
+
+  try {
+    const res = await fetch(`${baseURL}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000) // 5秒超时限制
+    });
+    
+    if (!res.ok) return fallback;
+    const json = await res.json();
+    if (!json.data || !Array.isArray(json.data)) return fallback;
+
+    return json.data
+      .map(m => {
+        const id = m.id;
+        const meta = LOCAL_META_DB[id] || { contextWindow: 8192, multimodal: false, isReasoning: false };
+        return { id, ...meta };
+      })
+      .filter(m => !m.id.includes('preview') && !m.id.includes('internal')); // 过滤杂质
+  } catch (err) {
+    console.warn('拉取模型列表失败，启用降级:', err.message);
+    return fallback;
+  }
+}
+// 测试用例// fetchAndCleanModels('openai-chat', 'https://deepseek.com', 'sk-xxx').then(console.log);
+module.exports = { fetchAndCleanModels };
+
+------------------------------
+## Q3 密钥本地存储：单机单用户场景下的稳健方案
+一句话结论
+推荐使用 Electron safeStorage 加密后写入本地独立 JSON 配置文件（如 ~/.meeting-lab/providers.json）。这是单机单用户场景下安全性、跨平台稳定性以及迁移便利性最完美的平衡方案。
+## 1. 三种方案深度对比
+
+| 方案 | 安全性 | 跨平台缺陷与稳定性风险 | 推荐指数 |
+|---|---|---|---|
+| 明文 YAML/JSON | ❌ 无任何安全性，脚本病毒或同机应用可轻易窃取 | 无任何依赖，最为稳定 | ⭐ |
+| keytar (凭据管理器) | ⚠️ 较高，调用系统原生钥匙串 | ❌ 严重反例风险：在 Windows 上如果缺少编译环境经常安装失败；在 Linux 环境下若用户没有配置 gnome-keyring，启动时会抛出硬崩溃。 | ⭐⭐ |
+| Electron safeStorage + 本地文件 | 高，调用操作系统底层加密 API (Windows DPAPI / Mac Keychain) | 极高。API 随 Electron 内置，无任何编译及外部依赖风险。 | ⭐⭐⭐⭐⭐ |
+
+## 2. 为什么选 safeStorage + 本地文件？
+safeStorage 内部利用了操作系统的用户登录凭证进行密钥派生。只有当前操作系统的登录用户有权解密该数据。同时，由于数据依然以加密文件的形式保存在应用自身的沙盒目录内，完全避免了因为外部凭据管理器组件缺失引发的崩溃问题。
+## 3. 成本与反例
+
+* 成本: 代码量约 30 行。由于其属于 Electron 内置核心模块，零安装维护开销。
+* 反例（什么时候不该用）: 如果你的应用未来计划支持云端多端同步配置，或者用户需要在多台电脑间通过直接拷贝配置文件来共享软件状态，此时不能使用 safeStorage。因为在机器 A 加密的数据拷贝到机器 B 后，由于两台机器的用户 SID 或硬件凭证不一致，在机器 B 上调用 decryptString 会发生灾难性的解密失败并直接抛出异常。
+
+## 4. 可运行的 Node.js/Electron 最小代码 (安全读写组件)
+
+// 安全存储核心，可在 Electron 主进程或拥有 Node 集成的渲染进程运行// 注意：必须在 Electron app ready 之后才能调用 safeStorageconst fs = require('fs');const path = require('path');const { app, safeStorage } = require('electron'); 
+const STORAGE_PATH = path.join(app.getPath('userData'), 'secure_providers.json');
+function saveProviders(providersList) {
+  // 只对敏感字段 apiKey 进行加密
+  const processed = providersList.map(p => {
+    if (!p.apiKey) return p;
+    const encryptedBuffer = safeStorage.encryptString(p.apiKey);
+    return {
+      ...p,
+      apiKeyEnc: encryptedBuffer.toString('hex') // 转为十六进制字符串存储
+    };
+  });
+  
+  fs.writeFileSync(STORAGE_PATH, JSON.stringify(processed, null, 2), 'utf-8');
+}
+function loadProviders() {
+  if (!fs.existsSync(STORAGE_PATH)) return [];
+  try {
+    const raw = fs.readFileSync(STORAGE_PATH, 'utf-8');
+    const list = JSON.parse(raw);
+    
+    return list.map(p => {
+      if (!p.apiKeyEnc) return p;
+      try {
+        const decrypted = safeStorage.decryptString(Buffer.from(p.apiKeyEnc, 'hex'));
+        p.apiKey = decrypted;
+      } catch (e) {
+        console.error(`解密提供商 [${p.id}] 密钥失败，可能更换了机器环境:`, e.message);
+        p.apiKey = ''; // 清空损坏的密钥提示用户重新输入
+      }
+      return p;
+    });
+  } catch (err) {
+    return [];
+  }
+}
+
+module.exports = { saveProviders, loadProviders };
+
+------------------------------
+## Q4 50个席位的并发与性能：防范 DOM 更新风暴
+一句话结论
+50 路流同时输出时，严禁让每个 SSE 的 onDelta 直接操作 DOM。必须采用“每席位自用独立数据队列 + 统一全局 requestAnimationFrame（rAF）合帧节流渲染”；对于 50 路并发，无需限制本地信号量，直接并行发起，因为瓶颈在网络响应而非本地 CPU。
+## 1. 控制与渲染节流的字段级设计
+
+// 渲染管道调度中心结构interface RenderRegistry {
+  // 存放50个席位当前积攒未刷新的文本片段
+  dirtyBuffers: Record<string, string>; 
+  // 存放50个席位对应的 DOM 文本容器节点引用
+  domElements: Record<string, HTMLElement>;
+  // 动画帧句柄
+  rafHandle: number | null;
+}
+
+## 2. 并发控制与渲染策略深度剖析
+
+* DOM 风暴防护: 50 个大模型席位如果以每秒 50 个 token 的速率并发回传，一秒内将产生 2500 次 DOM 操作。这会导致 Chromium 布局引擎（Layout）彻底阻塞。通过配置 dirtyBuffers 作为缓冲区，并使用 requestAnimationFrame 以显示器刷新率（通常每秒 60 次）将累积的字符串片段一次性合入 DOM，能够把系统开销直接降低两个数量级。
+* 是否需要虚拟化列表？: 不需要。因为这 50 个席位并不是一个垂直滚动的千行长列表，而是并排或通过 Tab 呈现的独立小格子。只要保证当前不可见、被隐藏的格子其绑定的 DOM 更新仅改写 textContent 属性，不触发动画样式变更，Chromium 足以轻松应对 50 个轻量级文本容器。
+* 本地信号量限流: 强烈建议不限流（保留无限大并发）。因为 50 个席位的请求是分发给不同提供商或统一中转站的，设置本地低信号量（如 6 并发）会导致第 7 个席位产生严重的人工卡顿与延迟。各厂商的频率限制（Rate Limit）应由适配器捕获 429 Too Many Requests 状态码并返回给 UI 提示，而不是在本地自我设限。
+
+## 3. 每种方案的成本与开销
+
+* rAF 合帧方案（推荐）: 内存增加不超过 1MB（仅保存少量字符串 buffer）。延迟最多 16.6ms（一帧的时间），CPU 占用率从 95% 骤降至 5% 以内。
+* 原生直刷方案（反例）: 零开发成本，但由于 50 路流带来的严重重绘风暴，会导致 Electron 软件界面在群发时直接假死崩溃。
+
+## 4. 可运行的 Node.js/前端原生态最小代码 (rAF 渲染节流器)
+
+// HTML 模拟环境，可直接放入 Electron 渲染进程 index.html 测试const RenderScheduler = {
+  dirtyBuffers: {}, // 结构: { seatId: "未渲染的追加文本..." }
+  domElements: {},  // 结构: { seatId: HTMLElement }
+  rafHandle: null,
+
+  // 注册席位 DOM 引用
+  registerSeat(seatId, domElement) {
+    this.domElements[seatId] = domElement;
+    this.dirtyBuffers[seatId] = "";
+  },
+
+  // 收到流式 Delta，不直接操作 DOM，仅入队
+  pushDelta(seatId, delta) {
+    if (this.dirtyBuffers[seatId] !== undefined) {
+      this.dirtyBuffers[seatId] += delta;
+      this.scheduleFlush();
+    }
+  },
+
+  // 调度触发器
+  scheduleFlush() {
+    if (this.rafHandle !== null) return; // 已经有一帧在等待了
+    
+    this.rafHandle = requestAnimationFrame(() => {
+      this.flush();
+    });
+  },
+
+  // 统一合并执行渲染，将多路修改收拢到单次重绘周期中
+  flush() {
+    for (const seatId in this.dirtyBuffers) {
+      const chunk = this.dirtyBuffers[seatId];
+      if (chunk.length > 0) {
+        const el = this.domElements[seatId];
+        if (el) {
+          // 使用 textContent 避免 innerHTML 的安全与解析开销
+          el.textContent += chunk; 
+          
+          // 如果席位对话框当前处于可见状态，滚动到底部
+          if (el.parentElement) {
+             el.parentElement.scrollTop = el.parentElement.scrollHeight;
+          }
+        }
+        this.dirtyBuffers[seatId] = ""; // 清空当前缓冲区
+      }
+    }
+    this.rafHandle = null; // 释放句柄准备下一帧
+  }
+};
+// 模拟 50 个席位并发压测/*
+for(let i=1; i<=50; i++) {
+   const mockEl = { textContent: "" }; // 模拟 DOM 节点
+   RenderScheduler.registerSeat(`seat_${i}`, mockEl);
+   
+   // 模拟每 20ms 不断有高频数据流涌入
+   setInterval(() => {
+     RenderScheduler.pushDelta(`seat_${i}`, `[S${i}-Token] `);
+   }, 20);
+}
+*/
+
+------------------------------
+## Q5 会话上下文管理：轻量化存储与 Usage 计算
+一句话结论
+由于应用属于纯单机运行模式，50 个席位的多轮对话历史推荐直接使用内存（Array）维持运行时，并在每次对话结束后异步写入对应的轻量级 JSON 文件（history/<seatId>.json）中，无需过早引入重量级 SQLite。Token 使用情况（Usage）的异构性必须通过在适配器出口处强行追加一个“模拟虚拟 usage 事件”来强制拉平。
+## 1. 存储结构字段级设计
+
+// 单个席位的多轮历史持久化数据结构 (history/seat_001.json)interface SessionArchive {
+  seatId: string;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+    reasoningContent?: string; // 适配思考型模型
+    timestamp: number;
+    usage?: {                  // 单条消息花费的绝对用量
+      prompt: number;
+      completion: number;
+    }
+  }>;
+}
+
+## 2. 上下文滑窗策略与 Usage 累计抹平方案
+
+* 接近上限（Window Limit）时的策略：由于多 AI 会议测试台需要高度确保编排上下文的准确性，禁止使用自动摘要（Summary），因为摘要会损坏模型的推理逻辑和角色设定。推荐采用“智能安全截断”：保留系统提示词（System Prompt），并按照先进先出（FIFO）原则直接剔除最老的多轮对话消息对，同时在界面右侧用红色高亮图标进行视觉提醒。
+* 抹平多厂商 Usage 差异：
+* 标准情况（OpenAI / Gemini）：流结束的最后一块或倒数第二块结构中会主动附带完整的 usage 字段。
+   * 非标情况（Anthropic 或某些老旧中转站）：全流无任何 usage 计数。
+   * 抹平组件逻辑：适配器如果检测到流正常结束时仍未收到官方的 usage 数据，则必须在内部启动一个“字符比例估算器”（中文字符 $\times 2$，英文字词 $\times 1.3$），组装成标准的 onUsage 事件，强制向下游发射，确保主控层数据结构的一致性。
+
+## 3. 成本与反例
+
+* 成本: 50 个会话即使历史全部拉满到 100 轮，内存占用总量仅约 15MB 左右，采用原生的 fs.writeFile 异步写入无任何主线程卡顿感。
+* 反例（什么时候不该用此方案）: 如果你的应用未来需要引入全局跨会话全文检索（类似在几百个智能体的几万条历史记录中搜索某个关键词），或者需要实现频繁的多线程高并发写操作，此时不应采用单文件 JSON，而应该切换至 SQLite 并建立 FTS5 索引表。
+
+## 4. 可运行的 Node.js 最小代码 (Usage 差异抹平与滑窗裁剪)
+
+// session-manager.js
+class SessionManager {
+  constructor(seatId, maxWindowTokens = 16384) {
+    this.seatId = seatId;
+    this.maxWindowTokens = maxWindowTokens;
+    this.messages = [];
+    this.totalPromptTokens = 0;
+    this.totalCompletionTokens = 0;
+  }
+
+  // 统一接收并累计 Token 用量
+  accumulateUsage(usageData) {
+    // 抹平逻辑：如果遇到非标厂商没有返回用量，则在调用此函数前由适配器计算假数据传入
+    this.totalPromptTokens += usageData.promptTokens;
+    this.totalCompletionTokens += usageData.completionTokens;
+  }
+
+  // 插入新消息并进行滑窗裁剪
+  appendMessage(role, content, reasoningContent = undefined) {
+    this.messages.push({
+      role,
+      content,
+      reasoningContent,
+      timestamp: Date.now()
+    });
+
+    this.truncateIfNecessary();
+  }
+
+  truncateIfNecessary() {
+    // 粗略估算：单机极速安全裁剪（1个Token约等于4个字符）
+    let estimatedTokens = this.messages.reduce((acc, m) => acc + (m.content.length / 4), 0);
+    
+    // 始终保留系统提示词（假设 index 0 是 system prompt）
+    let systemPrompt = this.messages[0]?.role === 'system' ? this.messages[0] : null;
+    
+    while (estimatedTokens > this.maxWindowTokens && this.messages.length > 2) {
+      // 每次剔除一轮对话（一个 user 消息和一个 assistant 消息）
+      if (systemPrompt) {
+        this.messages.splice(1, 2); 
+      } else {
+        this.messages.splice(0, 2);
+      }
+      // 重新计算
+      estimatedTokens = this.messages.reduce((acc, m) => acc + (m.content.length / 4), 0);
+    }
+  }
+}
+// 测试用例const session = new SessionManager('seat_001', 50); // 极小窗口测试
+session.appendMessage('system', '你是一个AI助手');
+session.appendMessage('user', '这是一段非常非常非常长的话，用于测试滑窗算法');
+session.appendMessage('assistant', '我收到了你的超长测试请求');
+session.appendMessage('user', '最新的一轮提问');// 观察历史记录，会发现中间的历史对话对已被安全剔除，系统提示词得到安全保留// console.log(session.messages);
+module.exports = SessionManager;
+
+------------------------------
+## Q6 思考等级跨厂商映射：深度思考模型的参数收拢
+一句话结论
+将前端 UI 的思考等级抽象归纳为三档：off（关闭思考/常规模型）、standard（标准思考）、max（最大深度思考）。通过映射表直接转化为各厂商独有的请求体字段；当遇到完全不支持思考的模型时，UI 控件必须置灰并显式标注“当前模型不支持思考”，切勿直接隐藏，以防界面由于宫格重绘产生意外闪烁。
+## 1. 深度思考统一映射表
+
+| 统一抽象参数 (reasoningEffort) | OpenAI (reasoning_effort) | DeepSeek (模型路由映射) | Claude (thinking) | Gemini (thinkingConfig) |
+|---|---|---|---|---|
+| off | 不传（普通模型如 gpt-4o） | 路由至 deepseek-chat | { type: "disabled" } | 不传配置 |
+| standard | "medium" 或 "low" | 路由至 deepseek-reasoner | { type: "enabled", budget_tokens: 2048 } | { thinkingBudget: 2048 } |
+| max | "high" | 路由至 deepseek-reasoner | { type: "enabled", budget_tokens: 8192 } | { thinkingBudget: 8192 } |
+
+## 2. UI 降级交互建议
+
+* 置灰而非隐藏：50 宫格布局中，空间极其金贵。如果采取隐藏策略，切换模型时控件的突然消失会破坏多列对齐的视觉美感。置灰并添加 Tooltip（悬浮提示）是最优解。
+* 连续值硬压三档是否丢能力？：完全不丢。对于单机多模型编排场景，用户需要的是能够拉开层次的效能差异（不需要思考 / 遇到难题快速思考 / 终极长思考解高难 BUG），给予连续的数字输入框（如让用户填 4132 个 token）反而大幅降低了人工编排分发的效率。
+
+## 3. 成本与反例
+
+* 成本: 在各协议请求体拼装处增加一个大约 40 行的转换函数。
+* 反例（什么时候不该映射）: 不要对不支持思考的老模型强制强行拼装 system prompt 来假装思考（例如强行注入“请在回复前在<think>标签中写出你的思考过程”）。因为这会导致老模型的推理开销暴增、上下文严重受损，且输出的 SSE 流里根本没有独立的 reasoning_content 专属通道，会导致 Q4 规划的流渲染器无法分离思考区和输出区。
+
+## 4. 可运行的 Node.js 最小代码 (思考等级转换器)
+
+// reasoning-mapper.js
+function buildRequestBody(protocol, modelId, messages, uniformParams) {
+  // 基础统一请求体
+  let baseBody = {
+    model: modelId,
+    messages: messages,
+    stream: true
+  };
+
+  const effort = uniformParams.reasoningEffort || 'off';
+
+  switch (protocol) {
+    case 'openai-chat':
+      // 区分 DeepSeek 官方和 OpenAI 官方
+      if (modelId.includes('deepseek')) {
+        // DeepSeek 官方通过更换模型 ID 来控制是否开启思考，不支持 reasoning_effort 字段
+        baseBody.model = effort === 'off' ? 'deepseek-chat' : 'deepseek-reasoner';
+      } else if (modelId.startsWith('o1') || modelId.startsWith('o3')) {
+        // OpenAI 新推理模型采用 reasoning_effort
+        if (effort !== 'off') {
+          baseBody.reasoning_effort = effort === 'max' ? 'high' : 'medium';
+        }
+      }
+      break;
+
+    case 'anthropic-messages':
+      if (effort !== 'off') {
+        baseBody.thinking = {
+          type: 'enabled',
+          budget_tokens: effort === 'max' ? 8192 : 2048
+        };
+        // Claude 开启思考时必须同时指定较长的 max_tokens
+        baseBody.max_tokens = 16384; 
+      }
+      break;
+
+    case 'gemini-native':
+      if (effort !== 'off') {
+        baseBody.thinkingConfig = {
+          thinkingBudget: effort === 'max' ? 8192 : 2048
+        };
+      }
+      break;
+  }
+
+  return baseBody;
+}
+// 测试用例// console.log("Claude 映射结果:", buildRequestBody('anthropic-messages', 'claude-3-5-sonnet', [], { reasoningEffort: 'max' }));// console.log("DeepSeek 映射结果:", buildRequestBody('openai-chat', 'deepseek-chat', [], { reasoningEffort: 'standard' }));
+module.exports = { buildRequestBody };
+
+------------------------------
+## Q7 权限管理：单机单用户场景下的实用性拆解
+一句话结论
+单机多智能体编排的“权限管理”，其实质是“智能体行为边界控制与资源防火墙”。只需要实现 3 个能力开关开关与 1 个数值配额约束，任何基于角色访问控制（RBAC，如管理员/审计员）的设计在单机版中均属于彻底的过度设计。
+## 1. 最小可用权限模型的字段级设计
+
+interface SeatPermissions {
+  // 能力开关
+  allowImageUpload: boolean;  // 允许图片注入（控制是否将其转换为 base64 发送）
+  allowFileUpload: boolean;   // 允许文本/PDF附件注入（控制是否将其作为文本合并进 prompt）
+  allowSystemPromptEdit: boolean; // 允许在格子中直接修改专属系统提示词
+
+  // 配额约束 (核心防火墙)
+  maxTokensPerRequest: number; // 单次请求允许消耗的最大 Completion 令牌数 (防模型断点死循环胡言乱语)
+}
+// 实用的默认权限集const DEFAULT_SEAT_PERMISSIONS: SeatPermissions = {
+  allowImageUpload: true,
+  allowFileUpload: true,
+  allowSystemPromptEdit: true,
+  maxTokensPerRequest: 4096 // 默认防御上限
+};
+
+## 2. 哪些维度是彻底的过度设计？
+
+* ❌ 多用户角色控制（Roles/RBAC）：单机单人开发者应用，根本不存在“张三可以看，李四不能看”的隔离场景，引入 User / Role 表纯属浪费。
+* ❌ 企业级财务配额控制（Dollar Budget）：在单机席位上限制“本会话最多只能花 2 美元”极难精确实现（因为各个中转站费率不同且动态变更）。限制单次请求的 max_tokens 才是真正起到防范某些模型卡死、死循环疯狂输出进而烧干 Token 的最有效物理手段。
+
+## 3. 成本与反例
+
+* 成本: 仅在席位配置 JSON 数据中增加一个约 15 行的 perms 对象。
+* 反例（什么时候不该使用此约束）: 当用户正在让 50 个席位协同编写一套长篇连载小说、或执行数十万行的超大型工程源码分析重构时，严禁启动保守的 maxTokensPerRequest。如果强制将其锁定在默认的 4096 上，会导致大模型在生成到一半时被应用本地强行掐断（或者请求被拒），导致生产力被破坏。
+
+------------------------------
+## Q8 对话界面布局：50宫格与局部参数抽屉的完美融合
+一句话结论
+强烈推荐采用 “席位格子点击后就地无缝切换对话窗（与网页 Webview 互斥显示）” 的布局。这能完美继承原有的宫格编排系统，避免弹出繁琐的独立多窗口导致操作系统桌面彻底失控。
+## 1. 输入框、右侧栏与附件按钮布局 (ASCII 示意)
+
++------------------------------------------------------------------------------------+
+
+| 席位 #04: [agne] deepseek-reasoner                                         [ X ]   |
++------------------------------------------------------------------+-----------------+
+
+|                                                                  | [模型选择器]    |
+| [思考区 - 耗时 4.2秒]                                            |  deepseek-reas v|
+| > 正在分析用户提供的核心文件...                                  | +---------------+
+|                                                                  | [思考等级]      |
+| [回复区]                                                         | ( )关 ( )标 (*)Max|
+| 本轮 API 核心接入的设计方案如下：                                | +---------------+
+| 1. 多协议支持已收拢完毕。                                        | [上下文用量]    |
+| 2. 50个席位并发渲染测试已经通过。                                | [||||||....] 42%|
+|                                                                  |  6.2k / 16k     |
+|                                                                  | +---------------+
+|                                                                  | [Max Tokens]    |
+|                                                                  | [ 4096     ]    |
++------------------------------------------------------------------+-----------------+
+
+| [ + ] 请输入分发给本席位智能体的具体指令或提示词...                                |
++------------------------------------------------------------------------------------+
+
+## 2. 为什么这是最优的交互布局方案？
+
+* 50席宫格的管理学：当规模达到 50 席时，屏幕上不可能同时放下 50 个双向对话窗。原有的“N 宫格监控墙”负责全局鸟瞰，点击其中某一格后，该格子原地平滑放大或展开，展示如上图所示的完整对话界面。
+* 交互闭环：左侧 75% 空间留给高密度的流式内容输出，右侧 25% 固定为 240px 宽的专属参数抽屉。输入框最左侧的 [ + ] 按钮兼顾了图片与文本文件的添加。
+
+------------------------------
+## Q9 附件注入的协议差异：异构数据的多模态拼装
+一句话结论
+前端必须设计统一的统一抽象附件结构。文本与 PDF 附件由应用核心层在本地直接提取纯文本并拼装进 user prompt（即伪装成提示词注入）；而图片附件则根据各厂商适配器进行底层的差异化转换映射。
+## 1. 附件抽象字段级设计
+
+interface UniformAttachment {
+  id: string;
+  name: string;
+  type: 'image' | 'text' | 'pdf';
+  size: number;
+  path: string;       // 本地物理路径（Electron 具备直接读取权限）
+  base64Data?: string; // 仅在图片类型或预加载时读取
+}
+
+## 2. 每种协议的多模态映射表
+
+* OpenAI Chat 格式：
+
+{ "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } }
+
+* Anthropic Messages 格式：
+
+{ "type": "image", "source": { "type": "base64", "media_type": "image/jpeg", "data": "..." } }
+
+* Gemini Native 格式：
+
+{ "inlineData": { "mimeType": "image/jpeg", "data": "..." } }
+
+
+## 3. 核心设计痛点：PDF 的特殊降级处理
+绝大多数中转站和开源本地大模型（如旧版 Ollama）的 /v1/chat/completions 根本不支持直接传 PDF 对象（只有 Claude 官方和 Gemini 官方 API 原生支持 PDF 级别的二进制注入）。
+
+* 降级实施方案：为了保证 50 个多协议席位的通用稳定性，应用核心层应一律不走 API 二进制传输 PDF。而是在本地通过 Electron 直接调用一个成熟、零依赖的纯 JS 解析库（如 pdf-parse），将 PDF 里的文本文字直接抠出来，转为：「以下是来自附件 <xxx.pdf> 的文本内容：\n [提取出的文本] \n」。然后将其与用户的核心输入无缝拼接发送。
+
+## 4. 成本与反例
+
+* 成本: 图片转换在适配器层各自增加约 20 行分支逻辑。引入 PDF 本地解析带来约 100K 左右的代码体积增量。
+* 反例（什么时候不该在本地提取 PDF 纯文本）: 如果用户上传的是包含大量复杂高密表格、建筑工程图纸、或扫描件图片的 PDF 报告。这时候如果粗暴地在本地剥离纯文本，会导致表格数据完全错位变成一团乱码，图片信息彻底丢失。在这种特定极端场景下，必须禁止低端席位盲目读取，而应强制引导用户将该 PDF 投喂给原生支持多模态文档解析的 gemini-native 官方通道。
+
+------------------------------
+## 建议实施顺序表
+为了帮您高效落地此项重构，以下是为您量身定制的演进路线，每一步均做到可独立测试验证：
+
+| 步序 | 核心任务 | 为什么是这个顺序？ | 预估代码量 |
+|---|---|---|---|
+| 第 1 步 | 核心数据仓持久化与加密 (core/api-registry.js) | 优先筑牢数据根基。只有先解决了提供商凭证、密钥解密存储和 50 席位的 JSON 读写，后续的适配器调度才有所依凭。 | ~120 行 |
+| 第 2 步 | 多协议适配器接口骨架 (core/protocols/) | 实现 OpenAI、Gemini、Anthropic 统一流格式转换。使用第 1 步解密出的密钥，确保“发得出去、收得到流”。 | ~350 行 |
+| 第 3 步 | rAF 全局渲染节流调度器 (UI 渲染性能优化) | 确保在进入复杂 UI 视觉开发前，底层的性能防火墙已构筑完毕。群发压测 50 路数据流，确保 DOM 不卡顿。 | ~80 行 |
+| 第 4 步 | 多轮会话管理与滑窗裁剪 (core/session-store.js) | 在本地内存与 JSON 文件间建立多轮历史同步，并抹平各大厂商的 Usage 统计差异，实现容量预警。 | ~100 行 |
+| 第 5 步 | 50宫格原地无缝切换 UI 改造 (shell/index.html) | 组装最终拼图。将现有的只读 .txt 宫格升级为可交互的 API 对话窗，外挂右侧参数抽屉与附件注入按钮。 | ~400 行 |
+
+您看这一套设计方案是否切中了您会议测试台 meeting-lab 的业务核心？如果您需要，我们可以接下来深入探讨：
+
+* 第 5 步中 原生 JS + CSS 50 宫格在无前端框架下如何优雅、低耦合地实现原地放大隐藏 的具体样式与 DOM 切换逻辑。
+* 提供商和席位管理的 具体设置面板配置项 UI 样式与代码。
+* 第 3 步中压测 50 路高频流的具体测试脚本 编写。
+
+

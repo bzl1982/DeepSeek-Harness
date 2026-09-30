@@ -1,0 +1,2730 @@
+这轮真正需要改的，不是“再加几个模式名”，而是把 **模式、编排原语、产物、验收门、人工介入** 这五层分开。你的 `tournament` 和 `build` 都值得保留，但都应该是“用户可选的高阶模式”，底下调用一组可复用原语。
+
+下面直接按 Q1–Q9 裁决，并把你草案里我认为需要推翻的地方明确指出。
+
+# 通辽会议第五轮咨询裁决
+
+## 多 AI 会议系统：模式与角色体系的场景定义
+
+## 总裁决
+
+本轮最重要的四个结论：
+
+**Q1：新建 `tournament`，但它是“高阶模式”，不是底层原语。**
+真正新增的底层能力只有 `CandidatePool + Evaluate + Select + Validate + Retry`。
+
+**Q4：不存在一个只靠 AI 文本就能客观判断“已经够好了”的万能判据。**
+必须把“够好”转化成可验证的验收条件；主观 UI/体验类问题最终必须有人按“可接受/不可接受”拍板。
+
+**Q5：接口契约由架构师起草、红队挑错、收敛角色冻结；契约冻结“边界与不变量”，不冻结“内部算法”。**
+最适合你当前纯 Node 项目的是 `contract.json + executable contract tests`，而不是让 AI 写一大篇伪代码。
+
+**Q7：9 人 `panel` 不应该简单限制成 ≤5。**
+真正有效的办法是把 O(N²) 改成“只在分歧处形成边”，必要时再分组；硬限制人数是最后的产品取舍，不是算法优化。
+
+另外，Q3 的评分我建议彻底改成：
+
+> **盲评强制排名为主，评分为辅；只有 Top-K 接近时才做 Pairwise 决胜。**
+
+这是因为 LLM 评审存在位置偏差，候选展示顺序本身就可能影响判断；随机化候选顺序、隐藏身份是实用的减偏手段。([arXiv][1])
+而在比较多个候选时，基于 pairwise preference 的聚合方法本身就是成熟路线，Bradley–Terry 等模型可以把成对比较转成整体排序；但全量 pairwise 的成本会快速增长。([ACL Anthology][2])
+
+---
+
+# Q1：工作流 A 应新建模式，还是 `broadcast + iterate`？
+
+## 裁决：**新建 `tournament` 模式，但不要把它写成一个巨型不可组合模式**
+
+你原来的判断方向对了一半。
+
+`broadcast + iterate` **不能完整表达**工作流 A。
+
+原因不是“步骤数量不够”，而是它缺了一个非常明确的数据对象：
+
+```text
+CandidatePool
+```
+
+`broadcast` 产生的是：
+
+```text
+answer_1
+answer_2
+answer_3
+...
+```
+
+而 `iterate` 的输入是：
+
+```text
+draft
+```
+
+它默认只有一个被改进对象。
+
+你的实际流程是：
+
+```text
+N 个候选
+   ↓
+N 个评审结果
+   ↓
+选出候选 X
+   ↓
+改进 X
+   ↓
+试验 X'
+   ↓
+失败
+   ↓
+可能重新产生 N 个候选
+```
+
+这是：
+
+> **候选池生命周期管理**
+
+而不是单纯的 draft iteration。
+
+---
+
+## 正确抽象
+
+`broadcast`、`evaluate`、`select`、`iterate` 都应该是底层原语。
+
+然后：
+
+```text
+tournament
+=
+broadcast
+→ blind-evaluate
+→ select
+→ improve
+→ validate
+→ retry
+```
+
+所以我建议：
+
+### 新增模式
+
+```js
+{
+  id: "tournament",
+  label: "择优迭代",
+  ...
+}
+```
+
+### 新增底层原语
+
+```text
+CandidatePool
+EvaluationBatch
+SelectionPolicy
+ValidationGate
+RetryPolicy
+```
+
+而不是再造一个“只有 tournament 能用的超级 orchestrator”。
+
+---
+
+## `tournament` 字段级定义
+
+建议最少做到：
+
+```js
+{
+  id: "tournament",
+
+  candidatePolicy: {
+    count: 4,                 // N 个候选
+    source: "all"             // 哪些席位负责出候选
+  },
+
+  evaluationPolicy: {
+    judgeCount: 3,
+    blind: true,
+    randomizeOrder: true,
+    hideProviderIdentity: true,
+    method: "forced_rank",
+    rubric: [
+      "correctness",
+      "feasibility",
+      "fit_to_requirements",
+      "risk"
+    ]
+  },
+
+  selectionPolicy: {
+    aggregation: "borda",
+    finalists: 2,
+    playoff: {
+      enabled: true,
+      topK: 3,
+      trigger: "margin_below_threshold"
+    }
+  },
+
+  improvementPolicy: {
+    target: "winner",
+    maxRounds: 3
+  },
+
+  validationPolicy: {
+    required: true
+  },
+
+  retryPolicy: {
+    onFailure: "regenerate_pool"
+  },
+
+  budget: {
+    maxCalls: 40,
+    maxRounds: 3
+  }
+}
+```
+
+---
+
+## 你原草案还有一个必须修改的地方
+
+你原来是：
+
+```text
+5 复评
+→ no-new-critique
+→ 停
+```
+
+这不够。
+
+你的真实工作流实际上有：
+
+```text
+评审
+→ 选
+→ 改
+→ 实际试
+→ 失败
+→ 再问一圈
+```
+
+所以 `tournament` 必须有：
+
+```text
+VALIDATE
+```
+
+而且它应该是一个**真正的阶段**，不是 `review` 的附属品。
+
+---
+
+## 成本
+
+设：
+
+* `P` = 出候选的 AI 数
+* `J` = 评审 AI 数
+* `R` = 改进轮数
+* `J2` = 复评 AI 数
+
+第一轮最低调用：
+
+```text
+P + J + 1 + R × (1 + J2)
+```
+
+如果有 Top-3 pairwise playoff，再增加：
+
+```text
+J × C(3,2)
+= 3J
+```
+
+例如：
+
+```text
+P=4
+J=3
+J2=3
+R=2
+```
+
+大约：
+
+```text
+4 + 3 + 1 + 2×4
+= 16 次
+```
+
+再加 Top-3 playoff：
+
+```text
+19 次
+```
+
+这个成本仍然明显低于“每一轮所有人重新发言”。
+
+---
+
+## 什么时候不该用 `tournament`
+
+反例：
+
+> 你问的是“Chrome 为什么弹不出某个错误提示”，实际上有一个确定的 API 原因。
+
+这种问题没有必要：
+
+```text
+4 候选
+→ 3 评审
+→ 定标
+→ 改进
+→ 复评
+```
+
+直接：
+
+```text
+assist
+```
+
+甚至：
+
+```text
+review
+```
+
+即可。
+
+**tournament 适合“多个合理答案竞争”，不适合“有唯一事实答案的问题”。**
+
+---
+
+# Q2：怎样防止评标被第一份方案锚定？
+
+## 裁决：不仅“先独立打分”，还要做四层去锚定
+
+你的 `review` 防锚定思想可以直接迁移，但评标还应该更严格。
+
+### 第一层：候选身份匿名
+
+不要给评审者：
+
+```text
+ChatGPT方案
+Gemini方案
+DeepSeek方案
+```
+
+而是：
+
+```text
+候选 A
+候选 B
+候选 C
+候选 D
+```
+
+连模型品牌都不要显示。
+
+---
+
+### 第二层：每个评审者随机排列候选
+
+例如：
+
+```text
+评审1：
+C A D B
+
+评审2：
+B D A C
+
+评审3：
+A C B D
+```
+
+而不是所有人都：
+
+```text
+A B C D
+```
+
+LLM-as-a-Judge 已有研究发现，候选位置本身会产生 position bias，因此随机化展示顺序是合理的去偏手段。([arXiv][1])
+
+---
+
+### 第三层：评审者不能看到其他人的评分
+
+第一轮必须是：
+
+```text
+候选池
+ ↓
+独立投票
+```
+
+不能：
+
+```text
+候选池
++
+“其他三位评委给 A 最高分”
+```
+
+否则就变成跟票。
+
+---
+
+### 第四层：第二阶段才允许看“分歧”，但不看原始投票顺序
+
+例如第一轮得出：
+
+```text
+A：平均排名 1.7
+B：1.9
+C：2.8
+D：3.6
+```
+
+然后发现：
+
+```text
+A vs B
+```
+
+分歧很大。
+
+第二轮只问：
+
+> 为什么 A 和 B 在“可实施性”上出现显著分歧？
+
+而不要告诉评审：
+
+```text
+评审1支持A
+评审2支持B
+```
+
+否则重新锚定。
+
+---
+
+## 最好增加一个字段
+
+```js
+evaluationPolicy: {
+  blind: true,
+  hideEvaluatorIdentity: true,
+  hideCandidateSource: true,
+  randomizeCandidateOrder: true,
+  hidePeerScoresUntilLocked: true
+}
+```
+
+---
+
+## 成本
+
+匿名和随机排列本身：
+
+```text
+0 次额外模型调用
+```
+
+只增加少量 prompt token：
+
+```text
+O(N)
+```
+
+真正花钱的是评审：
+
+```text
+J 次
+```
+
+---
+
+## 什么时候不该这样做
+
+例如：
+
+> 你不是在判断“谁更好”，而是在检查“谁遗漏了一个明确事实”。
+
+这时候匿名排序价值很低。
+
+直接：
+
+```text
+review + fact-check
+```
+
+更合适。
+
+---
+
+# Q3：评标到底用打分还是淘汰？怎么解决不同 AI 的尺度差异？
+
+## 裁决：**不要让 0–10 分直接决定胜负**
+
+我建议采用：
+
+```text
+第一层：强制排名
+第二层：必要时 Top-K Pairwise
+第三层：评分只用于解释
+```
+
+这是我认为最适合你系统的组合。
+
+---
+
+## 为什么不建议原始打分
+
+例如：
+
+```text
+AI-A：
+A=8
+B=7
+C=6
+
+AI-B：
+A=5
+B=4
+C=3
+```
+
+如果看原始分：
+
+```text
+A=13
+B=11
+C=9
+```
+
+看起来没问题。
+
+但另一个情况：
+
+```text
+AI-A：
+A=10
+B=2
+
+AI-B：
+A=6
+B=5
+```
+
+两个人对尺度完全不同。
+
+AI-A 是：
+
+```text
+“差一点就是0”
+```
+
+AI-B 是：
+
+```text
+“全部集中在5–7”
+```
+
+你不能把它们简单平均。
+
+---
+
+## 第一层：Forced Rank
+
+强制每个评审者给：
+
+```text
+1、2、3、4
+```
+
+不允许：
+
+```text
+A=8.6
+B=8.5
+C=8.4
+```
+
+然后：
+
+```text
+Rank 1 = 3分
+Rank 2 = 2分
+Rank 3 = 1分
+Rank 4 = 0分
+```
+
+就是 Borda 类聚合。
+
+这解决的是：
+
+> **不同模型打分尺度不同**
+
+因为大家最终都转成：
+
+```text
+相对顺序
+```
+
+而不是绝对分数。
+
+pairwise preference 本身也是成熟的排序聚合路线；Bradley–Terry 一类方法就是专门把成对偏好转化为潜在排序。([ACL Anthology][2])
+
+---
+
+## 第二层：Top-K 决赛
+
+例如：
+
+```text
+A：总积分 23
+B：22
+C：14
+D：9
+```
+
+A/B 太接近。
+
+这时候才：
+
+```text
+A vs B
+```
+
+做 pairwise。
+
+如果：
+
+```text
+A 胜 B
+```
+
+则 A 胜。
+
+---
+
+## 为什么不是全量 Pairwise？
+
+因为：
+
+```text
+N=9
+```
+
+所有两两组合：
+
+```text
+9×8/2 = 36
+```
+
+如果：
+
+```text
+J=3
+```
+
+评审：
+
+```text
+36×3 = 108 次
+```
+
+太浪费。
+
+而 Top-3：
+
+```text
+3×2/2 = 3
+```
+
+只需要：
+
+```text
+3×3 = 9 次
+```
+
+---
+
+## 所以我的决策算法
+
+```text
+Step 1：
+每位评审独立强制排名
+
+Step 2：
+Borda 聚合
+
+Step 3：
+得到 Top-K
+
+Step 4：
+如果 Top-1 与 Top-2 差距足够大
+    → 直接选
+
+否则
+    → Top-3 Pairwise
+
+Step 5：
+仍然接近
+    → 人工定标
+```
+
+---
+
+## 字段设计
+
+```js
+selectionPolicy: {
+  primary: "borda",
+  finalists: 3,
+
+  playoff: {
+    enabled: true,
+    method: "pairwise",
+    topK: 3,
+    trigger: {
+      type: "rank_margin",
+      maxDifference: 1
+    }
+  },
+
+  tieBreak: "human"
+}
+```
+
+---
+
+## 要不要 z-score？
+
+### 不建议作为主算法。
+
+因为：
+
+```text
+n=3
+n=4
+```
+
+时样本太小。
+
+某个评审突然给一个极端分：
+
+```text
+10
+```
+
+就能显著改变标准差。
+
+所以：
+
+> **z-score 可以做分析辅助，不要做最终决策主轴。**
+
+---
+
+## 什么时候不该用这种方案
+
+候选只有：
+
+```text
+2 个
+```
+
+而且问题本身就是：
+
+> “A 和 B 谁更适合？”
+
+直接：
+
+```text
+pairwise
+```
+
+就够了。
+
+不需要先建 Borda 排名系统。
+
+---
+
+# Q4：“已经够好了”能不能客观计算？
+
+## 裁决：**纯文本条件下做不到。**
+
+这是本轮必须明确承认的一件事。
+
+不存在一个普适公式：
+
+```text
+score > 83
+```
+
+然后就能证明：
+
+> “这个软件效果已经够好了。”
+
+尤其你的典型问题是：
+
+> “这个 UI 看起来还是不对。”
+
+这属于外部世界的体验判断。
+
+---
+
+## 正确办法：把“满意”转换成 Acceptance Test
+
+例如：
+
+### UI 问题
+
+不要写：
+
+```text
+够漂亮
+```
+
+改成：
+
+```text
+验收：
+1. 卡片必须在首次点击时打开
+2. 动画必须 ≤ 300ms
+3. 最后一个列表项可以完整滚动到导航栏以上
+4. 9 宫格排序后刷新保持顺序
+```
+
+### 架构问题
+
+改成：
+
+```text
+验收：
+1. node --test 全绿
+2. 无新增依赖
+3. 9 个 AI 可单点失败隔离
+4. 一个附件生成一个 attachmentId
+```
+
+这样才可计算。
+
+---
+
+## 我建议 `StoppingPolicy` 使用五个条件
+
+```js
+{
+  maxRounds: 3,
+
+  maxCalls: 40,
+
+  acceptance: {
+    mode: "automated_or_human",
+    required: true
+  },
+
+  critiqueSaturation: {
+    maxNewIssues: 0,
+    consecutiveRounds: 2
+  },
+
+  winnerStability: {
+    top1MustRemainSame: true,
+    consecutiveRounds: 2
+  },
+
+  minImprovementDelta: {
+    metric: "normalized_selection_score",
+    threshold: 0.02
+  }
+}
+```
+
+---
+
+## 实际判停逻辑
+
+伪逻辑：
+
+```js
+if (calls >= maxCalls)
+    stop("budget");
+
+if (!acceptance.pass)
+    continue;
+
+if (
+    noNewCritiques >= 2 &&
+    winnerStable >= 2
+)
+    stop("converged");
+
+if (improvementDelta < 0.02 && winnerStable >= 2)
+    stop("plateau");
+
+if (rounds >= maxRounds)
+    stop("max_rounds");
+```
+
+---
+
+## 但是必须加一个关键条件
+
+对于：
+
+```text
+UI审美
+交互手感
+“是不是我想要的效果”
+```
+
+最终：
+
+```text
+acceptance.mode = "human_required"
+```
+
+否则 AI 很容易自己宣布：
+
+> “目前方案已经较为完善。”
+
+这种自我评价没有独立性。
+
+---
+
+## 什么时候不该使用“无新问题=停止”
+
+反例：
+
+9 个 AI 全都没有发现：
+
+```text
+一个隐藏的状态竞争 bug
+```
+
+于是：
+
+```text
+no-new-critique = true
+```
+
+系统停了。
+
+但软件实际上还是坏的。
+
+所以：
+
+> **“没有新批评”只能证明“这个批评集没有继续增长”，不能证明“软件正确”。**
+
+这也是为什么工程模式必须加入：
+
+```text
+test / build / run / acceptance
+```
+
+---
+
+# Q5：接口契约到底由谁写？
+
+## 裁决：架构师写草案，红队挑战，收敛角色冻结
+
+不要让“收敛类”凭空写技术契约。
+
+也不要让架构师一个人拍板。
+
+推荐：
+
+```text
+架构师
+ ↓
+Contract Draft
+ ↓
+红队 / 事实核查
+ ↓
+Contract Critiques
+ ↓
+主持助理
+ ↓
+Frozen Contract
+```
+
+这样职责很干净。
+
+---
+
+# 契约到底写多细？
+
+关键原则：
+
+> **冻结“可观察边界”，不要冻结“内部实现”。**
+
+---
+
+## 应冻结
+
+```text
+函数/消息名
+输入
+输出
+数据结构
+错误语义
+状态转换
+必须满足的不变量
+兼容性要求
+验收测试
+依赖边界
+禁止事项
+```
+
+---
+
+## 不应该冻结
+
+```text
+内部算法
+局部变量名称
+循环写法
+缓存实现
+内部类数量
+具体数据结构，只要没有暴露到边界
+```
+
+---
+
+## 推荐契约结构
+
+```json
+{
+  "contractVersion": "1.0",
+
+  "objective": "...",
+
+  "invariants": [
+    "...",
+    "..."
+  ],
+
+  "modules": [
+    {
+      "id": "attachment-bus",
+
+      "owner": "module-A",
+
+      "paths": [
+        "core/attachment-bus.js"
+      ],
+
+      "exports": [
+        "register",
+        "upload",
+        "waitReady"
+      ],
+
+      "inputs": [],
+      "outputs": [],
+
+      "errors": [
+        "UPLOAD_TIMEOUT",
+        "UPLOAD_FAILED"
+      ],
+
+      "acceptanceTests": [
+        "attachment-all-ack"
+      ],
+
+      "allowedDependencies": [
+        "node:fs",
+        "node:crypto"
+      ],
+
+      "forbiddenDependencies": [
+        "electron"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## 对你这个项目，我不推荐 OpenAPI 作为统一契约
+
+因为：
+
+```text
+OpenAPI
+```
+
+天然偏 HTTP API。
+
+你的很多契约是：
+
+```text
+Meeting Core
+↔
+Adapter
+```
+
+以及：
+
+```text
+Agent
+↔
+Artifact
+```
+
+更适合：
+
+```text
+JSON Contract
++
+Executable Contract Tests
+```
+
+例如：
+
+```text
+contract.json
+contract.test.js
+```
+
+非常符合你的：
+
+```text
+纯 Node
+零编译
+node --test
+```
+
+体系。
+
+---
+
+## 成本
+
+一次架构：
+
+```text
+1 次
+```
+
+一次红队：
+
+```text
+1 次
+```
+
+一次冻结：
+
+```text
+1 次
+```
+
+即：
+
+```text
+约 3 次 LLM 调用
+```
+
+之后 N 个实现 AI 都只读取同一个冻结契约。
+
+所以这是非常高性价比的 token 投资。
+
+---
+
+## 什么时候不该做很重的契约
+
+反例：
+
+> 只有一个 80 行的小工具脚本，没有并行开发。
+
+此时写 500 行 contract：
+
+```text
+契约成本 > 实现成本
+```
+
+不划算。
+
+---
+
+# Q6：分头实现时每个 AI 到底看什么？
+
+## 裁决：你提出的 `CONTRACT` 切片方向正确，但要再加两个字段：**所有权 + 验收测试**
+
+我建议正式增加：
+
+```text
+CONTRACT
+```
+
+而不是继续拿 `TASK` 硬塞。
+
+---
+
+## `CONTRACT` 切片应该实际展开成
+
+```js
+{
+  contractVersion,
+
+  globalInvariants,
+
+  ownModule: {
+    id,
+    responsibility,
+    ownedFiles,
+    inputs,
+    outputs,
+    errors
+  },
+
+  neighboringInterfaces: [
+    ...
+  ],
+
+  siblingModules: [
+    {
+      id,
+      responsibilitySummary
+    }
+  ],
+
+  acceptanceTests: [
+    ...
+  ],
+
+  runtimeConstraints: {
+    ...
+  },
+
+  nonGoals: [
+    ...
+  ]
+}
+```
+
+---
+
+## 每个 AI 看什么
+
+### 必须看
+
+```text
+冻结契约
+自己的任务
+自己的文件所有权
+自己的公开接口
+邻居模块的接口
+自己的验收条件
+全局硬约束
+```
+
+### 不应该看
+
+```text
+别人的内部实现
+全部会议记录
+全部历史争论
+别人的 prompt
+别人的推理过程
+```
+
+否则：
+
+```text
+CONTRACT
+```
+
+又会慢慢膨胀成：
+
+```text
+ALL
+```
+
+你前面的节省成本设计就废了。
+
+---
+
+## 特别重要：增加文件所有权
+
+例如：
+
+```json
+{
+  "owner": "agent-03",
+  "paths": [
+    "src/auth/",
+    "tests/auth/"
+  ]
+}
+```
+
+其他 AI：
+
+```text
+只读
+```
+
+而不是：
+
+```text
+随便改整个 repo
+```
+
+这样才能真正并行。
+
+---
+
+## 成本
+
+假设：
+
+```text
+Contract = C
+OwnTask = M
+NeighborInterface = D
+```
+
+每人输入约：
+
+```text
+O(C + M + D)
+```
+
+而不是：
+
+```text
+O(NL)
+```
+
+这就是 `CONTRACT` 最核心的价值。
+
+---
+
+## 什么时候不该用 `CONTRACT`
+
+反例：
+
+> 一个 AI 本来就是在独立写一个完全孤立的 Markdown 文档。
+
+它根本不涉及模块接口。
+
+此时：
+
+```text
+TASK
+```
+
+更省 token。
+
+---
+
+# Q7：9 人 `panel` 的 O(N²) 怎么破？
+
+## 我的排序是：
+
+### 第一：只在“分歧点”形成串行讨论
+
+### 第二：分组归并
+
+### 第三：摘要压缩
+
+### 第四：限制人数
+
+---
+
+## 第一名：分歧驱动，而不是全连接
+
+你的 `panel` 当前：
+
+```text
+A
+→ B 看 A
+→ C 看 A+B
+→ D 看 A+B+C
+→ ...
+```
+
+这实际上构造的是：
+
+```text
+完整三角连接
+```
+
+9 人：
+
+```text
+C(9,2)=36
+```
+
+条“影响边”。
+
+没必要。
+
+---
+
+## 改成：
+
+```text
+9 人独立分析
+       ↓
+检测分歧
+       ↓
+只把有分歧的 2~3 个点拿出来
+       ↓
+点名质证
+```
+
+例如：
+
+```text
+9 人独立
+↓
+发现 4 个分歧
+↓
+A vs C
+B vs F
+D vs H
+A vs G
+```
+
+就只讨论这 4 条。
+
+---
+
+## 成本
+
+完整 panel：
+
+```text
+36L
+```
+
+假设平均每人发言 L。
+
+而分歧驱动：
+
+```text
+D × Q
+```
+
+其中：
+
+```text
+D = 分歧数量
+Q = 每个分歧需要的上下文
+```
+
+如果：
+
+```text
+D=6
+Q≈2L
+```
+
+就是：
+
+```text
+≈12L
+```
+
+而不是：
+
+```text
+36L
+```
+
+这不仅省 token，也减少延迟。
+
+---
+
+## 什么时候不该这么做
+
+反例：
+
+> 问题本身就是探索未知领域，根本不知道哪里可能产生分歧。
+
+这时候过早做“分歧检测”：
+
+```text
+找不到分歧
+→ 误以为没有问题
+```
+
+这就危险。
+
+所以：
+
+> **探索阶段先广播，收敛阶段再分歧驱动。**
+
+---
+
+# 第二名：分组归并
+
+9 人拆：
+
+```text
+3 × 3
+```
+
+组内讨论：
+
+```text
+A B C
+D E F
+G H I
+```
+
+然后：
+
+```text
+组1摘要
+组2摘要
+组3摘要
+```
+
+再上总会。
+
+---
+
+## 一个简单的成本模型
+
+9 人完整串行：
+
+```text
+36L
+```
+
+3 组，每组 3 人：
+
+组内：
+
+```text
+3 × (0+1+2)L
+= 3L
+```
+
+三个组：
+
+```text
+9L
+```
+
+然后三组摘要再进行一次：
+
+```text
+3S
+```
+
+总计大约：
+
+```text
+9L + 3S
+```
+
+如果：
+
+```text
+S ≈ L
+```
+
+就是：
+
+```text
+12L
+```
+
+比：
+
+```text
+36L
+```
+
+少约三分之二的上下文暴露量。
+
+---
+
+## 副作用
+
+会损失：
+
+```text
+跨组观点碰撞
+```
+
+所以更适合：
+
+```text
+技术方案
+需求讨论
+大规模材料审查
+```
+
+不适合：
+
+```text
+真正需要每个人互相交叉攻击的辩论
+```
+
+---
+
+# 第三名：摘要压缩
+
+例如：
+
+```text
+前 3 人
+↓
+摘要 1000 tokens
+```
+
+后面不再看到：
+
+```text
+3000 tokens 原文
+```
+
+只看到：
+
+```text
+1000 tokens summary
+```
+
+---
+
+## 优点
+
+实现简单。
+
+可以做：
+
+```text
+summaryEvery: 3
+maxSummaryTokens: 1200
+```
+
+---
+
+## 缺点
+
+摘要本身就是有损压缩。
+
+如果原话：
+
+```text
+“只有在 X 这个边界条件下才成立”
+```
+
+摘要变成：
+
+```text
+“方案 X 可行”
+```
+
+最重要的限制条件反而被吃掉。
+
+---
+
+## 什么时候不该压缩
+
+法律条款、代码错误、协议字段、配置值。
+
+这些地方：
+
+> **一个字符都可能有意义。**
+
+所以建议：
+
+```js
+compressionPolicy: {
+  enabled: true,
+  except: [
+    "contract",
+    "code",
+    "exact_quotes",
+    "error_logs"
+  ]
+}
+```
+
+---
+
+# 第四名：硬限制 N≤5
+
+它当然有效。
+
+因为：
+
+```text
+C(5,2)=10
+```
+
+比：
+
+```text
+C(9,2)=36
+```
+
+低很多。
+
+但这是：
+
+> **直接砍掉观点数量**
+
+不是优化算法。
+
+---
+
+## 更适合把它变成动态策略
+
+不要：
+
+```text
+panel.maxAgents = 5
+```
+
+而是：
+
+```js
+panelPolicy: {
+  preferredAgents: 5,
+  maxAgents: 9,
+
+  escalation: {
+    type: "divergence",
+    extraAgents: 2
+  }
+}
+```
+
+也就是：
+
+```text
+先 5 人
+发现问题
+→ 再调用第 6、7 人
+```
+
+这比一上来 9 人便宜。
+
+---
+
+# Q8：人工中转席位到底是什么？
+
+## 裁决：**默认不要把它建模成 Seat。**
+
+这是一个非常容易建错的地方。
+
+你实际在做的是：
+
+```text
+用户
+ ↓
+外部 AI
+ ↓
+复制
+ ↓
+通辽会议
+```
+
+这里真正发生的是：
+
+> **External Message Import**
+
+而不是：
+
+> 一个“人工 AI”坐在会议桌上。
+
+---
+
+# 所以核心模型应该是 Message Source
+
+例如：
+
+```js
+{
+  senderType: "external",
+  sourceType: "human_relay",
+
+  relayBatchId: "relay_001",
+
+  externalProvider: "kimi",
+
+  originalAuthor: "kimi-web",
+
+  content: "...",
+
+  importedBy: "human",
+
+  importedAt: 177...
+}
+```
+
+---
+
+## 一个人可以一次导入多个回答
+
+例如：
+
+```text
+relayBatch_001
+
+回答1：KIMI
+回答2：千问
+回答3：元宝
+回答4：DeepSeek
+```
+
+系统解析成：
+
+```text
+message_101
+message_102
+message_103
+message_104
+```
+
+但是共用：
+
+```text
+relayBatchId
+```
+
+---
+
+# 如果必须让人工成为一个“席位”怎么办？
+
+可以有：
+
+```text
+providerType:
+"human_relay"
+```
+
+但它不应该实现普通：
+
+```text
+waitForResponse()
+```
+
+而是：
+
+```text
+awaitHumanInput()
+```
+
+也就是说它实际上是：
+
+> **Human Gate**
+
+不是普通 Agent。
+
+微软 Agent Framework 当前也把“等待外部输入”和 workflow 的 Request/Response、Human-in-the-loop 作为独立机制；这正说明人类交互更适合建模为工作流门，而不是假装成一个普通模型。([Microsoft Learn][3])
+
+---
+
+## 建议的数据结构
+
+```js
+{
+  type: "human_gate",
+
+  requestType: "import_external_responses",
+
+  minMessages: 1,
+
+  batchMode: true,
+
+  timeoutMs: null,
+
+  resumeOn: "manual_submit"
+}
+```
+
+---
+
+## 成本
+
+模型调用：
+
+```text
+0
+```
+
+token：
+
+```text
+0
+```
+
+唯一成本：
+
+```text
+人的等待时间
+```
+
+所以这是你的系统非常有价值的“低 Token 外部入口”。
+
+---
+
+## 什么时候不该用它
+
+反例：
+
+> 你已经拥有 ChatGPT Web Adapter，但为了“让 ChatGPT 参与会议”，还让人手工复制 ChatGPT。
+
+这就是明显倒退。
+
+人工中转应当是：
+
+```text
+没有自动接入
+```
+
+时的兜底入口。
+
+而不是主路径。
+
+---
+
+# Q9：从“聊文本”到“可运行软件”，最少要几个环节？
+
+## 裁决：你原来的 5 步少了两层
+
+你的：
+
+```text
+架构冻结
+→ 分头实现
+→ 集成
+→ 修复
+→ 交付
+```
+
+方向正确，但缺：
+
+```text
+验收标准
+产物所有权
+```
+
+最终我建议最低六层：
+
+```text
+① 需求 / 验收冻结
+② 架构 + 契约冻结
+③ 分工 + 文件所有权冻结
+④ 分头实现
+⑤ 集成 + 自动验证
+⑥ 修复 + 回归
+```
+
+---
+
+# ① 需求 / 验收冻结
+
+产出：
+
+```text
+Requirements
+AcceptanceTests
+NonGoals
+```
+
+不是：
+
+```text
+“我要一个很好用的软件”
+```
+
+而是：
+
+```text
+必须支持 X
+必须不支持 Y
+测试 Z 必须通过
+```
+
+---
+
+# ② 架构 + 契约冻结
+
+产出：
+
+```text
+Architecture
+FrozenContract
+```
+
+这一层回答：
+
+```text
+模块是什么？
+模块之间怎么连接？
+谁拥有什么接口？
+什么绝对不能改变？
+```
+
+---
+
+# ③ 分工 + 文件所有权冻结
+
+这一层非常重要。
+
+例如：
+
+```json
+{
+  "agentId": "agent-03",
+
+  "ownedPaths": [
+    "src/meeting/attachment/",
+    "tests/meeting/attachment/"
+  ]
+}
+```
+
+否则所谓“并行开发”最后会变成：
+
+```text
+9 个 AI
+一起修改
+meeting.js
+```
+
+然后互相覆盖。
+
+---
+
+# ④ 分头实现
+
+每个 AI 收：
+
+```text
+CONTRACT
++
+自己的 TASK
++
+自己的 ownedPaths
++
+自己的 AcceptanceTests
+```
+
+产物不要只是：
+
+```json
+{
+  "path": "...",
+  "content": "..."
+}
+```
+
+我建议改成：
+
+```json
+{
+  "artifactId": "art_001",
+
+  "kind": "patch",
+
+  "path": "src/meeting/attachment-bus.js",
+
+  "baseRevision": "abc123",
+
+  "contractVersion": "1.2",
+
+  "owner": "agent-03",
+
+  "patch": "...",
+
+  "tests": [
+    "attachment-all-ack"
+  ]
+}
+```
+
+### 为什么我反对单纯 `{path, content}`
+
+因为它允许：
+
+```text
+AI 整文件重写
+```
+
+很容易把其他人的改动一起覆盖。
+
+`patch + baseRevision` 可以让集成器知道：
+
+```text
+我是在什么版本上改的？
+```
+
+这比“把完整文件扔给最后一个 AI”安全得多。
+
+---
+
+# ⑤ 集成验证
+
+这里我要**直接推翻你草案 B 的一个地方**：
+
+你写的是：
+
+```text
+5 集成验证
+收敛类
+ALL
+```
+
+我认为这是错误的。
+
+代码集成时：
+
+> **不能把全部会议记录 `ALL` 塞给 AI。**
+
+因为那会让“集成”变成：
+
+```text
+阅读海量聊天记录
+→ 猜代码怎么拼
+```
+
+而真正的集成应该看：
+
+```text
+WORKSPACE
++
+CHANGESETS
++
+CONTRACT
++
+TEST_REPORT
+```
+
+所以这里应该增加两个切片：
+
+```text
+WORKSPACE
+TEST_REPORT
+```
+
+---
+
+## 集成器真正做的事情
+
+```text
+读取工作树
+ ↓
+应用 patch
+ ↓
+安装/检查依赖
+ ↓
+运行测试
+ ↓
+运行构建
+ ↓
+启动最小验证
+ ↓
+收集错误
+```
+
+这其中很多动作：
+
+```text
+不是 LLM 调用
+```
+
+而是：
+
+```text
+node --test
+npm test
+npm run build
+程序启动
+截图
+日志
+```
+
+因此：
+
+> **集成阶段应该尽可能用工具，而不是用 AI 聊。**
+
+---
+
+# ⑥ 修复 + 回归
+
+谁来修？
+
+## 默认规则：
+
+### 模块内部错误
+
+```text
+原模块作者修
+```
+
+例如：
+
+```text
+auth.js 出错
+→ Agent-03 修
+```
+
+---
+
+### 跨模块集成错误
+
+```text
+Integrator 修
+```
+
+例如：
+
+```text
+A 返回 userId
+B 却期待 userID
+```
+
+这是：
+
+```text
+integration glue
+```
+
+由集成器处理更合理。
+
+---
+
+### 架构错误
+
+如果发现：
+
+```text
+整个接口契约错了
+```
+
+不能让某个实现 AI偷偷改。
+
+必须：
+
+```text
+暂停
+→ 回到 Contract
+→ 架构师重新提案
+→ 红队复核
+→ 冻结新版本
+→ 继续
+```
+
+也就是：
+
+```text
+Contract v1.0
+ ↓
+发现结构性错误
+ ↓
+Contract v1.1
+```
+
+而不是：
+
+```text
+AI-07：
+我直接改接口吧……
+```
+
+---
+
+# “集成者”是否应该新增角色？
+
+## 是。
+
+但它不需要进入你原来的 15 个角色体系，至少第一阶段不用让它成为永久席位。
+
+定义一个：
+
+```text
+集成工程师
+```
+
+更合理。
+
+它的职责不是“写代码最多”，而是：
+
+```text
+读取真实工作区
+应用产物
+运行验证
+定位跨模块问题
+安排修复
+生成最终构建
+```
+
+---
+
+## 角色定义
+
+```text
+集成工程师
+
+职责：
+只负责把各模块产物合并到目标工作区，
+运行编译/测试/启动验证，
+区分模块内部错误与跨模块错误，
+输出 IntegrationReport。
+
+禁止：
+禁止自行改变冻结契约；
+禁止为了让测试通过而删除验收条件；
+禁止修改非自己负责的业务实现，除非属于明确的集成胶水层。
+
+格式：
+失败项 / 影响模块 / 根因分类 / 复现命令 / 修复责任人。
+```
+
+---
+
+# 集成工程师的成本
+
+一次完整集成：
+
+```text
+1 次 LLM 调用
+```
+
+但工具调用：
+
+```text
+node --test
+npm test
+build
+run
+```
+
+可以是：
+
+```text
+0 token LLM 成本
+```
+
+如果失败：
+
+```text
+N 个失败模块
+```
+
+再调用：
+
+```text
+N 次修复
+```
+
+所以：
+
+```text
+总成本
+≈
+实现调用数
++
+集成调用 1
++
+失败模块数
+```
+
+这非常可控。
+
+---
+
+# 最后：我会怎样修改你现有的 8 个模式
+
+你现在没有必要继续无限增加模式。
+
+我建议最终形成：
+
+```text
+基础模式
+──────────────────
+broadcast
+review
+assist
+iterate
+debate
+panel
+chairman
+divide
+
+新增高阶模式
+──────────────────
+tournament
+build
+```
+
+但下面真正新增的是“原语”。
+
+---
+
+# 新增原语
+
+```text
+CandidatePool
+Evaluation
+Selection
+Validation
+Retry
+Contract
+Artifact
+HumanGate
+Workspace
+TestReport
+```
+
+于是模式其实变成：
+
+```text
+broadcast
+    ↓
+CandidatePool
+
+review
+    ↓
+Material + Critique
+
+iterate
+    ↓
+Draft + Retry
+
+tournament
+    ↓
+CandidatePool
+    ↓
+Evaluation
+    ↓
+Selection
+    ↓
+Validation
+    ↓
+Retry
+
+build
+    ↓
+Contract
+    ↓
+TaskAssignment
+    ↓
+Artifact
+    ↓
+Workspace
+    ↓
+TestReport
+    ↓
+Repair
+```
+
+这个架构比“每种业务都再造一个新模式”稳得多。
+
+---
+
+# 最后给你的两个草案直接改成最终版
+
+## `tournament` 最终建议
+
+```text
+候选生成
+  ↓
+盲评排名
+  ↓
+Borda 聚合
+  ↓
+Top-K
+  ↓
+必要时 Pairwise
+  ↓
+选 Winner + Backup
+  ↓
+Winner 改进
+  ↓
+真实验收
+  ↓
+通过 → 交付
+失败 → 重新生成候选池 / 局部修正
+```
+
+核心字段：
+
+```js
+{
+  candidateCount,
+  blind,
+  randomizeOrder,
+  hideProviderIdentity,
+  evaluatorCount,
+
+  rankingMethod: "borda",
+
+  finalists: 2,
+
+  playoff: {
+    enabled: true,
+    topK: 3
+  },
+
+  validation: {
+    required: true,
+    mode: "human_or_automated"
+  },
+
+  retryPolicy: {
+    onFailure: "regenerate_pool"
+  },
+
+  maxCycles: 3,
+  maxCalls: 40
+}
+```
+
+### 这个模式最重要的变化
+
+不是：
+
+```text
+“多一个 AI 评选阶段”
+```
+
+而是：
+
+> **把 N 个候选从一次性文本，升级成有 ID、有生命周期、有评分、有验证状态的 `CandidatePool`。**
+
+---
+
+# `build` 最终建议
+
+你的草案 B 需要改成：
+
+```text
+① 需求澄清
+   ↓
+② 架构设计
+   ↓
+③ 契约冻结
+   ↓
+④ 文件所有权冻结
+   ↓
+⑤ 分头实现
+   ↓
+⑥ 产物进入工作区
+   ↓
+⑦ 集成工程师构建
+   ↓
+⑧ 自动测试
+   ↓
+⑨ 失败模块修复
+   ↓
+⑩ 回归测试
+   ↓
+⑪ 验收交付
+```
+
+而真正的核心数据对象变成：
+
+```text
+Requirement
+Architecture
+Contract
+Task
+Artifact
+WorkspaceRevision
+TestReport
+RepairRequest
+AcceptanceResult
+```
+
+---
+
+# 我认为你现在最应该新增的字段
+
+## 模式
+
+```js
+budget
+termination
+validation
+retryPolicy
+```
+
+你当前系统缺成本维度，这四个字段一补，`chairman`、`panel`、`tournament` 都可以被统一管住。
+
+---
+
+## 模式阶段
+
+```js
+stage.contextPolicy
+stage.inputArtifacts
+stage.outputArtifacts
+stage.maxCalls
+stage.timeoutMs
+stage.parallelism
+```
+
+这样：
+
+```text
+“这个阶段会花多少钱？”
+```
+
+终于能计算。
+
+---
+
+## 消息
+
+```js
+message.sourceType
+message.relayBatchId
+message.artifactRefs
+message.status
+message.round
+message.turn
+```
+
+这样人工中转、外部 AI、内部 AI 都能进入同一个消息总线。
+
+---
+
+## 产物
+
+```js
+artifactId
+kind
+path
+owner
+baseRevision
+contractVersion
+patch
+tests
+status
+```
+
+这会把你的系统从：
+
+> “AI 聊了一堆文本”
+
+正式推到：
+
+> **“AI 生产了一组可验证的软件变更。”**
+
+---
+
+# 最终架构图
+
+```text
+                     用户任务
+                        │
+                        ▼
+                ┌───────────────┐
+                │  Meeting Mode │
+                └───────┬───────┘
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+      broadcast      tournament      build
+          │             │             │
+          │        CandidatePool    Contract
+          │             │             │
+          │         Evaluation       Tasks
+          │             │             │
+          │         Selection       Ownership
+          │             │             │
+          │         Validation      Artifacts
+          │             │             │
+          │           Retry         Workspace
+          │                           │
+          │                        Testing
+          │                           │
+          └──────────┬────────────────┘
+                     ▼
+               Meeting Core
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+   WebAI Agent   API Agent   Human Gate
+        │            │            │
+        └────────────┼────────────┘
+                     ▼
+                Message Bus
+                     │
+                     ▼
+              MeetingModel
+```
+
+---
+
+# 最终裁决表
+
+| Q      | 裁决                                                                |
+| ------ | ----------------------------------------------------------------- |
+| **Q1** | **新建 `tournament` 高阶模式；底层只新增 Candidate/Select/Validate/Retry 原语** |
+| **Q2** | **盲评 + 随机顺序 + 隐藏模型身份 + 隐藏他人评分**                                   |
+| **Q3** | **强制排名+Borda 为主，Top-K 接近时 Pairwise，绝对分数只做辅助**                     |
+| **Q4** | **纯文本无法客观判断“够好”；必须加 Acceptance Gate，主观问题最终人工验收**                  |
+| **Q5** | **架构师起草 → 红队挑错 → 收敛角色冻结；冻结边界/不变量，不冻结内部算法**                        |
+| **Q6** | **新增 `CONTRACT`；内容=契约+本人任务+邻接接口+文件所有权+验收测试**                      |
+| **Q7** | **分歧驱动 > 分组归并 > 摘要压缩 > 硬限人数**                                     |
+| **Q8** | **默认建模成 External Message Import / Human Gate，不是假 AI Seat**        |
+| **Q9** | **需求→契约→所有权→实现→工作区→集成→测试→修复→回归→验收；集成者独立存在**                       |
+
+---
+
+## 最值得你马上改的，其实不是 `tournament`
+
+而是这三个基础设施：
+
+```text
+① CandidatePool
+② Artifact + WorkspaceRevision
+③ AcceptanceGate
+```
+
+这三个一旦建立起来：
+
+```text
+tournament
+```
+
+只是：
+
+```text
+CandidatePool + SelectionPolicy + RetryPolicy
+```
+
+而：
+
+```text
+build
+```
+
+只是：
+
+```text
+Contract + Artifact + Workspace + TestReport
+```
+
+你的模式系统就不会越做越乱，而会逐渐变成一个**有限原语组合器**。
+
+还有一个很重要的好处：以后就算把 Microsoft Agent Framework 接进来，也不必改你的 WebAI、文件、产物和验收层。MAF 当前的 Workflow 体系本身就支持 sequential/concurrent/group-chat/handoff/magentic、HITL 和 checkpoint；你只需要让它实现你的 `OrchestrationPort` 即可。([Microsoft Learn][4])
+
+下一步最值得直接落代码的是：**先冻结 `CandidatePool / SelectionPolicy / AcceptanceGate / Artifact / Contract` 这 5 个数据结构和 JSON Schema，再去改 `modes.js`。** 这样不会出现“先写两个新模式，写到一半才发现底层对象根本不够用”的返工。
+
+[1]: https://arxiv.org/abs/2406.07791?utm_source=chatgpt.com "Judging the Judges: A Systematic Study of Position Bias in LLM-as-a-Judge"
+[2]: https://aclanthology.org/2021.acl-long.179/?utm_source=chatgpt.com "Better than Average: Paired Evaluation of NLP systems - ACL Anthology"
+[3]: https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop?utm_source=chatgpt.com "Microsoft Agent Framework Workflows - Human-in-the-loop (HITL) | Microsoft Learn"
+[4]: https://learn.microsoft.com/en-us/agent-framework/workflows/?utm_source=chatgpt.com "Workflow capabilities | Microsoft Learn"

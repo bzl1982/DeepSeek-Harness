@@ -1,0 +1,2665 @@
+我把微软这一套重新查了一遍，也把它和你现在的 **DeepSeek Harness + 通辽会议 + 9 个网页版 AI** 的实际形态对照过了。
+
+我的结论很明确：
+
+> **你真正应该接入的不是某一个微软项目，而是把微软现在这条技术链拆开利用：**
+>
+> **AutoGen 的 GroupChat 思想 → Microsoft Agent Framework 作为编排内核 → Magentic-UI/MagenticLite 借鉴浏览器操作思想 → 你自己的 Electron WebAI Adapter 负责控制 9 个网页版 AI。**
+>
+> **不要试图把 9 个网页版 AI“改造成 API”，而是把每一个网页 AI 包装成一个“Agent”。**
+
+这样才真正符合你现在这个“通辽会议”的形态。
+
+下面这份方案，我是按“以后真要让 AI 助理照着代码落地”的标准来设计的。
+
+# 通辽会议 × Microsoft Agent Framework
+
+## 9 个网页版 AI 多人会议系统落地接入方案
+
+**版本：2026-09-22**
+
+---
+
+# 一、先把微软这个项目认准
+
+你听说的“微软多人 AI 对话交流项目”，核心上就是 **Microsoft AutoGen**。
+
+AutoGen 最早就是微软研究团队做的多智能体协作框架，核心思想不是“调用 9 个 API”，而是：
+
+> 建立多个 Agent，让它们按照一定的会话拓扑互相发送消息，共同完成一个任务。
+
+微软官方论文明确描述了 AutoGen 的核心能力就是“让多个 Agent 相互对话”，并可以组合 LLM、人工输入和工具。([微软][1])
+
+但是这里有一个非常重要的时间点：
+
+## 2026 年不要直接以旧 AutoGen 作为新项目基础
+
+微软现在官方 AutoGen 仓库已经明确写着：
+
+> **Starting a new project? Head to Microsoft Agent Framework for the latest multi-agent capabilities with long-term support.**
+
+也就是说：
+
+**AutoGen = 前身 / 思想来源**
+
+**Microsoft Agent Framework = 微软现在主推的新一代基础**
+
+([GitHub][2])
+
+目前 Microsoft Agent Framework 的 Python 项目版本已经是 **1.19.0**，Python 包标记为 Production/Stable，许可证为 MIT。([GitHub][3])
+
+所以你的项目应该采用：
+
+> **Microsoft Agent Framework，而不是从旧 AutoGen 代码开始。**
+
+---
+
+# 二、你对它“9 个 API”的理解，需要修正一下
+
+微软并没有设计一个：
+
+> “9 个 API → 9 个 AI → 互相聊天”
+
+这样的固定产品。
+
+“9”只是你通辽会议现在选择的参与人数。
+
+实际上 Agent Framework 可以：
+
+```text
+2 个 Agent
+5 个 Agent
+9 个 Agent
+20 个 Agent
+50 个 Agent
+```
+
+甚至 Agent 可以是：
+
+```text
+普通 LLM Agent
+远程 Agent
+本地 Agent
+工具 Agent
+自定义 Agent
+另一个 Agent Workflow
+```
+
+所以你的“9 个网页版 AI”完全可以被抽象成：
+
+```text
+Agent 01 = ChatGPT Web
+Agent 02 = Gemini Web
+Agent 03 = Claude Web
+Agent 04 = DeepSeek Web
+Agent 05 = Qwen Web
+Agent 06 = 豆包 Web
+Agent 07 = 元宝 Web
+Agent 08 = Grok Web
+Agent 09 = 其他 Web AI
+```
+
+它们在 **会议引擎看来全部都是 Agent**。
+
+真正的区别只是：
+
+```text
+API Agent
+    ↓
+HTTP API
+    ↓
+模型
+
+Web Agent
+    ↓
+浏览器页面
+    ↓
+网页输入框
+    ↓
+点击发送
+    ↓
+等待生成
+    ↓
+抓取回答
+```
+
+这就是我们要解决的问题。
+
+---
+
+# 三、微软现在实际上有三层东西，对你都很有价值
+
+可以把微软这套东西理解成三件工具。
+
+| 微软项目                       | 本质                        | 对通辽会议的用途              |
+| -------------------------- | ------------------------- | --------------------- |
+| AutoGen                    | 多 Agent 对话思想              | 借鉴 GroupChat          |
+| Microsoft Agent Framework  | 新一代 Agent / Workflow 编排内核 | **真正接入**              |
+| Magentic-UI / MagenticLite | AI 控制浏览器、文件、工具            | **借鉴 Web Agent 实现方式** |
+
+其中 Magentic-UI 是微软研究团队公开的开源研究原型，专门研究“人 + Agent + 浏览器”的交互。它可以浏览网页、执行代码、处理文件，并通过 MCP 扩展工具。([微软][4])
+
+而现在仓库里的 MagenticLite 已进一步采用：
+
+```text
+MagenticBrain
+      ↓
+负责计划 / 编排
+
+Fara
+      ↓
+负责浏览器操作
+
+Quicksand
+      ↓
+浏览器沙箱
+```
+
+它能够跨浏览器和本地文件系统执行任务。([GitHub][5])
+
+但是：
+
+## 千万别直接把 MagenticLite 当作你的通辽会议核心
+
+原因非常关键。
+
+它当前文档明确把：
+
+> **浏览器内上传本地文件**
+
+列为当前限制。
+
+也就是说，微软自己的浏览器 Agent 当前甚至不适合直接承担你“一个文件发给 9 个 AI”这个核心任务。([GitHub][6])
+
+所以正确做法是：
+
+> **抄它的架构思想，不抄它的完整实现。**
+
+---
+
+# 四、Microsoft Agent Framework 最关键的东西：GroupChat
+
+现在的 Agent Framework 已经提供：
+
+```text
+SequentialBuilder
+ConcurrentBuilder
+HandoffBuilder
+GroupChatBuilder
+MagenticBuilder
+```
+
+也就是说它已经不是简单的“聊天机器人 SDK”，而是一个多 Agent 工作流编排器。([GitHub][7])
+
+其中跟通辽会议最接近的是：
+
+```text
+GroupChatBuilder
+```
+
+微软官方示例已经直接演示：
+
+```text
+Expert
+   ↓
+Verifier
+   ↓
+Clarifier
+   ↓
+Skeptic
+   ↓
+Expert
+```
+
+并且可以定义谁先说、谁后说、什么时候结束。([GitHub][8])
+
+它还支持：
+
+```text
+Round Robin
+```
+
+也就是：
+
+```text
+AI1
+ ↓
+AI2
+ ↓
+AI3
+ ↓
+AI4
+ ↓
+AI5
+ ...
+```
+
+同时也支持由一个模型来决定：
+
+> 下一位应该是谁发言？
+
+也就是动态 Speaker Selection。([GitHub][9])
+
+---
+
+# 五、这恰好可以变成你的“通辽会议大脑”
+
+最终系统我建议设计成：
+
+```text
+                    ┌──────────────────────┐
+                    │     通辽会议 UI       │
+                    │   9 个 AI 同框显示     │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │  通辽会议 Controller  │
+                    │   Meeting Core        │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                 ┌─────────────────────────────┐
+                 │ Microsoft Agent Framework   │
+                 │                             │
+                 │ GroupChat / Concurrent      │
+                 │ Sequential / Handoff        │
+                 └─────────────┬───────────────┘
+                               │
+          ┌────────────────────┼────────────────────┐
+          │                    │                    │
+          ▼                    ▼                    ▼
+     WebAI Agent 1       WebAI Agent 2       WebAI Agent 3
+          │                    │                    │
+          ▼                    ▼                    ▼
+     Electron Page       Electron Page       Electron Page
+          │                    │                    │
+          ▼                    ▼                    ▼
+       ChatGPT               Gemini              Claude
+       
+                  ……一直到第 9 个……
+```
+
+但真正的关键在下面这一层。
+
+---
+
+# 六、最关键设计：把“网页版 AI”包装成 Agent
+
+这是整个项目能否成功的核心。
+
+我们不能要求：
+
+```text
+Microsoft Agent Framework
+        ↓
+调用 ChatGPT API
+```
+
+因为你的 ChatGPT 是网页版。
+
+所以我们自己做：
+
+```text
+WebUIAgent
+```
+
+它在 Agent Framework 看起来仍然是一个普通 Agent。
+
+但是：
+
+```text
+WebUIAgent.run()
+```
+
+内部不是：
+
+```python
+client.chat.completions.create()
+```
+
+而是：
+
+```text
+打开对应 AI Web 页面
+        ↓
+找到输入框
+        ↓
+输入会议消息
+        ↓
+必要时上传附件
+        ↓
+点击发送
+        ↓
+等待 AI 输出
+        ↓
+检测回答完成
+        ↓
+提取最终回答
+        ↓
+返回给 Agent Framework
+```
+
+这一步微软 Agent Framework 本身其实已经给我们留出了正式扩展接口。
+
+官方现在明确支持：
+
+> 自定义 Agent，只需要实现统一的 Agent Run 接口。
+
+甚至可以直接实现协议，而不一定继承微软的基类。([GitHub][10])
+
+所以我们可以做：
+
+```python
+class WebAIAgent(BaseAgent):
+    ...
+```
+
+或者直接实现：
+
+```python
+SupportsAgentRun
+```
+
+---
+
+# 七、这意味着：网页版 AI 根本不需要 API
+
+这是我认为这个方案最漂亮的地方。
+
+比如：
+
+```text
+ChatGPT Web
+```
+
+在通辽会议里：
+
+```text
+WebAIAgent(
+    id="chatgpt",
+    name="ChatGPT",
+    description="OpenAI 网页版 AI"
+)
+```
+
+Gemini：
+
+```text
+WebAIAgent(
+    id="gemini",
+    name="Gemini",
+    description="Google Gemini 网页版 AI"
+)
+```
+
+DeepSeek：
+
+```text
+WebAIAgent(
+    id="deepseek",
+    name="DeepSeek",
+    description="DeepSeek 网页版 AI"
+)
+```
+
+实际上：
+
+> **Microsoft Agent Framework 根本不知道它们背后是网页。**
+
+它只知道：
+
+```text
+Agent A
+Agent B
+Agent C
+Agent D
+...
+Agent I
+```
+
+这就是整个系统的解耦点。
+
+---
+
+# 八、9 个 WebAIAgent 后面必须再加一层：WebAI Adapter
+
+不能把网页选择器直接写进 Agent。
+
+一定要拆成：
+
+```text
+Agent Framework
+       ↓
+WebAI Agent
+       ↓
+WebAI Adapter
+       ↓
+Electron Browser
+```
+
+例如：
+
+```text
+WebAIAdapter
+```
+
+统一接口：
+
+```typescript
+interface WebAIAdapter {
+    id: string
+    name: string
+
+    isReady(): Promise<boolean>
+
+    sendText(text: string): Promise<void>
+
+    uploadFiles(files: Attachment[]): Promise<void>
+
+    waitForResponse(): Promise<WebAIResponse>
+
+    cancel(): Promise<void>
+
+    getStatus(): WebAIStatus
+}
+```
+
+然后：
+
+```text
+ChatGPTAdapter
+GeminiAdapter
+ClaudeAdapter
+DeepSeekAdapter
+QwenAdapter
+DoubaoAdapter
+YuanbaoAdapter
+GrokAdapter
+...
+```
+
+每个网站自己解决自己的 DOM。
+
+---
+
+# 九、为什么这比“让 AI 自己看网页乱点”更适合通辽会议
+
+微软 Magentic-UI 的浏览器 Agent 走的是：
+
+```text
+LLM
+ ↓
+理解页面
+ ↓
+决定动作
+ ↓
+浏览器
+```
+
+这很强，但并不适合你的“9 个固定聊天网站”。
+
+你的任务其实非常固定：
+
+```text
+输入框在哪里
+上传按钮在哪里
+发送按钮在哪里
+回答在哪里
+什么时候结束
+```
+
+所以不应该每次都让视觉模型猜。
+
+应该：
+
+## 第一层：确定性 DOM Driver
+
+比如：
+
+```text
+textarea
+contenteditable
+input[type=file]
+Send Button
+Stop Button
+Assistant Message
+```
+
+直接定位。
+
+速度快。
+
+稳定。
+
+成本几乎为零。
+
+---
+
+# 十、第二层才用浏览器视觉 Agent 做“故障恢复”
+
+例如某一天 Gemini 改版：
+
+```text
+原来的 textarea
+↓
+换成 div[contenteditable=true]
+```
+
+此时：
+
+```text
+CSS Selector 失效
+```
+
+系统不要直接报错。
+
+应该进入：
+
+```text
+WebAI Repair Mode
+```
+
+然后：
+
+```text
+DOM
+ +
+Accessibility Tree
+ +
+Screenshot
+```
+
+交给视觉/浏览器 Agent：
+
+```text
+“找出当前页面的输入框、发送按钮、文件上传控件、最后一条 AI 消息。”
+```
+
+得到：
+
+```json
+{
+  "composer": "...",
+  "sendButton": "...",
+  "fileInput": "...",
+  "assistantMessage": "..."
+}
+```
+
+再更新 Adapter 的临时运行状态。
+
+这其实正好借鉴 AutoGen/Magentic-UI 对网页浏览的设计。
+
+微软 AutoGen 的 WebSurfer 后来已经发展到使用 Playwright，并探索 Accessibility Tree、截图、网页控件定位等机制。([GitHub][11])
+
+所以这里可以形成：
+
+```text
+确定性 DOM
+    ↓
+失败
+    ↓
+AX Tree
+    ↓
+仍失败
+    ↓
+视觉 Browser Agent
+```
+
+而不是反过来。
+
+---
+
+# 十一、Electron 才应该拥有真正的浏览器控制权
+
+这是整个系统另外一个关键决定。
+
+不要让：
+
+```text
+Python Agent Framework
+```
+
+直接操作网页。
+
+应该让：
+
+```text
+Electron Main Process
+```
+
+管理所有 Web AI 页面。
+
+架构：
+
+```text
+                    Electron Main
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+        ▼                ▼                ▼
+     WebContents      WebContents      WebContents
+        │                │                │
+        ▼                ▼                ▼
+     ChatGPT          Gemini            Claude
+```
+
+而：
+
+```text
+Python Agent Framework
+```
+
+只负责：
+
+```text
+“让 ChatGPT 说这句话”
+“让 Gemini 说这句话”
+“把 Gemini 的回答返回给会议”
+```
+
+---
+
+# 十二、Electron 和网页之间建议使用 CDP / WebContents 控制层
+
+这一层可以利用 Chromium 的开发者协议能力。
+
+主要操作包括：
+
+```text
+DOM 查询
+DOM 获取
+Accessibility Tree
+JavaScript 执行
+输入文字
+点击按钮
+等待 DOM 变化
+设置 file input
+获取页面文本
+截图
+```
+
+尤其是文件上传：
+
+```text
+DOM.setFileInputFiles
+```
+
+这是一个非常值得采用的机制。
+
+不需要模拟：
+
+```text
+鼠标点上传
+ ↓
+Windows 文件选择器
+ ↓
+输入路径
+ ↓
+确定
+```
+
+而可以直接：
+
+```text
+<input type="file">
+        ↓
+CDP
+        ↓
+设置目标本地文件
+```
+
+这样可靠性会大幅提高。
+
+---
+
+# 十三、通辽会议的文件系统必须独立出来
+
+你现在最重要的问题之一就是：
+
+> 我拖一个文件到通辽会议输入框，为什么 9 个 AI 不稳定地收到？
+
+这个问题，我建议从根上改变思路。
+
+## 不要：
+
+```text
+用户拖文件
+   ↓
+9 个 AI 输入框各自处理
+```
+
+而要：
+
+```text
+用户拖文件
+       ↓
+Meeting Attachment Manager
+       ↓
+产生 attachmentId
+       ↓
+Meeting Message
+       ↓
+9 个 WebAI Adapter
+```
+
+也就是：
+
+```text
+一个文件
+=
+一份会议附件对象
+```
+
+例如：
+
+```json
+{
+  "attachmentId": "att_01",
+  "name": "咨询案.md",
+  "size": 28371,
+  "mime": "text/markdown",
+  "sha256": "...",
+  "localPath": "..."
+}
+```
+
+之后：
+
+```text
+ChatGPT Adapter → att_01
+Gemini Adapter   → att_01
+Claude Adapter   → att_01
+...
+```
+
+---
+
+# 十四、而且 DeepSeek Harness 自己已经有文件上传基础设施
+
+这点非常值得利用。
+
+当前 DSH 已经有：
+
+```text
+@deepseek-ai/dsh-client-file-upload
+```
+
+用于 Session 定位的浏览器文件上传，支持 Blob、字节流、ReadableStream、进度、取消等。([GitHub][12])
+
+所以通辽会议不要另造一个“超级文件上传系统”。
+
+应该：
+
+```text
+DSH File Upload
+       ↓
+Meeting Attachment Manager
+       ↓
+WebAI Fan-out
+```
+
+这样可以和 DSH 现有的文件能力保持一致。
+
+---
+
+# 十五、你目前“拖拽文件失败”的架构性解决办法
+
+我尤其建议注意这一点。
+
+现在错误设计很可能类似：
+
+```text
+Chat Input A
+   ↓
+drop
+
+Chat Input B
+   ↓
+drop
+
+Chat Input C
+   ↓
+drop
+```
+
+这在“9 个输入框”情况下非常容易乱。
+
+应该修改成：
+
+```text
+document
+  ↓
+Meeting Drop Controller
+  ↓
+Attachment Manager
+  ↓
+Meeting Core
+```
+
+也就是：
+
+> **拖拽只在会议层接受一次。**
+
+然后会议层决定：
+
+```text
+发送给哪几个 AI
+```
+
+而不是让 9 个 AI 自己抢这个 DropEvent。
+
+这对你目前“9 个网页版 AI 都能收到文件，但是偶尔接不到”的问题，实际上是最重要的结构性改进之一。
+
+---
+
+# 十六、会议消息也必须建立自己的标准格式
+
+不要让不同 AI 网页自己管理会议状态。
+
+建立：
+
+```typescript
+interface MeetingMessage {
+    id: string
+    meetingId: string
+
+    senderType: "user" | "agent" | "system"
+    senderId: string
+
+    content: string
+
+    attachments?: AttachmentRef[]
+
+    round: number
+    turn: number
+
+    timestamp: number
+}
+```
+
+例如：
+
+```json
+{
+  "id": "msg_1024",
+  "meetingId": "meeting_001",
+  "senderType": "user",
+  "senderId": "human",
+
+  "content": "请审查这份软件架构方案",
+
+  "attachments": [
+    {
+      "attachmentId": "att_01"
+    }
+  ],
+
+  "round": 1,
+  "turn": 0
+}
+```
+
+这样以后无论：
+
+```text
+刷新页面
+AI 崩掉
+Electron 重启
+某个 AI 掉线
+加入第 10 个 AI
+```
+
+会议状态仍然是独立存在的。
+
+---
+
+# 十七、然后让 Microsoft Agent Framework 管“谁说话”
+
+这里开始真正发挥微软框架的价值。
+
+例如：
+
+## 模式 A：9 人同时发言
+
+```text
+用户问题
+   ↓
+ConcurrentBuilder
+   ↓
+├── ChatGPT
+├── Gemini
+├── Claude
+├── DeepSeek
+├── Qwen
+├── 豆包
+├── 元宝
+├── Grok
+└── AI9
+```
+
+9 个 AI 并发回答。
+
+然后：
+
+```text
+9 个答案
+     ↓
+主持人 / 总结 Agent
+     ↓
+综合结果
+```
+
+Agent Framework 当前就提供 Concurrent Orchestration，用于 fan-out / fan-in。([GitHub][7])
+
+---
+
+# 十八、模式 B：真正的“通辽会议”
+
+例如：
+
+```text
+主持人
+   ↓
+ChatGPT
+   ↓
+Gemini
+   ↓
+Claude
+   ↓
+DeepSeek
+   ↓
+Qwen
+   ↓
+……
+```
+
+然后：
+
+```text
+9 个 AI 都发完
+       ↓
+主持人总结
+       ↓
+第二轮质疑
+       ↓
+第三轮补充
+       ↓
+最终结论
+```
+
+这就是：
+
+```text
+GroupChatBuilder
+```
+
+真正适合的地方。
+
+---
+
+# 十九、模式 C：动态“点名发言”
+
+未来可以做成真正像会议。
+
+比如：
+
+```text
+用户：
+请讨论为什么这个项目目前存在文件上传 Bug。
+```
+
+主持人大脑看到：
+
+```text
+已有：
+ChatGPT 发言
+Gemini 发言
+DeepSeek 发言
+```
+
+判断：
+
+```text
+下一位应该让 Claude 回应 DeepSeek
+```
+
+于是：
+
+```text
+Claude
+ ↑
+“我不同意 DeepSeek 的判断……”
+```
+
+再：
+
+```text
+下一位 → DeepSeek
+```
+
+这就是 Agent Framework 的动态 Group Chat。
+
+微软当前 GroupChatBuilder 就支持由函数或 Agent-based manager 决定下一位发言者。([GitHub][13])
+
+---
+
+# 二十、不要把“主持人”强行做成第 10 个网页 AI
+
+第一版我反而建议：
+
+```text
+9 个网页 AI
++
+1 个隐藏 Orchestrator
+```
+
+但隐藏 Orchestrator：
+
+**不需要额外开一个网页。**
+
+它可以直接使用：
+
+```text
+DeepSeek API
+OpenAI API
+Gemini API
+本地 Ollama
+其他 OpenAI-compatible API
+```
+
+或者以后接你 DSH 已经配置好的模型通道。
+
+作用只有：
+
+```text
+选谁发言
+决定何时停止
+总结会议
+检测重复观点
+生成下一轮问题
+```
+
+这样：
+
+```text
+视觉上仍然是 9 人会议
+```
+
+而不是变成：
+
+```text
+10 个 AI
+```
+
+---
+
+# 二十一、如果完全不想增加 API，也可以有无 API 模式
+
+例如：
+
+```text
+Round Robin
+```
+
+直接：
+
+```text
+1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9
+```
+
+或者：
+
+```text
+用户发言
+↓
+9 个 AI 同时发言
+↓
+按照固定顺序互相评论
+```
+
+完全不需要主持模型。
+
+所以应该给会议引擎设计：
+
+```text
+SpeakerStrategy
+```
+
+例如：
+
+```text
+round_robin
+llm_selector
+chairman
+random
+priority
+manual
+```
+
+将来更换规则完全不影响 Web AI Adapter。
+
+---
+
+# 二十二、Agent Framework 和 DSH 不应该互相吞掉
+
+这点非常重要。
+
+我不建议：
+
+```text
+把整个 DSH 改造成 Microsoft Agent Framework
+```
+
+这是大手术。
+
+正确的是：
+
+```text
+DeepSeek Harness
+        │
+        │ Plugin
+        ▼
+Tongliao Meeting
+        │
+        ├── Meeting Core
+        ├── WebAI Bridge
+        ├── Attachment Manager
+        ├── Meeting UI
+        │
+        ▼
+Microsoft Agent Framework
+        │
+        ▼
+WebAI Agents
+```
+
+也就是说：
+
+> **DSH 还是 DSH。**
+>
+> **微软 Framework 只是会议编排内核。**
+
+---
+
+# 二十三、具体代码目录建议
+
+如果你现在就在 DSH 源码里做，我建议最终形成类似：
+
+```text
+packages/
+│
+├── meeting-core/
+│
+├── meeting-ui/
+│
+├── meeting-webai/
+│
+├── meeting-attachment/
+│
+└── meeting-electron-bridge/
+│
+services/
+│
+└── tongliao-agent-framework/
+│
+    ├── agents/
+    │   ├── web_agent.py
+    │   ├── chatgpt.py
+    │   ├── gemini.py
+    │   └── ...
+    │
+    ├── orchestration/
+    │   ├── group_chat.py
+    │   ├── concurrent.py
+    │   └── sequential.py
+    │
+    ├── protocol/
+    │   └── messages.py
+    │
+    └── main.py
+```
+
+---
+
+# 二十四、Python 侧最核心代码可以非常简单
+
+概念上：
+
+```python
+from agent_framework import BaseAgent
+
+class WebAIAgent(BaseAgent):
+
+    def __init__(self, bridge, agent_id, name):
+        super().__init__(
+            name=name,
+            description=f"Web AI: {name}"
+        )
+
+        self.bridge = bridge
+        self.agent_id = agent_id
+
+    async def run(self, messages=None, **kwargs):
+
+        result = await self.bridge.request({
+            "type": "web_ai.send",
+            "agentId": self.agent_id,
+            "messages": messages
+        })
+
+        return result
+```
+
+重点是：
+
+> **Agent Framework 只负责“调用 Agent”。**
+
+真正的：
+
+```text
+网页
+输入框
+文件
+点击
+等待
+抓回答
+```
+
+全部由：
+
+```text
+bridge
+```
+
+完成。
+
+这正符合微软目前 Custom Agent 的设计方式。([GitHub][10])
+
+---
+
+# 二十五、GroupChat 这一层甚至已经接近现成代码
+
+概念上：
+
+```python
+from agent_framework.orchestrations import GroupChatBuilder
+
+agents = [
+    chatgpt_agent,
+    gemini_agent,
+    claude_agent,
+    deepseek_agent,
+    qwen_agent,
+    doubao_agent,
+    yuanbao_agent,
+    grok_agent,
+    ai9_agent,
+]
+
+workflow = (
+    GroupChatBuilder(
+        participants=agents,
+        selection_func=select_next_speaker,
+        intermediate_output_from=agents,
+    )
+    .build()
+)
+```
+
+这不是我们自己重新发明“9 人会议”。
+
+微软本身已经有这个抽象。([GitHub][14])
+
+---
+
+# 二十六、最好再做一个“会议模式引擎”
+
+你的 UI 里可以直接给：
+
+```text
+会议模式：
+
+○ 9 人并发
+○ 顺序讨论
+○ 自由辩论
+○ 主持人模式
+○ 专家 → 质疑 → 复核
+○ 一轮回答 + 最终总结
+```
+
+然后内部映射：
+
+```text
+9 人并发
+      → ConcurrentBuilder
+
+顺序讨论
+      → Sequential / GroupChat
+
+动态辩论
+      → GroupChatBuilder
+
+复杂任务
+      → MagenticBuilder
+```
+
+Agent Framework 当前就提供这些编排模式。([GitHub][15])
+
+---
+
+# 二十七、MagenticBuilder 在未来也有价值
+
+微软的 Magentic-One 是：
+
+```text
+Orchestrator
+     │
+     ├── WebSurfer
+     ├── FileSurfer
+     ├── Coder
+     └── ComputerTerminal
+```
+
+核心思想不是让所有 Agent 无脑聊天。
+
+而是：
+
+```text
+任务拆解
+ ↓
+分配任务
+ ↓
+收集结果
+ ↓
+检查进度
+ ↓
+重新规划
+```
+
+微软官方明确描述了这个 Orchestrator + 专业 Agent 的结构。([微软][16])
+
+所以通辽会议未来可以升级成：
+
+```text
+会议
+ ↓
+主持人发现：
+“这个问题需要代码验证”
+ ↓
+调用代码 Agent
+
+发现：
+“这个问题需要网页调查”
+ ↓
+调用 Web Agent
+
+发现：
+“这个问题需要读 PDF”
+ ↓
+调用 File Agent
+```
+
+这时候才真正开始从：
+
+> “9 个 AI 聊天”
+
+进化成：
+
+> **9 个 AI + Agent 工具协作平台。**
+
+---
+
+# 二十八、AG-UI 要不要接？
+
+微软现在还有：
+
+```text
+AG-UI
+```
+
+这是 Agent Framework 和 Web UI 之间的协议。
+
+当前支持：
+
+```text
+SSE Streaming
+状态同步
+Thread
+Tool Call
+Human-in-the-loop
+Workflow Event
+```
+
+微软现在已经提供：
+
+```text
+Agent Framework
+     ↓
+AG-UI
+     ↓
+React Web UI
+```
+
+的标准方案。([Microsoft Learn][17])
+
+但是：
+
+## 目前通辽会议不要立即接 AG-UI。
+
+因为：
+
+```text
+DSH 本身已经拥有自己的 UI
+DSH 本身已经拥有自己的 RPC
+DSH 本身已经拥有自己的 WebSocket / stream
+```
+
+当前 DSH 官方架构就是：
+
+```text
+Client
+ ↓
+API Gateway
+ ↓
+Host
+```
+
+并且 Electron 又已经有自己的桥接方式。([GitHub][18])
+
+所以如果现在：
+
+```text
+DSH
+ ↓
+AG-UI
+ ↓
+React
+```
+
+等于多插一层。
+
+### 第一阶段直接：
+
+```text
+MAF
+ ↓
+Meeting Event Bus
+ ↓
+DSH UI
+```
+
+就够了。
+
+以后你要把“通辽会议”单独变成一个独立 Web 产品，再接 AG-UI 非常合适。
+
+---
+
+# 二十九、A2A 也不要第一天就上
+
+Microsoft Agent Framework 还支持：
+
+```text
+A2A
+Agent-to-Agent
+```
+
+它可以把远程 Agent 当作标准 Agent 调用。([Microsoft Learn][19])
+
+理论上你甚至可以：
+
+```text
+ChatGPT Web Agent
+       ↓
+A2A
+
+Gemini Web Agent
+       ↓
+A2A
+
+Claude Web Agent
+       ↓
+A2A
+
+Microsoft Agent Framework
+```
+
+但是你的场景全部都是：
+
+```text
+同一台电脑
+同一个 Electron
+同一个通辽会议
+```
+
+所以没必要为了“标准”硬上 HTTP/A2A。
+
+---
+
+# 三十、你的第一版应该采用本地 IPC
+
+我更推荐：
+
+```text
+Electron Main
+       ↕
+JSON-RPC / IPC
+       ↕
+Python Agent Framework
+```
+
+而不是：
+
+```text
+Electron
+ ↕
+localhost:8000
+ ↕
+Python
+```
+
+特别是桌面版。
+
+因为：
+
+```text
+IPC / Named Pipe
+```
+
+可以避免：
+
+```text
+端口占用
+本地端口暴露
+防火墙
+CORS
+token
+localhost race
+```
+
+而 DSH 官方当前桌面实现本身也已经在使用 Electron、Host、IPC、WebSocket 等多层传输架构，因此这个方向与它当前结构非常匹配。([GitHub][20])
+
+---
+
+# 三十一、建议采用“双进程架构”
+
+## Electron / Node
+
+负责：
+
+```text
+网页
+浏览器
+WebContents
+CDP
+文件
+UI
+用户登录状态
+Cookie
+截图
+```
+
+## Python
+
+负责：
+
+```text
+Agent Framework
+GroupChat
+Concurrent
+Sequential
+Speaker Selection
+Termination
+Workflow State
+```
+
+也就是：
+
+```text
+┌─────────────────────────────┐
+│       DeepSeek Harness      │
+│        Electron / TS        │
+│                             │
+│  9 Web AI Browser Instances  │
+│  File Manager               │
+│  Meeting UI                 │
+└──────────────┬──────────────┘
+               │
+               │ IPC
+               ▼
+┌─────────────────────────────┐
+│ Microsoft Agent Framework   │
+│            Python           │
+│                             │
+│ GroupChatBuilder            │
+│ ConcurrentBuilder           │
+│ SequentialBuilder           │
+│ Speaker Manager             │
+└─────────────────────────────┘
+```
+
+这实际上是非常干净的边界。
+
+---
+
+# 三十二、为什么 Python 放在旁边，而不是强行放进 DSH Node
+
+因为当前微软 Agent Framework 官方核心实现主要是：
+
+```text
+Python
+.NET
+Go
+```
+
+而你的 DSH 核心生态是：
+
+```text
+Node
+TypeScript
+React
+Cordis
+Electron
+```
+
+所以没必要硬把两个生态混成一个运行时。
+
+正确的工程思想是：
+
+```text
+Node = 浏览器 + 产品
+Python = 多 Agent 编排
+```
+
+通过明确协议连接。
+
+---
+
+# 三十三、这个协议必须设计得非常简单
+
+例如：
+
+```json
+{
+  "id": "req_1024",
+  "type": "meeting.agent.run",
+  "agentId": "gemini",
+  "text": "请审查上一位专家的观点",
+  "attachments": [
+    {
+      "id": "att_01"
+    }
+  ]
+}
+```
+
+返回：
+
+```json
+{
+  "id": "req_1024",
+  "type": "meeting.agent.result",
+  "agentId": "gemini",
+  "status": "completed",
+  "text": "我认为上一位专家的结论存在两个问题……"
+}
+```
+
+流式：
+
+```json
+{
+  "type": "meeting.agent.delta",
+  "agentId": "gemini",
+  "delta": "我认为"
+}
+```
+
+最终：
+
+```json
+{
+  "type": "meeting.agent.completed",
+  "agentId": "gemini"
+}
+```
+
+这样以后甚至可以不用 Agent Framework。
+
+换框架也不会影响 Web AI。
+
+---
+
+# 三十四、必须给每个 Web AI 建立状态机
+
+这是你现在稳定性最缺的一个东西。
+
+每个 AI：
+
+```text
+OFFLINE
+   ↓
+LOADING
+   ↓
+LOGIN_REQUIRED
+   ↓
+READY
+   ↓
+UPLOADING
+   ↓
+SENDING
+   ↓
+THINKING
+   ↓
+STREAMING
+   ↓
+COMPLETED
+```
+
+异常：
+
+```text
+NETWORK_ERROR
+RATE_LIMIT
+CAPTCHA_REQUIRED
+LOGIN_EXPIRED
+UPLOAD_FAILED
+DOM_CHANGED
+UNKNOWN_ERROR
+```
+
+UI 就可以显示：
+
+```text
+🟢 Gemini    已完成
+🟢 Claude    已完成
+🟡 DeepSeek  正在生成
+🟡 Qwen      上传文件
+🔴 Grok      登录失效
+⚪ AI9       未连接
+```
+
+而不是现在简单：
+
+```text
+加载中……
+```
+
+---
+
+# 三十五、尤其要做“完成检测器”
+
+网页版 AI 最大的问题之一就是：
+
+> 怎么知道它真的回答结束了？
+
+不能简单：
+
+```text
+sleep(5秒)
+```
+
+应该多信号联合：
+
+```text
+A. Stop generating 按钮消失
+B. Send 按钮恢复
+C. assistant DOM 不再变化
+D. MutationObserver 连续 N ms 没变化
+E. 页面状态标志恢复
+F. 网络请求流结束
+```
+
+满足多个条件才：
+
+```text
+COMPLETED
+```
+
+这会直接决定系统稳定性。
+
+---
+
+# 三十六、网页版 AI Adapter 必须配置化
+
+不要把 9 个 AI 的 Selector 全写死在代码里。
+
+应该：
+
+```text
+webai-profiles/
+    chatgpt.yaml
+    gemini.yaml
+    claude.yaml
+    deepseek.yaml
+    qwen.yaml
+    doubao.yaml
+    yuanbao.yaml
+    grok.yaml
+```
+
+比如：
+
+```yaml
+id: gemini
+
+composer:
+  selectors:
+    - textarea
+    - "[contenteditable='true']"
+
+send:
+  selectors:
+    - "button[aria-label*='Send']"
+
+file:
+  selectors:
+    - "input[type='file']"
+
+assistant:
+  selectors:
+    - ".model-response"
+
+completion:
+  stopButton:
+    - "button[aria-label*='Stop']"
+```
+
+以后网页改版：
+
+```text
+改 YAML
+```
+
+而不是：
+
+```text
+重新改整个会议系统
+```
+
+---
+
+# 三十七、再加一层“网站适配能力探测”
+
+第一次打开一个 AI：
+
+```text
+检测：
+
+✓ 输入框
+✓ Send
+✓ File Upload
+✓ Assistant Message
+✓ Streaming
+✓ Stop
+```
+
+结果：
+
+```json
+{
+  "provider": "gemini",
+  "composer": true,
+  "send": true,
+  "upload": true,
+  "response": true,
+  "stream": true
+}
+```
+
+那么：
+
+```text
+Gemini
+🟢 Ready
+```
+
+否则：
+
+```text
+Gemini
+🟡 Repair Required
+```
+
+这比等到开会的时候才发现：
+
+> “这个 AI 怎么点不动？”
+
+强得多。
+
+---
+
+# 三十八、用户登录状态应该完全留在 Electron 浏览器里
+
+这是另一个重要原则：
+
+```text
+Python
+```
+
+绝对不要拿：
+
+```text
+Cookie
+Session Token
+浏览器密码
+```
+
+出来。
+
+Python 只知道：
+
+```text
+发送文字
+上传附件
+获得回答
+```
+
+Electron：
+
+```text
+Cookie
+Login
+Session
+Browser Data
+```
+
+完全自己拥有。
+
+这样即使：
+
+```text
+Python Agent Framework
+```
+
+崩掉：
+
+```text
+9 个网站登录状态
+```
+
+仍然可以保留。
+
+---
+
+# 三十九、验证码 / CAPTCHA 不要自动破解
+
+这里应该明确设计：
+
+```text
+CAPTCHA_REQUIRED
+```
+
+状态。
+
+比如：
+
+```text
+Gemini
+⚠️ 需要人工验证
+```
+
+用户手动完成。
+
+然后：
+
+```text
+点击“继续会议”
+```
+
+Workflow resume。
+
+这甚至可以直接利用 Agent Framework 的 human-in-the-loop / request-response 思路。当前 Workflow 支持暂停等待外部输入，再恢复执行。([Microsoft Learn][21])
+
+---
+
+# 四十、通辽会议真正应该做到的是“工作流暂停/恢复”
+
+比如：
+
+```text
+AI1
+ ↓
+AI2
+ ↓
+AI3
+ ↓
+AI4
+ ↓
+Gemini CAPTCHA
+```
+
+会议状态：
+
+```text
+WAITING_FOR_HUMAN
+```
+
+用户：
+
+```text
+完成验证
+```
+
+然后：
+
+```text
+RESUME
+ ↓
+AI4
+ ↓
+AI5
+ ↓
+……
+```
+
+不是整场会议报废。
+
+---
+
+# 四十一、最终的通辽会议应该形成这样一套完整架构
+
+```text
+                    USER
+                     │
+                     ▼
+              ┌──────────────┐
+              │ Meeting UI   │
+              └──────┬───────┘
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+    User Messages        Attachments
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+            ┌──────────────────┐
+            │  Meeting Core    │
+            │  State Machine   │
+            └────────┬─────────┘
+                     │
+                     ▼
+       ┌────────────────────────────┐
+       │ Microsoft Agent Framework │
+       │                            │
+       │ Concurrent                │
+       │ GroupChat                 │
+       │ Sequential                │
+       │ Speaker Selection         │
+       └────────────┬───────────────┘
+                    │
+       ┌────────────┼────────────┐
+       │            │            │
+       ▼            ▼            ▼
+   WebAIAgent   WebAIAgent   WebAIAgent
+       │            │            │
+       ▼            ▼            ▼
+   Adapter 1     Adapter 2     Adapter 3
+       │            │            │
+       ▼            ▼            ▼
+ Electron WebContents / Browser Views
+       │            │            │
+       ▼            ▼            ▼
+    ChatGPT       Gemini       Claude
+
+             …… 9 个 AI ……
+```
+
+---
+
+# 四十二、第一阶段千万不要直接上“九 AI 自由辩论”
+
+建议按下面顺序做。
+
+## Phase 0：先把会议核心从网页里剥出来
+
+先完成：
+
+```text
+Meeting
+MeetingMessage
+Attachment
+Turn
+Round
+SpeakerStrategy
+MeetingState
+```
+
+完全不碰微软。
+
+目标：
+
+```text
+9 个假 Agent
+ ↓
+通辽会议
+```
+
+先跑通。
+
+---
+
+## Phase 1：只接一个网页版 AI
+
+只做：
+
+```text
+Gemini / ChatGPT / DeepSeek
+```
+
+选一个作为第一个 Driver。
+
+做到：
+
+```text
+sendText()
+uploadFile()
+waitResponse()
+cancel()
+status()
+```
+
+单独通过测试。
+
+---
+
+## Phase 2：接满 3 个
+
+```text
+AI1
+AI2
+AI3
+```
+
+测试：
+
+```text
+同时发送
+同时文件
+同时返回
+一个失败
+一个掉线
+一个重新登录
+```
+
+---
+
+## Phase 3：接入 Microsoft Agent Framework
+
+此时：
+
+```text
+WebAIAgent x 3
+     ↓
+ConcurrentBuilder
+```
+
+然后：
+
+```text
+GroupChatBuilder
+```
+
+把微软的会议调度跑起来。
+
+---
+
+## Phase 4：扩展到 9 个
+
+```text
+1 → 9
+```
+
+做：
+
+```text
+全员并发
+顺序讨论
+中途停止
+恢复
+单 AI 失败
+文件失败
+网页刷新
+```
+
+---
+
+## Phase 5：真正做“主持人”
+
+增加：
+
+```text
+Speaker Manager
+```
+
+支持：
+
+```text
+顺序
+动态点名
+主持人
+质疑
+复核
+总结
+```
+
+---
+
+## Phase 6：最后才做视觉 Agent 自动修复
+
+也就是：
+
+```text
+DOM Driver
+   ↓
+失败
+   ↓
+AX Tree
+   ↓
+失败
+   ↓
+Vision Agent
+```
+
+这是锦上添花，不是第一版基础设施。
+
+---
+
+# 四十三、第一版的技术栈我建议锁死为
+
+```text
+前端：
+React + TypeScript
+```
+
+```text
+宿主：
+Electron
+```
+
+```text
+Web AI 操作：
+Electron WebContents + CDP
+```
+
+```text
+会议内核：
+TypeScript Meeting Core
+```
+
+```text
+Agent 编排：
+Microsoft Agent Framework / Python
+```
+
+```text
+Sidecar：
+Python 3.12+
+```
+
+```text
+Node ↔ Python：
+JSON-RPC / IPC / Named Pipe
+```
+
+```text
+文件：
+DSH Attachment / File Upload
+```
+
+```text
+未来：
+AG-UI
+A2A
+MCP
+```
+
+---
+
+# 四十四、有一个非常重要的取舍：不要让 Microsoft Framework 管浏览器
+
+最干净的职责边界是：
+
+```text
+Microsoft Agent Framework
+=
+“谁做什么”
+```
+
+而：
+
+```text
+Electron WebAI Bridge
+=
+“怎么操作网页”
+```
+
+千万不要变成：
+
+```text
+Microsoft Agent Framework
+        +
+Playwright
+        +
+Electron
+        +
+DSH
+        +
+页面 DOM
+```
+
+全搅在一起。
+
+否则以后一个 Gemini 页面改版：
+
+```text
+页面改一个 selector
+```
+
+结果整个：
+
+```text
+Agent Framework
+```
+
+都要改。
+
+这是架构灾难。
+
+---
+
+# 四十五、所以这个项目的真正核心不是“微软 GroupChat”
+
+真正核心是：
+
+## WebAI Agent Adapter
+
+微软只是帮助我们解决：
+
+```text
+调度
+编排
+状态
+并发
+发言顺序
+暂停
+恢复
+终止
+```
+
+而你自己真正需要解决的是：
+
+```text
+网页 AI → Agent
+```
+
+只要这一层解决：
+
+以后不仅 9 个。
+
+可以：
+
+```text
+9 个
+12 个
+20 个
+30 个
+```
+
+甚至：
+
+```text
+网页 AI
+API AI
+本地 AI
+MCP Agent
+A2A Agent
+```
+
+全部混在同一个会议里。
+
+---
+
+# 四十六、最终会得到一个很有意思的结构
+
+例如：
+
+```text
+通辽会议
+
+参与者：
+
+ChatGPT Web
+Gemini Web
+Claude Web
+DeepSeek Web
+Qwen Web
+豆包 Web
+元宝 Web
+Grok Web
+AI9 Web
+
+隐藏角色：
+
+Meeting Orchestrator
+```
+
+然后用户说：
+
+> “分析这个 20 万字项目设计。”
+
+系统：
+
+```text
+附件
+ ↓
+9 个 AI 同步获得文件
+ ↓
+第一轮独立分析
+ ↓
+Meeting Core 收集
+ ↓
+Orchestrator
+ ↓
+找出争议点
+ ↓
+第二轮：
+点名 ChatGPT 回应 Gemini
+
+ ↓
+第三轮：
+点名 Claude 验证
+
+ ↓
+第四轮：
+DeepSeek 反驳
+
+ ↓
+第五轮：
+Qwen 总结
+
+ ↓
+Final Synthesizer
+ ↓
+最终会议结论
+```
+
+这已经不是简单的“9 个网页聊天框”。
+
+而是：
+
+> **一个建立在网页 AI 之上的多智能体会议操作系统。**
+
+---
+
+# 四十七、微软技术链在这里的正确位置
+
+最后把它压缩成一张图：
+
+```text
+          Microsoft AutoGen
+                 │
+                 │ 思想来源
+                 ▼
+      Microsoft Agent Framework
+                 │
+          Multi-Agent Engine
+                 │
+        ┌────────┼────────┐
+        │        │        │
+   Concurrent  GroupChat Sequential
+        │        │        │
+        └────────┼────────┘
+                 ▼
+          Tongliao Meeting
+                 │
+                 ▼
+          WebAIAgent Layer
+                 │
+                 ▼
+        Electron Browser Bridge
+                 │
+       ┌─────────┼─────────┐
+       ▼         ▼         ▼
+    ChatGPT    Gemini    Claude
+       │
+       ……9 个网页版 AI……
+```
+
+另外：
+
+```text
+Magentic-UI / MagenticLite
+```
+
+只负责给我们提供：
+
+```text
+Browser Agent
+AX Tree
+Screenshot
+Human-in-the-loop
+文件/网页操作思想
+```
+
+而不是直接成为通辽会议的主框架。([微软][22])
+
+---
+
+# 四十八、我给这个方案的最终技术裁决
+
+### 应该采用
+
+**Microsoft Agent Framework + 自研 WebAI Adapter + Electron Browser Bridge + DSH Meeting Plugin**
+
+### 不应该采用
+
+**直接把旧 AutoGen 嵌进去**
+
+因为微软已经把新的发展方向转向 Agent Framework。([Microsoft Learn][23])
+
+### 不应该采用
+
+**直接把 MagenticLite 当通辽会议底座**
+
+因为其当前浏览器文件上传存在明确限制。([GitHub][6])
+
+### 第一阶段不应该采用
+
+**A2A**
+
+因为所有 Agent 都在本机，没有必要增加网络协议层。
+
+### 第一阶段也不应该采用
+
+**AG-UI**
+
+因为 DSH 自己已有成熟的 Web/Electron 通信基础；AG-UI 更适合作为以后独立 Web 客户端的标准接口。微软目前将 AG-UI 定位为 Agent ↔ Web Client 的标准化流式/状态协议，而且当前仍处于 Preview。([Microsoft Learn][17])
+
+---
+
+# 四十九、最重要的一句话
+
+**不要把“9 个网页版 AI”强行变成 9 个 API。**
+
+应该反过来：
+
+> **把 9 个网页版 AI 包装成 9 个 Agent，让 Microsoft Agent Framework 负责“思想和会议调度”，让 Electron 负责“手和眼睛”。**
+
+这样你的：
+
+```text
+通辽会议
+```
+
+就会从现在的：
+
+```text
+9 个网页 AI 同框
+```
+
+真正升级成：
+
+```text
+9 个 Web Agent
+        +
+多 Agent Orchestrator
+        +
+统一文件总线
+        +
+会议状态机
+        +
+动态 Speaker Selection
+        +
+Human-in-the-loop
+```
+
+而且这个架构和 DeepSeek Harness 当前“Everything is a Plugin”的方向并不冲突；DSH 官方本身就采用插件化 Web Client、Host、RPC 和文件上传等分层。([GitHub][24])
+
+---
+
+## 官方资料入口
+
+微软 AutoGen：
+[Microsoft AutoGen 官方仓库](https://github.com/microsoft/autogen?utm_source=chatgpt.com)
+
+Microsoft Agent Framework：
+[Microsoft Agent Framework 官方仓库](https://github.com/microsoft/agent-framework?utm_source=chatgpt.com)
+
+Magentic-UI / MagenticLite：
+[Microsoft Magentic-UI 官方仓库](https://github.com/microsoft/magentic-ui?utm_source=chatgpt.com)
+
+Agent Framework 的 Group Chat：
+[Group Chat Orchestration 示例](https://github.com/microsoft/agent-framework/tree/main/python/samples/03-workflows/orchestrations?utm_source=chatgpt.com)
+
+DeepSeek Harness：
+[DeepSeek Harness 官方仓库](https://github.com/deepseek-ai/deepseek-harness?utm_source=chatgpt.com)
+
+下一步最值得做的不是立刻写代码，而是**把你当前“通辽会议”的真实 Electron/网页 AI 架构和这个方案对齐一次**：特别是 9 个网页是怎么创建的、是 `WebContentsView` / `BrowserView` / iframe / 独立窗口中的哪一种，以及现在文件拖拽到 9 个 AI 的代码链路。把这部分对齐后，就可以直接拆成具体的插件目录、IPC 协议和第一阶段代码改造清单。
+
+[1]: https://www.microsoft.com/en-us/research/publication/autogen-enabling-next-gen-llm-applications-via-multi-agent-conversation-framework/?lang=zh-cn&utm_source=chatgpt.com "AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation - Microsoft Research"
+[2]: https://github.com/microsoft/autogen?utm_source=chatgpt.com "GitHub - microsoft/autogen: A programming framework for agentic AI · GitHub"
+[3]: https://github.com/microsoft/agent-framework/blob/main/python/pyproject.toml?utm_source=chatgpt.com "agent-framework/python/pyproject.toml at main · microsoft/agent-framework · GitHub"
+[4]: https://www.microsoft.com/en-us/research/publication/magentic-ui-report/ "Magentic-UI: Towards Human-in-the-loop Agentic Systems - Microsoft Research"
+[5]: https://github.com/microsoft/magentic-ui/blob/main/README.md "magentic-ui/README.md at main · microsoft/magentic-ui · GitHub"
+[6]: https://github.com/microsoft/magentic-ui/blob/main/docs/limitations.md?utm_source=chatgpt.com "magentic-ui/docs/limitations.md at main · microsoft/magentic-ui · GitHub"
+[7]: https://github.com/microsoft/agent-framework/blob/main/python/samples/03-workflows/orchestrations/README.md?utm_source=chatgpt.com "agent-framework/python/samples/03-workflows/orchestrations/README.md at main · microsoft/agent-framework · GitHub"
+[8]: https://github.com/microsoft/agent-framework/blob/main/python/samples/03-workflows/orchestrations/group_chat_simple_selector.py?utm_source=chatgpt.com "agent-framework/python/samples/03-workflows/orchestrations/group_chat_simple_selector.py at main · microsoft/agent-framework · GitHub"
+[9]: https://github.com/microsoft/autogen/blob/main/python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_selector_group_chat.py?utm_source=chatgpt.com "autogen/python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_selector_group_chat.py at main · microsoft/autogen · GitHub"
+[10]: https://github.com/microsoft/agent-framework/blob/main/python/packages/core/agent_framework/_agents.py?utm_source=chatgpt.com "agent-framework/python/packages/core/agent_framework/_agents.py at main · microsoft/agent-framework · GitHub"
+[11]: https://github.com/microsoft/autogen/issues/2017?utm_source=chatgpt.com "[Roadmap] Web Browsing · Issue #2017 · microsoft/autogen · GitHub"
+[12]: https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/file-upload/README.zh.md?utm_source=chatgpt.com "deepseek-harness/packages/client/file-upload/README.zh.md at master · deepseek-ai/deepseek-harness · GitHub"
+[13]: https://github.com/microsoft/agent-framework/blob/main/python/samples/03-workflows/orchestrations/group_chat_agent_manager.py?utm_source=chatgpt.com "agent-framework/python/samples/03-workflows/orchestrations/group_chat_agent_manager.py at main · microsoft/agent-framework · GitHub"
+[14]: https://github.com/microsoft/agent-framework/blob/main/python/packages/orchestrations/README.md?utm_source=chatgpt.com "agent-framework/python/packages/orchestrations/README.md at main · microsoft/agent-framework · GitHub"
+[15]: https://github.com/microsoft/agent-framework/blob/main/python/packages/core/README.md?utm_source=chatgpt.com "agent-framework/python/packages/core/README.md at main · microsoft/agent-framework · GitHub"
+[16]: https://www.microsoft.com/en-us/research/articles/magentic-one-a-generalist-multi-agent-system-for-solving-complex-tasks/?lang=ko-kr&utm_source=chatgpt.com "Magentic-One: A Generalist Multi-Agent System for Solving Complex Tasks - Microsoft Research"
+[17]: https://learn.microsoft.com/en-us/agent-framework/integrations/ag-ui/?utm_source=chatgpt.com "AG-UI Integration with Agent Framework | Microsoft Learn"
+[18]: https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/web-client.md?utm_source=chatgpt.com "deepseek-harness/docs/subsystems/web-client.md at master · deepseek-ai/deepseek-harness · GitHub"
+[19]: https://learn.microsoft.com/en-us/agent-framework/agents/providers/agent-to-agent?utm_source=chatgpt.com "A2A agent service | Microsoft Learn"
+[20]: https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md?utm_source=chatgpt.com "deepseek-harness/apps/desktop/README.md at master · deepseek-ai/deepseek-harness · GitHub"
+[21]: https://learn.microsoft.com/en-us/agent-framework/workflows/?utm_source=chatgpt.com "Workflow capabilities | Microsoft Learn"
+[22]: https://www.microsoft.com/en-us/research/publication/magentic-ui-report/?utm_source=chatgpt.com "Magentic-UI: Towards Human-in-the-loop Agentic Systems - Microsoft Research"
+[23]: https://learn.microsoft.com/en-us/agent-framework/migration-guide/from-autogen/?utm_source=chatgpt.com "AutoGen to Microsoft Agent Framework Migration Guide | Microsoft Learn"
+[24]: https://github.com/deepseek-ai/deepseek-harness/?utm_source=chatgpt.com "GitHub - deepseek-ai/deepseek-harness: DeepSeek Harness: Everything is a Plugin. · GitHub"

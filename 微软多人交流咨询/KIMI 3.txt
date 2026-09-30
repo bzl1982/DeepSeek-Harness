@@ -1,0 +1,251 @@
+数据到手，三个开放问题里"上下文容量"现在可以用实测数据回答（注意一个关键区分：**产品上下文 ≠ API 上下文**——ChatGPT 网页版按套餐只有 16K–128K，Claude 网页版 200K，Gemini 网页版免费档只有 32K ；且 Claude 按 token 加权计费，长对话第 30 条消息的配额消耗是第 1 条的 5–10 倍 ——**这条直接改变重置策略的经济账**）。
+
+以下是我的方案 v3。定位变化：v1 是咨询、v2 是修正、**v3 是施工单**——每一节都对应你项目里的具体文件和具体改法。
+
+---
+
+# 通辽会议 · 方案 v3：从共识到施工单
+
+## 〇、先对齐：v3 相对 v2 的增量
+
+| 变化 | 内容 |
+|---|---|
+| 基线变了 | `meeting-lab` 已存在且 68/68 通过，`requireContent` + 每轮 `arm()` 两个修复已带回归测试——v3 **不再论证完成检测，只规划怎么把它接进客户端** |
+| 分歧收敛 | 我 v2 提的"Hy4 注入公式 + KIMI 触发条件"被评审采纳——v3 把它落成具体阈值和代码 |
+| 角色变了 | v3 最大的新增：**盲点 A（同质化坍塌）的工程化解法**。这是 9 宫格产品价值的核心，不是锦上添花 |
+| 数据补全 | 上下文容量、限流配额现在用 2026 年实测数据，不再拍脑袋 |
+| 文件根因 | 按 §七实证链修正施工顺序：**P0 补 localPath → P1 检查 ok + ACK 门闩 → P2 CDP 信号 → P3 状态灯** |
+
+## 一、把 8 条共识冻结成 ADR（半天工作量，先做）
+
+新建 `docs/adr/0001-meeting-architecture.md`，把共识 1–8 原样录入，每条加一行"决策理由"和"被否备选"（被否备选写：Playwright 重造、Python sidecar、伪装 ModelClient、固定 sleep、调度走网页版）。**之后所有设计讨论只对 ADR 做修正案，不重复辩论。** 这是本轮 7 家一致的建议，也是防止"第四轮又从头说起"的唯一办法。
+
+## 二、P0：补 `localPath` + `charLimit`（1–2 天，唯一的地基）
+
+### 2.1 一个必须先知道的 Electron 坑
+
+新版 Electron（≥32）**移除了 `File.path`**。拖拽拿到的 `File` 对象上没有真实路径，直接在 `handleFiles()` 里写 `file.path` 会拿到 `undefined`。**必须在 preload 里用 `webUtils.getPathForFile`**：
+
+```javascript
+// preload.js（你已有的 preload 里加）
+const { webUtils, contextBridge } = require('electron');
+contextBridge.exposeInMainWorld('dsh', {
+  // ...你已有的暴露...
+  getPathForFile: (file) => webUtils.getPathForFile(file),
+});
+```
+
+```javascript
+// meeting.html handleFiles() 改动（578–598 行处）
+async function handleFiles(fileList) {
+  const files = Array.from(fileList).map(f => {
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    return {
+      name: f.name,
+      size: f.size,
+      mime: f.type,
+      localPath: window.dsh.getPathForFile(f),   // ★ P0：真实路径，AttachmentBus 的地基
+      ext,
+      isText: ['txt','md','markdown','text','csv','json','log'].includes(ext),
+      text: null, dataUrl: null,
+    };
+  });
+  // 文本类照旧读内容（≤64KB 才内联，防 handleFiles 卡 UI）
+  for (const f of files) {
+    if (f.isText && f.size <= 65536) f.text = await f.text();   // File.text() 读内容
+    if (['png','jpg','jpeg','webp','gif'].includes(f.ext) && f.size <= 5*1024*1024) {
+      f.dataUrl = await new Promise(r => { const rd = new FileReader(); rd.onload = () => r(rd.result); rd.readAsDataURL(f); });
+    }
+  }
+  attachedFiles.push(...files);
+  renderAttachmentBar();
+}
+```
+
+**注意旧的 `f.text()` 语义冲突**——旧代码里 `text` 字段是"要发给 AI 的文本"，现在拆成两义：`text` = 内联文本内容（仅文本类），`localPath` = 真文件路径（所有类）。发送拼接处（660–662 行）相应改为：
+
+```javascript
+const fileTexts = attachedFiles.map(f => {
+  if (f.isText && f.text) return '\n\n--- 文件: ' + f.name + ' ---\n' + f.text;
+  return '\n\n--- 附件: ' + f.name + '（已通过上传通道发送原文件）---';   // 非文本不再撒谎
+}).join('');
+```
+
+**这一句"（已通过上传通道发送原文件）"取代原来的 `[PDF文件: xxx]` 占位符谎言——根治根因 A 的第一刀。** 但前提是 P1 真的会上传，所以 P0 和 P1 要在同一次发布。
+
+### 2.2 `agentCatalog.js` 补 `charLimit`
+
+```javascript
+// 每个 provider 一项，数值按 §四的容量表保守取
+{ id: 'chatgpt-web',  ..., charLimit:  6000 },   // 网页版产品上下文最紧
+{ id: 'gemini-web',   ..., charLimit: 24000 },   // 1M 上下文，最宽裕
+{ id: 'doubao-web',   ..., charLimit: 10000 },
+// ...其余 6 家照此
+```
+
+`meeting.html:672` 的 `model.charLimit` 比较**不用改**，补了字段死代码自然复活。注意 `charLimit` 的单位是**字符**（中文 1 字 ≈ 1.5–2 token，注入预算按字符算更直观）。
+
+## 三、P1：附件"先齐后发"门闩（2–3 天，根治"收不全"）
+
+三个动作，对应根因 B、C、A：
+
+**① 先修静默失败（根因 B，一行级修复）。** `smartSend()` 里：
+
+```javascript
+const ok = await uploadFileToWebview(wv, filePath);
+if (!ok) {
+  // 不再假装上传成功——降级为文本说明，状态灯标黄
+  broadcastToCell(cell, prefix + `\n【系统提示：文件 ${fileName} 上传失败，请重试或改用文本粘贴】`);
+  setCellState(cell, 'muted');
+  continue;
+}
+await waitForAttachmentAck(wv, fileName, { timeoutMs: 8000 });   // 根因 C：替换 sleep(3000)
+```
+
+**② ACK 判据 = DOM 出现附件卡片。** `waitForAttachmentAck` 是每个 adapter 契约里的新方法，返回"该站点附件卡片节点出现"。和 `meeting-lab` 的 CompletionDetector 共用同一套采样基建（`executeJavaScript` 注入采样函数，selector 不进 core）。
+
+**③ 门闩语义。** 单 AI 内：多附件逐个上传、逐个等 ACK，一个失败 → 该附件降级文本说明、该 AI 标黄，**不阻塞其他 AI、不阻塞其他附件**。会议级（将来 chairman 模式下）：`waitForAllUploadACK` 等全体就绪再统一放行发言——这个已经在 `meeting-lab/core/attachment-bus.js` 里有纯逻辑实现，P1 做的是把客户端的 `uploadFileToWebview` 挂进去。
+
+**非文本文件走哪个通道？** 定案：**双轨制**。
+
+| 轨道 | 对象 | 做法 |
+|---|---|---|
+| 文件轨 | PDF / 图片 / docx 等 | CDP 上传**原文件**（P0 的 localPath 就是为它准备的），adapter 契约声明 `acceptedMimes` |
+| 文本轨 | txt/md/csv/json | 照旧内联文本，>64KB 才转 .md 上传 |
+
+`agentCatalog.js` 每个 provider 加 `acceptedMimes` 字段；不在名单里的格式 → 自动降级"文本摘要 + 明确告知用户该 AI 不支持此格式"。**谷歌搜索那个格子不是聊天 AI，它是检索员**——它的 `acceptedMimes` 应为空，附件一律转摘要（见 §五角色表）。
+
+## 四、P2：完成检测接进客户端（3–5 天，含真机验证）
+
+**不重写，只搬运+接线**：`meeting-lab` 已验证的逻辑原样搬进 `desktop/agent/meeting/core/`（CompletionDetector 的 `requireContent` 和每轮 `arm()` 是带回归测试的，搬运时一个条件都别改），新增的只有 CDP 层：
+
+```javascript
+// core/cdp-signals.js — 挂在现有 webview 的 debugger session 上
+const SESSION_KEY = 'dsh-completion';
+async function attachNetworkSignals(wc, endpointPatterns) {
+  await wc.debugger.attach(SESSION_KEY);
+  wc.debugger.on('message', (_e, method, params) => {
+    if (method === 'Network.responseReceived' &&
+        endpointPatterns.some(p => params.response.url.includes(p))) {
+      streamTracker.noteRequest(params.requestId);   // meeting-lab 的 stream-tracker 逻辑
+    }
+    if (method === 'Network.loadingFinished') streamTracker.noteDone(params.requestId);
+    if (method === 'Network.loadingFailed')   streamTracker.noteFailed(params.requestId);
+  });
+  await wc.debugger.sendCommand(SESSION_KEY, 'Network.enable');
+}
+```
+
+**真机验证清单**（这是 v2 我给不了的，现在有测试台了）：
+1. 先跑 DeepSeek 一家，对照测试台基线核对 CDP 端点模式（`backend-api/conversation` 之类）；
+2. 再跑 Shadow DOM 难的（豆包/通义）——**preload 注入递归 `MutationObserver`**（评审确认的正确方案，`/deep/` 是 2018 年就被移除的死路）：
+
+```javascript
+// preload.js，每个 webview 加载时注入
+function observeDeep(root, cb) {
+  const obs = new MutationObserver(cb);
+  const walk = (node) => {
+    obs.observe(node, { childList: true, subtree: true, characterData: true });
+    node.querySelectorAll('*').forEach(el => {
+      if (el.shadowRoot) walk(el.shadowRoot);   // 递归穿透 shadowRoot
+    });
+  };
+  walk(root);
+  return obs;
+}
+```
+
+3. 每家记录：可用信号集、端点模式、平均响应时长——**回填进 `agentCatalog.js` 的 `signals` 字段**，检测器按各家可用信号自适应（≥2 个独立信号 + requireContent + arm 三个前提）。
+
+## 五、盲点 A 落地：角色分化（1 天，产品价值最大的一笔）
+
+**问题重述**：9 个 AI 吃同样的输入 → 回答趋同 → 9 宫格退化为复读机。**解法不是改架构，是改 prompt 构造**。
+
+### 5.1 九角色表（映射到 provider 特长）
+
+| 格子 | 角色前缀（system 注入） | 设计意图 |
+|---|---|---|
+| DeepSeek | 你是**主持人助理**，负责把讨论收敛成结论和行动项 | 最强推理，收束 |
+| ChatGPT | 你是**全能型与会者**，给主流稳妥方案 | 基准线 |
+| Kimi | 你是**长文本书记员**，专抓细节和遗漏，回答必附"我注意到的一点" | 长上下文 |
+| 豆包 | 你是**反对派（红队）**，只找当前方案的漏洞和风险，不许附和 | 对抗性 |
+| 通义 | 你是**成本/工程评估员**，每个观点都换算成实现成本和工期 | 工程化 |
+| 元宝 | 你是**用户代言人**，扮演最挑剔的最终用户挑体验毛病 | 产品视角 |
+| Gemini | 你是**资料检索与事实核查员**，优先纠正全场的事实错误 | 多模态+搜索 |
+| 谷歌搜索 | 你是**检索员**：不用长篇回答，只返回与议题最相关的 3 条事实/链接 | 它不是聊天 AI |
+| 文心 | 你是**合规与中文表述审查员**，专挑表述歧义和合规风险 | 中文保守视角 |
+
+前缀固定在 `agentCatalog.js` 新增 `persona` 字段。**一条构造逻辑：发给 AI 的每条消息 = persona + 会议纪要注入（Hy4 公式）+ 本轮任务。**
+
+### 5.2 分歧矩阵（主持人 API 的活，一次调用几分钱）
+
+每轮 9 份回答齐了之后，DeepSeek API 收一轮原文，吐 JSON：
+
+```
+{ consensus: ["三点大家都同意"], 
+  clashes: [{topic:"数据库选型", sides:["豆包:选A因为...", "通义:选B因为..."]}],
+  openQuestions: [...] }
+```
+
+UI 会议面板加一个**"本轮共识/分歧"条**——这才是"9 人会议"对"问 1 个 AI 9 次"的真实增量：用户一眼看到哪里已收敛、哪里在打架、谁在跟谁是分歧双方。
+
+### 5.3 差异化上下文（轮询/chairman 模式下）
+
+broadcast 模式全员同输入没问题（角色分化已保证差异）；**将来 chairman 模式下**，被点名的 AI 收到的是"上一位发言原文 + 分歧矩阵中与自己立场冲突的观点"，而不是全量纪要——让讨论真的"接上火"。
+
+## 六、盲点 C 定案：纪要容量预算（用真实数据算）
+
+网页版产品上下文（2026 实测，非 API 值）：ChatGPT 网页 16K–128K、Claude 网页 200K、Gemini 网页 32K（免费）–1M。按**最保守的 ChatGPT 16K ≈ 1.1 万汉字**（1 token≈0.75 词，中文 1 字≈1.5–2 token，取 16K token ≈ 8000–10000 汉字）做全场统一预算——**木桶原则，按最短的板子设计**：
+
+| 项 | 预算 | 说明 |
+|---|---|---|
+| persona 前缀 | ≤200 字 | 固定开销 |
+| 会议纪要注入 | ≤2000 字 | Hy4 公式：最近 2 轮原文 + 更早压缩摘要 |
+| 本轮任务+附件摘要 | ≤3000 字 | 文件摘要不超 500 字/个 |
+| **注入总计** | **≤5200 字** | 留给网页端自己上下文 ≥4000 字余量 |
+| 轮纪要（主持人产） | ≤300 字/轮 | 每轮结束生成 |
+| 全局压缩触发 | 纪要 >1800 字 或第 5 轮 | DeepSeek API 压缩成 ≤800 字 |
+| 单点重置触发 | 该 AI 连续 2 轮跑偏 或该 AI 注入超 2 倍预算 | **只重置这一个** |
+
+**两个实测数据改变的经济账**：
+1. **Claude 按 token 加权计费，长对话消耗 5–10 倍配额**（45 条/5 小时的额度，长会开几轮就见底） → Claude 格子**重置最激进：每 3 轮强制新对话**，重置省下的配额比损失的记忆更值钱。
+2. ChatGPT Plus 150 条/3 小时滚动窗口 → 9 宫格全员广播一轮就烧 9 条额度，**连续开 16 轮全员广播就触顶**——这给出了产品层的硬约束：长会议必须走 chairman 模式（每轮最多 2–3 人发言），broadcast 只适合短问短答。这条建议写进 ADR 修正案。
+
+## 七、盲点 B 定案：风控纪律（写进代码，不是写进文档）
+
+```javascript
+// core/guard.js — 可单测的纯逻辑
+const GUARD = {
+  maxConcurrentGenerating: 3,     // 全场同时生成中 ≤3
+  minIntervalMsPerAgent: 8000,    // 同一 AI 两次发送间隔 ≥8s
+  roundCooldownMs: 20000,         // 轮次间冷却 ≥20s
+  onCaptcha: 'mute_and_alert',    // 验证码 → 闭麦 + UI 弹人工处理，绝不自动重试
+  fingerprintSpoofing: false,     // 永不伪造指纹/轮换账号 —— 产品纪律
+};
+```
+
+状态灯旁加常驻小字风险提示："多账号自动化存在服务条款风险，验证码需人工处理"。**风控显性化是诚信问题，不是体验问题。**
+
+## 八、施工总序与验收（最终版）
+
+| 序 | 动作 | 工期 | 验收标准 | 碰客户端 |
+|---|---|---|---|---|
+| 1 | ADR 冻结 8 条共识 | 0.5 天 | 文档合入 | ❌ |
+| 2 | **P0** localPath + charLimit | 1–2 天 | 拖入 PDF 后 `attachedFiles[0].localPath` 为真实路径；超长分批分支被单测覆盖 | ✅ 极小 |
+| 3 | **P1** ok 检查 + ACK 门闩 + 双轨附件 | 2–3 天 | 50 次混合文件发送 0 静默失败；上传失败有明确提示 | ✅ 小 |
+| 4 | **P2** 完成检测接线 + 真机 3 家 | 3–5 天 | DeepSeek/豆包/Gemini 各 20 轮零误判；信号集回填 catalog | ✅ 中 |
+| 5 | **角色分化** persona + 分歧矩阵 | 1 天 | 同题 9 格回答两两相似度肉眼可辨差异；共识/分歧条渲染 | ✅ 小 |
+| 6 | guard.js 风控 + 状态灯 | 1 天 | 并发/间隔用例通过 | ✅ 小 |
+| 7 | chairman 模式 + OrchestrationPort | 1 周+ | 点名讨论 ≥3 轮，主持人在 API | ✅ 中 |
+
+前 6 步合计约 **9–13 天**且每步独立可发布；第 7 步是唯一的大块。
+
+## 九、对评审遗留三问的正式回答（作为被咨询方交卷）
+
+1. **角色前缀怎么设计？** → §五九角色表。补充原则：角色要绑定**任务功能**（找漏洞/算成本/查事实）而非人格腔调（"你脾气火爆"之类只会产生语气噪音）；每个角色的输出格式给一个轻约束（如红队必须列编号清单），格式差异本身就是反趋同手段。
+2. **同设备多账号风控阈值？** → 无公开的实测阈值数据，且各家不披露。诚实的答案：**不要去找阈值然后贴着线飞，而是把行为设计得不像批量自动化**——上面 guard 参数 + 验证码人工化 + 不用指纹伪造，把"账号农场"特征降到最低后接受残余风险。唯一确定的是：Google 系对自动化登录最敏感（ historically 封号最快），建议谷歌搜索格子的自动化程度全场最低。
+3. **9 家网页版实际容量与超窗行为？** → §六表格是公开数据能给的答案；超窗后各家的降级行为（自动开新话题/截断/报错）**公开资料没有，只能实测**——这正是 P2 真机验证清单里第 4 项该记的东西：每家长会压测到触发上限，记录降级行为回填 ADR。
+
+---
+
+**v3 相对前两版的一句话总结**：v1 给了你一张地图但指错了路，v2 修正了路线但没给工具，**v3 是按你工地现有的砖排的施工单**——P0 那一铲子（`webUtils.getPathForFile` + localPath）是一切的地基，今天就能挖。

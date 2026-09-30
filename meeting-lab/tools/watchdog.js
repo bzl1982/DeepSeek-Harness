@@ -27,6 +27,17 @@ function log(msg) {
   try { fs.appendFileSync(path.join(ROOT, '_watchdog.log'), line + '\n'); } catch (e) { /* 日志失败不阻断 */ }
 }
 
+/* ★ 尸检钩子：watchdog 自己崩了也要留下死因（2026-09-25：曾静默死亡导致 BAT"闪一下没影"无从排查） */
+process.on('uncaughtException', (err) => {
+  log('看门狗崩溃(uncaughtException)：' + (err && err.stack || err));
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  log('看门狗异常(unhandledRejection)：' + (err && err.stack || err));
+});
+/* ★ 心跳：每 60s 写一条，日志里能看出 watchdog 是活着还是死了 */
+setInterval(() => log('心跳：watchdog 存活，9224 探测中'), 60000);
+
 function isUp() {
   return new Promise((resolve) => {
     const s = net.connect({ host: '127.0.0.1', port: PORT });

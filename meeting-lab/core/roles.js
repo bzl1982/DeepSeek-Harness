@@ -390,6 +390,24 @@ function listRoleSets() {
   }));
 }
 
+/**
+ * 自动适配编制（2026-09-23 用户需求：先勾参会人，再按人数配角色——不再被"9 席上限"卡住）。
+ * 从角色池按优先序取前 n 个：前段 = 建设/质证/代表/分析，尾段 = 收敛
+ * （收敛角色压轴，与 assignRoles「收敛者最后发言」的语义一致）。
+ * @param {number} n 勾选的参会人数
+ * @returns {string[]|null} 角色 id 数组；n 超出角色池（16）返回 null，调用方应告警并回退 preset + generalist 补位
+ */
+function composeAutoSet(n) {
+  const ORDER = [
+    'architect', 'red-team', 'fact-check', 'pm', 'executor', 'user-advocate',
+    'cost-analyst', 'data-analyst', 'compliance', 'reverse', 'newcomer', 'integrator',
+    'retriever', 'clerk', 'generalist', 'chair-assistant',
+  ];
+  if (!Number.isFinite(n) || n < 1) return null;
+  if (n > ORDER.length) return null;
+  return ORDER.slice(0, n);
+}
+
 module.exports = {
   ROLE_CATALOG,
   ROLE_REQ,
@@ -401,4 +419,5 @@ module.exports = {
   toPromptRoleMap,
   listRoles,
   listRoleSets,
+  composeAutoSet,
 };

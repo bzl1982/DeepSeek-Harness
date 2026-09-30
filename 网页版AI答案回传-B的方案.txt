@@ -1,0 +1,271 @@
+核心思路：**别让 AI 去操作电脑，而是在用户浏览器里加一个“采集器”**。AI 网页只是普通网页，浏览器扩展/油猴脚本可以读它的 DOM、监听“一键复制”、然后自动 POST 到通辽会议系统。会议系统只需要新增一个接收接口。
+
+## 推荐落地架构
+
+```text
+AI网页对话框
+  ↓
+Tampermonkey脚本 / 浏览器扩展
+  ├─ 方案A：用户点“一键复制”后，自动读剪贴板并上传
+  └─ 方案B：MutationObserver 监听最新AI回复，自动上传
+  ↓ HTTPS POST
+通辽会议系统 /api/ai-reply
+  ├─ token鉴权
+  ├─ 去重入库
+  └─ WebSocket/SSE 推送到会议界面
+```
+
+这个方案不需要 AI 有操作电脑权限，只需要用户浏览器装脚本或扩展。
+
+---
+
+## 方案一：油猴脚本 + 会议系统接收接口（最推荐）
+
+### 1. 会议系统新增接口
+
+例如：
+
+```http
+POST /api/ai-reply
+Header: X-Meeting-Token: xxx
+Body:
+{
+  "meeting_id": "会议123",
+  "session_id": "当前AI会话URL",
+  "platform": "chatgpt.com",
+  "role": "assistant",
+  "content": "AI回复内容",
+  "message_id": "内容hash",
+  "captured_at": "2026-09-25T10:00:00Z"
+}
+```
+
+后端做三件事：
+
+1. 校验 token；
+2. 按 `meeting_id + message_id` 唯一索引去重；
+3. 入库后通过 WebSocket/SSE 推给会议页面。
+
+Node 示例：
+
+```js
+app.post('/api/ai-reply', express.json(), async (req, res) => {
+  const token = req.headers['x-meeting-token'];
+  if (!verifyToken(token)) return res.status(401).json({ ok: false });
+
+  const { meeting_id, message_id, content } = req.body;
+  if (!meeting_id || !message_id || !content) {
+    return res.status(400).json({ ok: false });
+  }
+
+  await db.query(
+    `INSERT INTO ai_replies(meeting_id, message_id, content, raw_json, created_at)
+     VALUES (?, ?, ?, ?, NOW())
+     ON DUPLICATE KEY UPDATE content = VALUES(content)`,
+    [meeting_id, message_id, content, JSON.stringify(req.body)]
+  );
+
+  io.to(meeting_id).emit('ai_reply', req.body);
+  res.json({ ok: true });
+});
+```
+
+数据库加唯一索引：
+
+```sql
+UNIQUE KEY uk_meeting_msg (meeting_id, message_id)
+```
+
+---
+
+### 2. 用户浏览器装 Tampermonkey，新建脚本
+
+下面脚本同时支持两种采集：
+
+- 用户点“一键复制”后，自动读剪贴板上传；
+- 全自动监听最新 AI 回复并上传。
+
+```js
+// ==UserScript==
+// @name         通辽会议-AI回复自动采集
+// @namespace    tongliao
+// @version      1.0
+// @match        https://chatgpt.com/*
+// @match        https://claude.ai/*
+// @match        https://*.example-ai.com/*
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      meeting.tongliao.com
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const API = 'https://meeting.tongliao.com/api/ai-reply';
+  const TOKEN = '从通辽会议系统生成的短期token';
+  const MEETING_ID = new URLSearchParams(location.search).get('meeting_id') || 'default';
+  const seen = new Set();
+
+  function hash(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) + h) ^ str.charCodeAt(i);
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  function upload(text) {
+    text = (text || '').trim();
+    if (!text) return;
+
+    const id = hash(text);
+    if (seen.has(id)) return;
+    seen.add(id);
+
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: API,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Meeting-Token': TOKEN
+      },
+      data: JSON.stringify({
+        meeting_id: MEETING_ID,
+        session_id: location.href,
+        platform: location.hostname,
+        role: 'assistant',
+        content: text,
+        message_id: id,
+        captured_at: new Date().toISOString()
+      }),
+      onload: res => console.log('[通辽会议] 上传成功', res.status),
+      onerror: err => console.error('[通辽会议] 上传失败', err)
+    });
+  }
+
+  // 方式1：用户点“一键复制”后，自动读剪贴板上传
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button, [role="button"]');
+    if (!btn) return;
+
+    const label = (
+      btn.getAttribute('aria-label') ||
+      btn.title ||
+      btn.innerText ||
+      ''
+    ).toLowerCase();
+
+    if (!label.includes('复制') && !label.includes('copy')) return;
+
+    await new Promise(r => setTimeout(r, 200));
+
+    try {
+      const text = await navigator.clipboard.readText();
+      upload(text);
+    } catch (err) {
+      console.warn('[通辽会议] 读剪贴板失败，请允许剪贴板权限', err);
+    }
+  }, true);
+
+  // 方式2：全自动监听最新AI回复。选择器需按实际AI网页修改。
+  const AI_SELECTOR = [
+    '[data-message-author-role="assistant"]', // ChatGPT
+    '.font-claude-message'                    // Claude
+  ].join(',');
+
+  let lastText = '';
+  let timer = null;
+
+  function isGenerating() {
+    return !!document.querySelector(
+      'button[data-testid="stop-button"], button[aria-label*="停止"], button[aria-label*="Stop"]'
+    );
+  }
+
+  const observer = new MutationObserver(() => {
+    const nodes = document.querySelectorAll(AI_SELECTOR);
+    if (!nodes.length) return;
+
+    const text = (nodes[nodes.length - 1].innerText || '').trim();
+    if (!text || text === lastText) return;
+
+    lastText = text;
+    clearTimeout(timer);
+
+    // 等文本稳定且不再生成后再上传，避免流式输出上传中间版本
+    timer = setTimeout(() => {
+      if (!isGenerating()) upload(text);
+    }, 2500);
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true
+  });
+})();
+```
+
+注意：不同 AI 网页 DOM 不一样，`AI_SELECTOR` 要用 F12 查一下实际节点。ChatGPT 常见是 `[data-message-author-role="assistant"]`，Claude 常见是 `.font-claude-message`。
+
+---
+
+## 方案二：剪贴板监听小工具（最快验证）
+
+如果不想适配 DOM，只想减少“复制后还要去会议系统粘贴”的步骤，可以做一个本地小工具。
+
+用户只需要点 AI 网页的“一键复制”，Python 脚本监听剪贴板，自动上传到通辽会议系统。
+
+```python
+import time
+import hashlib
+import requests
+import pyperclip
+
+API = "https://meeting.tongliao.com/api/ai-reply"
+TOKEN = "会议系统生成的token"
+MEETING_ID = "会议123"
+
+last = ""
+
+while True:
+    try:
+        text = pyperclip.paste()
+        if text and text != last:
+            last = text
+            mid = hashlib.md5(text.encode("utf-8")).hexdigest()
+            requests.post(
+                API,
+                json={
+                    "meeting_id": MEETING_ID,
+                    "session_id": "clipboard",
+                    "platform": "web-ai",
+                    "role": "assistant",
+                    "content": text,
+                    "message_id": mid,
+                    "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                },
+                headers={"X-Meeting-Token": TOKEN},
+                timeout=5
+            )
+            print("已上传", mid)
+    except Exception as e:
+        print("失败", e)
+
+    time.sleep(0.5)
+```
+
+这个方案最简单：用户点一次“一键复制”，后面全自动。缺点是仍需要点复制，且剪贴板可能被其他内容覆盖。
+
+---
+
+## 落地建议
+
+1. **先做会议系统接收接口**：`/api/ai-reply`，带 token、去重、入库、WebSocket 推送。
+2. **快速验证用剪贴板监听**：用户点“一键复制”就自动上传。
+3. **正式体验用油猴脚本/浏览器扩展**：自动监听 AI 回复，用户无感。
+4. **如果 AI 平台有官方 API，优先走 API**：比抓网页稳定。
+5. **生产环境建议做成企业浏览器扩展**：Chrome/Edge 企业策略统一安装，自动更新，比油猴更适合多人使用。
+
+关键点：  
+不是让 AI 操作电脑，而是让用户浏览器里的脚本把 AI 回复“搬运”到通辽会议系统。这样不依赖 AI 网页开放接口，也能落地。

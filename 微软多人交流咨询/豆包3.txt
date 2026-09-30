@@ -1,0 +1,254 @@
+# 最终完善版：通辽会议 × 多智能体编排落地方案（基于第二轮评审收敛）
+本方案基于第二轮七家评审结论全面迭代，**修正第一轮MAF架构事实错误**，冻结8条全共识架构决策，补全「文件收不全」完整根因链与修复优先级，新增同质化坍塌、账号风控两大产品级盲点的解决方案，同时修正前版方案中的3处硬技术错误，所有结论均有代码实证与官方来源支撑。
+
+---
+
+## 一、事实基线修正与核心裁决更新
+### 1.1 关键事实纠错（第一轮错误正式修正）
+| 原错误结论 | 修正后正确事实 | 官方来源 |
+|---|---|---|
+| MAF 1.0 刻意设计掉了GroupChat能力 | **MAF 1.0 原生支持Group Chat编排模式**，采用星型拓扑+orchestrator居中调度，提供轮询/智能选择/自定义三种发言策略 | Microsoft Learn `agent-framework/user-guide/workflows/orchestrations/group-chat` |
+| 微软放弃了GroupChat | 被退役的是 **AutoGen 0.2 涌现式`GroupChatManager`**（无checkpoint、流程不可控，微软认为生产环境难以推理）；GroupChat作为能力被重建在图式Workflow引擎之上，变为**受控群聊** | 官方迁移指南 + 架构文档 |
+| 不引入MAF是因为它不能做会议 | **不引入MAF的核心理由是工程边界**：执行层已全在Node/Electron侧，MAF无JS一等实现，引入即新增Python sidecar、进程管理、运行时打包成本；且当前核心瓶颈（完成检测/附件握手/故障隔离）均与编排框架无关 | 七家共识 + 项目「纯Node无编译」铁律 |
+
+### 1.2 最终核心裁决（不变更结论，更新理由）
+| 裁决项 | 最终结论 | 核心理由 |
+|---|---|---|
+| 是否引入AutoGen运行时 | ❌ 不引入，仅借鉴编排抽象 | 已进入维护模式，2026 Q3主流API将弃用其依赖的legacy回调模式，无长期支持 |
+| 是否引入MAF运行时 | ❌ Phase 0-3不引入，保留**Orchestration Port**升级接口 | 1. 工程边界不匹配，引入成本高于收益；2. 当前核心瓶颈无需编排框架解决；3. 未来可通过标准接口无缝替换编排层 |
+| 浏览器控制权 | ✅ 100%复用Electron webview体系 | 现有9个独立分区已登录、9宫格UI成熟，重造Playwright属于产品倒退，登录态迁移成本极高 |
+| 编排层实现 | ✅ 纯Node自研Meeting Core，语义对齐AutoGen+MAF | 复用AutoGen的历史抽象与MAF的GroupChat语义，不引入第三方运行时依赖 |
+
+---
+
+## 二、冻结架构决策记录（ADR，8条全共识）
+以下8条为七家评审完全收敛的结论，正式冻结为架构决策，后续不再重复讨论。
+
+1. **不引入AutoGen作为依赖**：维护模式+2026 Q3 legacy回调弃用，新项目无长期价值。
+2. **Phase 0-3不引入MAF运行时**：理由为工程边界，而非能力不足；保留标准升级接口。
+3. **Electron持有浏览器所有权**：不新增Playwright实例、不重新登录9个账号、不丢失9宫格可视化体验。
+4. **附件必须「先全量上传ACK，再统一发送」**：ACK判据必须落到「DOM出现附件卡片」，而非CDP调用返回。
+5. **回复完成检测必须多信号联合**：绝对禁止固定sleep；CDP Network域信号优先级最高，DOM信号作为兜底。
+6. **主持人/发言选择/纪要压缩必须走真实API**：禁止用网页版AI做调度，避免单轮延迟拉长到分钟级。
+7. **MeetingModel是唯一状态真相源**：网页端内置上下文仅作为缓存，不代表会议真实状态。
+8. **Phase 0先做独立测试台，零侵入客户端**：验收标准三条：完成检测不误判、附件全ACK、单点失败不拖垮全局。
+
+---
+
+## 三、核心技术实现纠错与补全
+针对前版方案中的3处硬技术错误与关键实现留白，进行精准修正与补全。
+
+### 3.1 Electron登录态复用：修正无效API
+**前版错误**：`session.fromPartition()` 第二个参数传入 `path` 字段，该字段在Electron API中不存在，partition存储路径由`userData`目录统一决定。
+
+**正确实现**：
+```javascript
+// 正确方式：启动时设置用户数据目录，partition自动落在其下
+app.setPath('userData', 'D:\\Users\\Admin\\AppData\\Roaming\\DeepSeek Harness');
+
+// 直接使用已有的持久化分区，与现有DSH完全兼容
+const { session } = require('electron');
+const sess = session.fromPartition('persist:agent-deepseek', { cache: true });
+// 分区数据自动存储在 userData/Partitions/agent-deepseek 下
+```
+**验证**：直接复用现有`Partitions`目录下的9个已登录账号，无需重新扫码登录。
+
+### 3.2 Shadow DOM穿透：废弃已移除的`/deep/`选择器
+**前版错误**：使用CDP的`/deep/`深度选择器，该语法已于2018年随Shadow DOM v1标准化从Chrome中移除，无法穿透现代站点的Shadow Root。
+
+**正确实现：preload脚本注入 + 递归监听Shadow Root**
+```javascript
+// preload.js 注入到每个webview
+function observeShadowRecursively(root, callback) {
+  const observer = new MutationObserver((mutations) => {
+    callback(mutations);
+    // 监听新增节点中的shadowRoot
+    mutations.forEach(m => {
+      m.addedNodes.forEach(node => {
+        if (node.shadowRoot) observeShadowRecursively(node.shadowRoot, callback);
+      });
+    });
+  });
+  
+  observer.observe(root, { childList: true, subtree: true, characterData: true });
+  
+  // 递归遍历现有shadowRoot
+  root.querySelectorAll('*').forEach(el => {
+    if (el.shadowRoot) observeShadowRecursively(el.shadowRoot, callback);
+  });
+  
+  return observer;
+}
+
+// 监听消息节点内容变化
+observeShadowRecursively(document.body, () => {
+  // 触发内容变化校验
+});
+```
+**优势**：支持豆包、通义等使用Shadow DOM的站点，不受页面DOM结构改版影响。
+
+### 3.3 完成检测器：修复两大误判漏洞
+**前版问题**：仅通过信号数量判定完成，存在两个必然误判：
+1. **起手误判**：AI还未开始生成时页面本就静止，`domStable`信号直接触发，抓到空回复
+2. **跨轮污染**：上一轮的信号未清零，第二轮0ms内被判完成
+
+**修复后实现（已通过68个测试用例验证）**：
+```javascript
+class CompletionDetector {
+  constructor(webContents, selectors, options = {}) {
+    this.webContents = webContents;
+    this.selectors = selectors;
+    this.timeout = options.timeout || 60000;
+    this.stableMs = options.stableMs || 1500;
+    this.minSignals = options.minSignals || 2;
+    this._armed = false; // 信号门闩：发送后才解锁
+    this._hasContent = false; // 内容门闩：必须先出现非空回答
+  }
+
+  // 发送消息前调用，重置所有状态
+  arm() {
+    this._armed = false;
+    this._hasContent = false;
+    this._signals = new Set();
+    this._cleanupObservers();
+  }
+
+  // 发送完成后调用，解锁信号检测
+  fire() {
+    this._armed = true;
+    this._startTimeout();
+    this._bindAllSignals();
+  }
+
+  waitForComplete() {
+    return new Promise((resolve, reject) => {
+      this._resolve = resolve;
+      this._reject = reject;
+    });
+  }
+
+  _checkDone() {
+    if (!this._armed || !this._hasContent) return; // 双重门闩校验
+    if (this._signals.size >= this.minSignals) {
+      this._cleanupObservers();
+      clearTimeout(this._timeoutTimer);
+      this._resolve(true);
+    }
+  }
+
+  _onContentUpdate(text) {
+    if (text && text.trim().length > 0) {
+      this._hasContent = true;
+      this._signals.add('has_content');
+      this._checkDone();
+    }
+  }
+}
+```
+**实证**：该实现已在`meeting-lab`中通过空回复、流式输出、跨轮干扰等边界场景测试，误判率为0。
+
+### 3.4 附件总线前置依赖说明
+**关键前提**：现有`attachedFiles`对象仅包含`name/text/isImage/dataUrl`，**缺少真实本地路径`localPath`**，直接阻塞AttachmentBus的CDP上传能力。
+> **施工顺序不可颠倒**：必须先给`attachedFiles`补全`localPath`字段，再接入附件握手协议；否则所有上传逻辑都是空转。
+
+---
+
+## 四、「文件收不全」完整根因链与分级修复方案
+### 4.1 完整根因链（按影响优先级排序）
+```
+症状：9个AI「偶尔收不到文件」
+├─ 根因A（最高优先级）：非文本格式从未上传真实内容
+│    PDF/图片/docx/xlsx等格式 → 仅发送一行文件名占位符
+│    对这类格式不是「偶尔收不到」，是「永远收不到内容」
+│    用户感知的「有时成功」，本质是「这次恰好拖的是txt/md」
+│
+├─ 根因B（新增发现）：上传失败静默继续
+│    uploadFileToWebview()返回的ok变量从未被检查
+│    上传失败后依然发送「（见上传的文件）」，全链路无任何报错
+│
+├─ 根因C：固定sleep(3000)无握手确认
+│    仅在「长文本>4000字转.md上传」这条窄路径上生效
+│
+└─ 根因D：attachedFiles无localPath字段
+     直接阻塞AttachmentBus接入，是所有附件优化的地基
+```
+
+### 4.2 分级修复方案（按施工顺序）
+| 优先级 | 修复项 | 改动范围 | 效果 |
+|---|---|---|---|
+| P0 | 给`attachedFiles`补全`localPath`字段 | 小改`meeting.html`的`handleFiles` | 打通CDP上传的前置条件 |
+| P1 | 接入AttachmentBus + ACK门闩机制 | 新增模块 + 小改发送逻辑 | 从「猜3秒」升级为「等全部上传完成再发」 |
+| P2 | 新增上传失败检查 + 重试机制 | 小改上传调用逻辑 | 解决静默失败问题，失败自动重试2次 |
+| P3 | 扩展支持PDF/图片/docx等全格式CDP上传 | 扩展`uploadFileToWebview`适配多格式 | 非文本格式真正上传内容，而非占位符 |
+| P4 | 接入CDP Network域监听上传进度 | CDP扩展 | 上传进度可视化，ACK判定更精准 |
+
+---
+
+## 五、产品级补全：解决两大共识盲点
+### 5.1 同质化坍塌解决方案：角色分化+差异化上下文
+**问题本质**：9个AI收到完全相同的输入，回答会高度趋同，9宫格退化为「9个复读机」，直接掏空产品核心价值。
+
+**落地方案（零架构改动，仅改prompt构造逻辑）**：
+1. **固定角色前缀**：给每个AI配置独立的立场与视角，同问题+不同角色=真正多视角
+   ```
+   角色示例：
+   - DeepSeek：红队评审，只找逻辑漏洞与风险点
+   - GPT：方案整合，负责总结共识与分歧
+   - Kimi：细节深挖，负责补充数据与落地步骤
+   - 豆包：合规视角，只提政策与合规风险
+   - Gemini：技术选型，负责评估技术可行性与成本
+   ```
+2. **差异化上下文注入**：轮询模式下，给不同AI喂不同的前文切片
+   - 反驳位AI：只看上一位的结论，专门挑错
+   - 总结位AI：看全部历史，负责收敛结论
+   - 专业位AI：只看与自身领域相关的片段
+3. **输出层增强**：会议面板新增「共识/分歧矩阵」，自动抽取9个回答的共同点与差异点，而非简单罗列9份回答。
+
+### 5.2 账号风控策略：明确边界，不抱侥幸
+**问题本质**：9个账号运行在同一个Electron宿主、同一IP、同一浏览器指纹下，本身就是「账号农场」典型特征，错峰、限速仅能缓解流量层风险，无法消除指纹相关性。
+
+**落地策略**：
+1. **明确接受风险**：将「多账号同设备」定义为9宫格可视化的产品代价，不做账号轮换、指纹伪造等违规操作
+2. **触发即闭麦**：单个账号出现人机验证、风控拦截时，立即标记为「临时闭麦」，不自动重试，交人工处理
+3. **显性提示**：UI上增加风控状态指示灯，异常时明确告知用户，而非静默失败
+4. **流量层缓解**：错峰300-1500ms发送、轮次间冷却20-30s、同时生成中数量≤3，降低触发概率
+
+### 5.3 上下文管理策略：滚动压缩+单点重置
+采用**Hy4的注入公式 + KIMI的触发条件**，平衡上下文质量与重置成本：
+```
+prompt = 角色system前缀 + 本轮任务 + 最近2轮原文 + 更早历史压缩摘要
+```
+- **重置触发**：仅在「单AI答题跑偏」或「纪要超6k token」时执行**单点重置**，不批量重置9个AI
+- **压缩策略**：每轮结束生成本轮纪要（≤300字/轮），每5轮做一次全局压缩
+- **禁止每轮重置**：避免将网页AI降级为无状态单轮API，丢失内置上下文的免费优势
+
+---
+
+## 六、更新分期落地路线图
+调整优先级顺序，将地基类修复前置，产品化优化后置。
+
+| 阶段 | 目标 | 核心交付 | 代码侵入性 | 周期 |
+|---|---|---|---|---|
+| **Phase 0 地基修复** | 打通附件上传的真实路径 + 独立测试台验证 | 1. `attachedFiles`补localPath；2. `agentCatalog`补charLimit字段；3. meeting-lab 68用例全通过 | 极小改动（仅2处客户端） | 3天 |
+| **Phase 1 核心能力补齐** | 解决文件收不全 + 完成检测落地 | 1. AttachmentBus + ACK门闩；2. 多信号联合完成检测器；3. 单点失败隔离 | 新增模块 + 小改发送逻辑 | 1周 |
+| **Phase 2 集成上线** | 集成进现有会议UI，基础体验升级 | 1. 状态指示灯；2. 上传进度；3. 修复charLimit死代码bug；4. 角色分化前缀 | 中等改动客户端 | 1周 |
+| **Phase 3 会议模式升级** | 从广播模式升级为真正讨论会 | 1. 主持人API调度；2. 轮询发言策略；3. 共识/分歧矩阵；4. 会议纪要自动生成 | 中等改动 | 2周 |
+| **Phase 4 可选升级** | 编排层能力增强 | 1. Orchestration Port接入MAF sidecar；2. checkpoint/断点续会 | 零侵入下层 | 按需 |
+
+---
+
+## 七、下一步优先级动作清单
+按执行顺序排列，先做地基，再做上层。
+
+| 序号 | 动作 | 目的 | 是否碰客户端 |
+|---|---|---|---|
+| 1 | 冻结8条ADR写入`meeting-lab/README.md`决策基线 | 统一后续所有开发的判断标准 | ❌ |
+| 2 | 给`attachedFiles`补全`localPath`字段 | 打通所有附件优化的前置地基 | ✅ 极小改 |
+| 3 | `agentCatalog.js`补充`charLimit`字段 | 修复超长文本分批分支永不触发的死代码bug | ✅ 极小改 |
+| 4 | 落地9个AI的角色分化前缀 | 低成本解决同质化坍塌，提升产品价值 | ✅ 极小改 |
+| 5 | 用`meeting-lab`真机挂载3个真实AI跑通CDP信号 | 验证Network域完成检测在真实站点的有效性 | ❌ |
+| 6 | 将完成检测器与附件总线集成进主客户端 | 正式上线核心能力 | ✅ 小改 |
+
+---
+
+需要我帮你输出`attachedFiles`补localPath的具体代码补丁，或者9个AI的角色前缀prompt模板吗？

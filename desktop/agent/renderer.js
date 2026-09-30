@@ -31,6 +31,9 @@ function applyProvider(p) {
   if (!p) return;
   provider = p;
   providerNameEl.textContent = p.name || '网页版 AI';
+  // partition 与会议窗口一致：persist:agent-{providerId}，共用 cookie/登录态
+  var pid = p.id || 'deepseek-web';
+  view.setAttribute('partition', 'persist:agent-' + pid);
   const target = p.url || 'https://chat.deepseek.com/';
   // 首次加载用 HTML src 属性触发（webContents attach 前 loadURL() 会被拒：
   // "The WebView must be attached to the DOM and the dom-ready event emitted..."）；

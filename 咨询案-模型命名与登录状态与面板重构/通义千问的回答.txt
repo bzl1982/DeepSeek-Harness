@@ -1,0 +1,191 @@
+我已完整读取你上传的《咨询案》文档（含 A/B/C/D 共 10 个问题），并把本轮新追加的第 11 个问题一并纳入：通辽会议窗口输入框拖拽文件收不到。下面按「可直接落地」的标准给出方案。
+
+一、先给结论：你这套需求的根因
+
+三个界面（会议窗口、设置-模型面板、主页模型切换器）本质是两份独立 DOM：
+
+会议窗口 = 你自己写的 meeting.html（可控，改它最简单）
+设置-模型面板 + 模型切换器 = dsh 的 React SPA（不可控，只能靠 executeJavaScript 注入，且 SPA 一重渲染你的注入就全丢）
+
+所以"争取一次搞定"的关键不是写更多定时器脚本，而是：先建单一数据源（登录态 + 命名表），再让三个界面都从这个源读。下面逐条拆。
+
+二、A 命名统一（问题 1、2）
+
+最终中文命名表（推荐）
+
+规则：公司中文名 - 产品名。产品名有官方中文用中文，无官方中文保留英文原名（强行翻译反而让用户认不出，是负体验）。你举例「月之暗面-Kimi」保留英文就是对的信号。
+id   推荐最终名   说明
+deepseek-web   深度求索-DeepSeek   DeepSeek 已是通用叫法，保留
+
+chatgpt-web   OpenAI-ChatGPT   无官方中文，保留
+
+kimi-web   月之暗面-Kimi   保留
+
+doubao-web   字节跳动-豆包   —
+
+tongyi-web   阿里巴巴-通义千问   按你要求改
+
+yuanbao-web   腾讯-元宝   —
+
+gemini-web   谷歌-Gemini   Gemini 无通行中文名（"双子座"太生硬），保留
+
+google-search   谷歌-搜索   按你要求加横杠
+
+wenxin-web   百度-文心   —
+
+判断原则：凡是用户日常就在用的英文名（DeepSeek/ChatGPT/Kimi/Gemini）一律保留，只有"通义→通义千问""谷歌搜索→谷歌-搜索"这种"有明确中文却被写短/写错"的才改。"都改成中文"的正确解读是"公司名统一中文"，不是"消灭一切英文"。
+
+单一数据源（关键，解决问题 2）
+
+不要在 meeting.html 和注入脚本里各写一份 MODELS。抽成主进程一份 JSON，两个界面都从它读：
+
+// agents.config.js （主进程单一源）
+module.exports = [
+  { id:'deepseek-web', name:'深度求索-DeepSeek', url:'https://chat.deepseek.com/' },
+  { id:'tongyi-web',   name:'阿里巴巴-通义千问', url:'https://tongyi.aliyun.com/qianwen/' },
+  // ...
+];
+
+会议窗口：preload 通过 contextBridge 暴露 window.AGENTS，meeting.html 渲染时直接用；
+主窗口注入脚本：脚本里命名从 IPC 拿这份表（ipcRenderer.invoke('agents:getNames')），拼成 id→name 映射后再改 SPA DOM。
+
+这样两处永远一致，改一次全生效。
+
+三、B 登录状态 + 登录名（问题 3~6）
+
+"是否登录"检测：现有方案不够稳，改"反向 + 双信号"
+
+你现在的逻辑"找登录按钮→未登录 / 找头像→已登录"有三个坑：① SPA 首屏未加载完时既无按钮也无头像 → 返回 null 抖动；② 登录按钮文案变体多（"立即登录""扫码登录""手机号登录"）；③ 登录后某些站点仍保留"退出"文案里的"登录"字样被误判。
+
+推荐判定（在 guest 内执行，返回置信度而非布尔）：
+
+(function(){
+  const norm = s => (s||'').replace(/s/g,'');   // 去空格，兼容"登 录"
+  // 信号1：登录入口（强未登录信号）
+  const loginRe = /^(登录|立即登录|扫码登录|手机号登录|验证码登录|signin|logsin|login)/i;
+  let hasLoginBtn = false;
+  document.querySelectorAll('a,button,[role="button"]').forEach(el=>{
+    if(el.offsetParent && loginRe.test(norm(el.textContent))) hasLoginBtn = true;
+  });
+  // 信号2：用户身份元素（强已登录信号）——头像/用户名/设置菜单
+  const userEl = document.querySelector(
+    'img[sr="avatar"],[class="avatar" i],[class*="user-menu" i],' +
+    '[data-testi="user" i],[class="profile" i],[class*="account" i]');
+  if(userEl) return {state:'in'};
+  if(hasLoginBtn) return {state:'out'};
+  return {state:'unknown'};   // unknown 保持上一次结果，别乱跳
+})()
+
+要点：unknown 不覆盖上一次状态（缓存），避免加载期把"已登录"闪成灰点。
+
+登录名提取：逐站配置表（统一特征不可行）
+
+9 站用户信息元素差异极大，没有统一选择器。最稳做法是"每站一条提取规则 + 通用兜底"：
+
+const USER_EXTRACT = {
+  'deepseek-web': () =>
+    document.querySelector('[clas="username" i],[class="user-name" i]')?.textContent?.trim(),
+  'chatgpt-web': () =>
+    document.querySelector('[data-testid="account-name"]')?.textContent?.trim(),
+  'kimi-web': () =>
+    document.querySelector('[clas="user" i] [class="name" i]')?.textContent?.trim(),
+  // ... 各站按真实 DOM 定制
+  // 通用兜底：任意头像的 alt/title，或 aria-label 里像邮箱/手机/昵称的串
+  _fallback: () => {
+    const img = document.querySelector('img[sr="avatar"],img[alt][class="avatar" i]');
+    if(img) return img.alt || img.title;
+    const cand = [...document.querySelectorAll('[clas="user" i],[class="account" i]')]
+      .map(e=>e.textContent.trim())
+      .find(t => /S+@S+.S+|1[3-9]d{9}|^[wu4e00-u9fa5]{2,20}/.test(t));
+    return cand;
+  }
+};
+
+现实提醒：ChatGPT / Gemini / Google 这类站点的账号菜单默认收起，必须先点开右上角头像才渲染出邮箱。可靠做法是检测时模拟点击头像→读名字→再收起，或直接读 document.cookie 里可读的非 httpOnly 字段（多数站点邮箱是 httpOnly，读不到）。对读不到名字的站点，UI 只显示"已登录 ✓"而不显示登录名，比显示错名字好。
+
+跨进程传递链路：简化为"主进程缓存 + 双向下推"
+
+你现有链路（guest → 会议窗口 → 主进程 → 注入主窗口）是对的，但别让主窗口去"拉"，改成主进程做唯一缓存 + 事件推送：
+
+webview.guest(executeJavaScript检测)
+   → 会议窗口 ipcRenderer.sendTo('login:report', {id,state,name})
+   → 主进程 mainProcess: loginCache[id] = {state,name}  // 唯一缓存
+   → 主进程 webContents.send('login:changed', loginCache) // 推给主窗口
+   → 主窗口 preload 收到 → executeJavaScript 更新 SPA 的登录标记
+
+更简替代：如果不想依赖会议窗口在不在前台——在主进程起隐藏 <webview>/BrowserView，用同样的 partition: persist:agent-xxx 复用登录态做后台检测，会议窗口关不关都能持续刷新。代价是多 9 个隐藏渲染进程（4K 机器内存可接受）。这是最稳的，因为检测不再耦合"会议窗口是否可见"。
+
+刷新与缓存策略
+
+事件驱动优先：给每个 webview 挂 did-navigate / did-navigate-in-page / page-favicon-updated，登录成功通常伴随跳转 → 触发一次立即检测；
+兜底轮询：可见时 8s、隐藏（后台 webview）时 30~60s，别全量 8s，9 站很吃 CPU；
+失效：state 从 in→out 立即清 name；unknown 保留上次；
+防闪跳：只有连续 2 次检测到相同状态才更新 UI（去抖）。
+
+四、C 模型切换器 & 设置面板布局（问题 7~9）
+
+"API 只显示一行、被网页版挤掉"根因
+
+几乎可以确定是你注入脚本把网页版条目移到了同一个 <ul role="listbox"> 里，而这个 listbox 有 max-height: ~200px + overflow，网页版 9 条把可视区占满，API 被压到底部只剩一行。不是 API 少，是被网页版挤出了可视高度。
+
+解法二选一：
+给该 listbox 注入 CSS 放开高度：list.style.maxHeight='none'; list.style.overflowY='auto'，并给网页版前插一条分隔线 border-top；
+或把网页版从 API 的 listbox 里摘出去，另建一个独立分组容器放下方（更符合"API 上、网页版下"的分区需求）。
+
+"网页版仅登录才显示" 放哪层过滤
+
+别在 dsh 前端注入脚本里动态增删条目——SPA 一重渲染会把你的增删冲掉，出现条目忽隐忽现的闪跳，还可能打乱 dsh 内部对 option 索引的状态管理。
+
+推荐在数据层（agent runtime）过滤：listProviderMeta() 返回时，主进程读 loginCache，把 state !== 'in' 的网页版 provider 直接不返回（或返回但带 hidden:true）。这样切换器和设置面板读到的就是"已过滤的干净列表"，无需任何 DOM 增删，天然不闪。→ 这也回答了问题 9：两处共用 listProviderMeta() 这一个数据源，排序（API 上/网页版下）也在这里做，注入脚本只负责改显示名，不再管排序和过滤。
+
+两处是否同一数据源
+
+按现状"排序选择器没命中""两套列表"的反馈，很可能是 SPA 内部两套列表但同一份 provider 数据。正确架构：数据统一在 listProviderMeta()（排序+过滤），注入脚本只做命名替换。职责分清后，排序、显隐、命名三件事互不干扰。
+
+五、追加问题（本轮新增）：通辽会议输入框拖拽文件收不到
+
+这是 Electron 拖拽白名单/导航拦截导致的，是最典型的一类。收不到通常是三处之一被拦：
+
+根因 A（最常见）：Electron 默认会拦截 webview/BrowserWindow 的拖拽导航，或你在 will-navigate / will-frame-navigate 里 preventDefault 了带文件的拖入。<webview> guest 内部网页收到 drop 事件，但文件被宿主层的安全策略吃掉。
+
+根因 B：webview 的 partition +  下，drop 事件的 File 对象无法跨进程序列化回主进程——webview 里的文件对象不是普通 File，主进程拿不到真实路径。
+
+排查 + 修复清单：
+
+确认事件到底有没有到 guest：在该 webview 上注入
+      document.addEventListener('dragover', e=>{ e.preventDefault(); console.log('dragover'); });
+   document.addEventListener('drop', e=>{ e.preventDefault();
+     console.log('drop files=', e.dataTransfer?.files?.length); }, true);
+   
+   若 guest 内 files.length=0 → 文件被 Electron 宿主层拦了（根因 A）。
+
+宿主层不要拦拖拽导航：会议窗口 webview 上检查有没有
+      wv.addEventListener('will-navigate', e => e.preventDefault()); // 别无条件拦
+   
+   改成只在 e.url 命中危险协议时拦，file:///drop 不拦。
+
+主窗口 will-navigate 同理：确认没把 drop 触发的导航 preventDefault。
+
+文件路径跨进程的正确取法：webview guest 里拿到的 File 不能直接 IPC 传主进程（拿到的是空对象）。正确做法：guest 里用 drop 事件把文件 arrayBuffer 读出后，以 ArrayBuffer 传主进程落盘，或走 <input type="file"> + webview 的 file-input 处理。若只是想让站点收到文件，重点放在 1~3（别拦事件），而不是自己搬运字节。
+
+确认该站点本身支持拖拽上传：部分站点（如某些搜索页）压根没有 drop 处理逻辑，拖进去本来就没反应——这种要先在浏览器里验证该 URL 原生是否支持拖拽上传。
+
+请先跑第 1 步的注入日志，把 drop files= 的数字告诉我：0=被宿主拦（改 A）；>0 但站点无反应=该站不支持或需 input 桥接（改 B）。这一步就能定位到底是哪一层，避免瞎改。
+
+六、D 一次性落地顺序（问题 10）
+
+按依赖关系，从数据源往下改，别从界面往回改：
+
+第 1 步｜命名单一数据源：建 agents.config.js，会议窗口 + 注入脚本都从它读命名。风险最低，先做完两处名字就统一了。
+第 2 步｜登录检测改造：改双信号判定 + 逐站登录名提取表；状态落主进程 loginCache；先只做后台 webview 检测 + 会议窗口名牌，验证稳定。
+第 3 步｜数据层过滤 + 排序：在 listProviderMeta() 里做"网页版仅登录返回""API 上/网页版下"排序。这一步把切换器和设置面板两个 bug 一起消掉。
+第 4 步｜注入脚本瘦身：注入脚本只保留"改显示名 + 放开 listbox 高度"两件事。
+第 5 步｜拖拽问题单独并行修（与本链路解耦，见第五节）。
+
+必踩的坑预警：
+SPA 重渲染吞注入：dsh 前端任何路由/状态变化都会重建 DOM，你的注入脚本会失效。必须用 MutationObserver 监听目标容器，重渲染后自动重跑命名替换；定时器只做兜底。
+dsh 前端版本升级：注入脚本的选择器（[class*="model-list"] 这种）是脆弱的，dsh 一改版就全失效。给注入脚本加"命中自检"：若核心选择器连续 N 次命中 0 个，向主进程上报告警，而不是静默失败。
+webview guest 事件受限：sandbox 下 guest 读不到很多宿主能力，登录名提取尽量在 guest 内 executeJavaScript 完成，只把结果字符串传出来，别想把 DOM/元素引用传出来。
+打包验证：改完走你既有 electron-builder --win --dir，注入类改动只能打包后目测，开发模式看不到 SPA 真实结构。
+
+需要我把这份方案整理成一份可存档的 Word/PDF 文档吗？另外，拖拽问题建议你先按第五节第 1 步跑一次注入日志、把 drop files=` 的数字回给我，我据此给出针对性的确切改法。

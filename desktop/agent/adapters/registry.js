@@ -83,6 +83,24 @@ const PRESET_PROVIDERS = [
     adapter: 'generic-web',
     builtin: true,
   },
+  {
+    id: 'google-search',
+    name: '谷歌-搜索 网页版',
+    url: 'https://www.google.com/search?q=',
+    loginUrl: 'https://www.google.com/',
+    loginMode: 'Google 账号',
+    adapter: 'generic-web',
+    builtin: true,
+  },
+  {
+    id: 'wenxin-web',
+    name: '百度-文心 网页版',
+    url: 'https://yiyan.baidu.com/',
+    loginUrl: 'https://yiyan.baidu.com/',
+    loginMode: '百度账号 / 扫码',
+    adapter: 'generic-web',
+    builtin: true,
+  },
 ];
 
 /** 主进程 provider 目录（userData/agent/providers.json） */

@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="2510" viewBox="0 0 1800 2510" role="img" aria-labelledby="title desc">
+<title id="title">多 AI 软件开发协作台：人工逐节点确认业务流程</title>
+<desc id="desc">面向 UI 设计师的目标流程图。默认每个业务节点都等用户确认；用户可以退回或暂停。自动模式是限定范围的备用模式。用户确认需求、体验、方案、任务计划；每个编码任务独立走发送、编码、验证、独立审查、修正和用户通过；所有任务有效通过后，分别确认集成、全项目验证、构建、用户验收、本地交付和主动仓库同步。不含现有界面布局。</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#334155"/></marker>
+<marker id="back" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#a16207"/></marker>
+<style>
+text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#172033}.title{font-size:36px;font-weight:700}.sub{font-size:21px;fill:#475569}.head{font-size:24px;font-weight:700}.body{font-size:20px}.small{font-size:18px;fill:#475569}.tag{font-size:18px;fill:#854d0e;font-weight:700}.label{font-size:17px;fill:#475569}.node{fill:#fff;stroke:#94a3b8;stroke-width:2}.human{fill:#fffbeb;stroke:#d4a645;stroke-width:2}.stop{fill:#ecfdf5;stroke:#32846d;stroke-width:2.5}.edge{fill:none;stroke:#334155;stroke-width:2.5;marker-end:url(#arrow)}.return{fill:none;stroke:#a16207;stroke-width:2.5;stroke-dasharray:8 5;marker-end:url(#back)}.panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}
+</style>
+</defs>
+<rect width="1800" height="2510" fill="#fff"/>
+<text class="title" x="70" y="58">多 AI 软件开发协作台 · 业务流程图</text>
+<text class="sub" x="70" y="98">给设计师的目标流程，不是现有 UI 稿。金色＝用户确认；实线＝确认后推进；虚线＝退回／恢复；自动模式仅作备用。</text>
+
+<!-- Default / optional control modes -->
+<rect class="panel" x="70" y="125" width="1660" height="260" rx="18"/>
+<text class="head" x="100" y="165">流程控制原则</text>
+<rect class="human" x="100" y="185" width="770" height="165" rx="14"/>
+<text class="head" x="125" y="224">默认：人工逐节点确认</text>
+<text class="body" x="125" y="260">执行 → 结果与证据 → 等用户确认</text>
+<text class="body" x="125" y="292">确认继续　/　退回修改　/　暂停</text>
+<text class="small" x="125" y="326">确认绑定当前版本；版本变更后，相关确认重新核对</text>
+<rect class="node" x="900" y="185" width="800" height="165" rx="14"/>
+<text class="head" x="925" y="224">备用：用户主动开启限范围自动</text>
+<text class="body" x="925" y="260">预先限定任务、节点、权限、轮数／费用上限与停止点</text>
+<text class="body" x="925" y="292">错误、不确定、缺材料、版本或权限变化 → 立即暂停</text>
+<text class="small" x="925" y="326">最终验收、仓库同步、高风险操作始终需用户单独确认</text>
+
+<!-- Main project lane -->
+<rect class="panel" x="70" y="410" width="750" height="1980" rx="18"/>
+<text class="head" x="100" y="450">项目主流程</text>
+
+<rect class="human" x="115" y="475" width="660" height="86" rx="12"/>
+<text class="head" x="140" y="510">A 建立项目与权限边界</text>
+<text class="body" x="140" y="541">想法、目标、代码、权限、资源与交付目标</text>
+<path class="edge" d="M445 561V580"/><text class="label" x="460" y="576">用户确认项目边界</text>
+
+<rect class="human" x="115" y="585" width="660" height="86" rx="12"/>
+<text class="head" x="140" y="620">B 整理需求 → 用户确认版本</text>
+<text class="body" x="140" y="651">功能、流程、异常、范围与验收条件</text>
+<path class="edge" d="M445 671V690"/><text class="label" x="460" y="686">用户确认需求</text>
+
+<rect class="human" x="115" y="695" width="660" height="86" rx="12"/>
+<text class="head" x="140" y="730">C 生成体验方案／原型 → 用户确认</text>
+<text class="body" x="140" y="761">不满意回本步；需求改变回 B</text>
+<path class="edge" d="M445 781V800"/><text class="label" x="460" y="796">用户确认体验</text>
+
+<rect class="human" x="115" y="805" width="660" height="110" rx="12"/>
+<text class="head" x="140" y="841">D 独立技术方案 → 匿名比较 → 用户定案</text>
+<text class="body" x="140" y="873">同版材料；解释优缺点、成本和取舍</text>
+<text class="small" x="140" y="899">关键事实须核实；技术与体验冲突时回 C</text>
+<path class="edge" d="M445 915V934"/><text class="label" x="460" y="930">用户确认方案比较结果</text>
+
+<rect class="human" x="115" y="939" width="660" height="100" rx="12"/>
+<text class="head" x="140" y="975">E 指定 AI 拆分任务 → 用户确认计划</text>
+<text class="body" x="140" y="1007">负责人、依赖、读写范围、接口和验收</text>
+<path class="edge" d="M445 1039V1058"/><text class="label" x="460" y="1054">用户确认分配</text>
+
+<rect class="human" x="115" y="1063" width="660" height="90" rx="12"/>
+<text class="head" x="140" y="1098">F 按依赖调度就绪任务</text>
+<text class="body" x="140" y="1129">仅启动本批获准任务；未就绪任务继续等待</text>
+<path class="edge" d="M775 1108H845V465H900"/><text class="label" x="785" y="1088">逐项进入</text>
+
+<!-- Main feedback loops -->
+<path class="return" d="M115 736H92V710H115"/><text class="tag" x="83" y="700">退回</text>
+<path class="return" d="M115 856H82V640H115"/><text class="tag" x="78" y="626">范围改变：重审需求</text>
+<path class="return" d="M115 991H78V850H115"/><text class="tag" x="78" y="973">任务计划不清：回定案</text>
+
+<!-- Readiness gate -->
+<polygon points="445,1190 760,1280 445,1370 130,1280" fill="#fff" stroke="#64748b" stroke-width="2.5"/>
+<text class="head" x="445" y="1269" text-anchor="middle">所有必要任务都通过，</text>
+<text class="head" x="445" y="1299" text-anchor="middle">且产物版本仍有效？</text>
+<text class="small" x="445" y="1329" text-anchor="middle">无缺项、冲突或未解决阻塞</text>
+<path class="edge" d="M445 1153V1190"/><text class="label" x="460" y="1177">等待各任务结果</text>
+<path class="return" d="M130 1280H92V1108H115"/><text class="tag" x="83" y="1261">否：继续相关任务</text>
+<path class="edge" d="M445 1370V1390"/><text class="label" x="460" y="1386">是：用户确认汇集</text>
+
+<rect class="human" x="115" y="1395" width="660" height="82" rx="12"/>
+<text class="head" x="140" y="1430">G1 集成任务产物 → 用户确认结果</text>
+<text class="body" x="140" y="1458">解决接口／文件冲突；失败回具体任务</text>
+<path class="edge" d="M445 1477V1495"/><text class="label" x="460" y="1491">用户确认进入测试</text>
+
+<rect class="human" x="115" y="1500" width="660" height="82" rx="12"/>
+<text class="head" x="140" y="1535">G2 全项目测试 → 用户确认结果</text>
+<text class="body" x="140" y="1563">分别显示通过、失败、未执行；失败回修</text>
+<path class="edge" d="M445 1582V1600"/><text class="label" x="460" y="1596">用户确认构建</text>
+
+<rect class="human" x="115" y="1605" width="660" height="82" rx="12"/>
+<text class="head" x="140" y="1640">G3 构建／打包 → 用户确认产物</text>
+<text class="body" x="140" y="1668">核对本轮包真实存在、路径和对应代码版</text>
+<path class="edge" d="M445 1687V1705"/><text class="label" x="460" y="1701">用户确认进入验收</text>
+
+<rect class="human" x="115" y="1710" width="660" height="95" rx="12"/>
+<text class="head" x="140" y="1747">H 用户验收：安装／启动／核心操作</text>
+<text class="body" x="140" y="1778">不通过：缺陷回相关任务；新需求另建版本</text>
+<path class="edge" d="M445 1805V1823"/><text class="label" x="460" y="1819">用户验收通过</text>
+<path class="return" d="M115 1755H90V1280H130"/><text class="tag" x="78" y="1735">不通过</text>
+
+<rect class="stop" x="115" y="1828" width="660" height="88" rx="20"/>
+<text class="head" x="140" y="1865">停止点 ①：本地交付完成</text>
+<text class="body" x="140" y="1895">停止自动 AI 调用；等用户决定是否同步</text>
+<path class="edge" d="M445 1916V1934"/><text class="label" x="460" y="1930">仅用户主动发起</text>
+
+<rect class="human" x="115" y="1939" width="660" height="96" rx="12"/>
+<text class="head" x="140" y="1977">I 核对仓库／分支／文件 → 用户确认同步</text>
+<text class="body" x="140" y="2008">排除秘密和无关改动；确认提交与远端结果</text>
+<path class="edge" d="M445 2035V2053"/><text class="label" x="460" y="2049">同步成功</text>
+<path class="return" d="M115 1986H92V2010H115"/><text class="tag" x="75" y="1975">失败：仅修同步</text>
+
+<rect class="stop" x="115" y="2058" width="660" height="82" rx="20"/>
+<text class="head" x="140" y="2093">停止点 ②：仓库同步完成</text>
+<text class="body" x="140" y="2122">不自动合并主分支、公开发布或部署</text>
+
+<!-- Independent task loop -->
+<rect class="panel" x="900" y="410" width="830" height="1260" rx="18"/>
+<text class="head" x="930" y="450">每个任务独立闭环 · 每个节点等待确认</text>
+
+<rect class="human" x="930" y="475" width="770" height="88" rx="12"/>
+<text class="head" x="955" y="510">T1 核对依赖、冻结任务包 → 用户确认执行人</text>
+<text class="body" x="955" y="541">版本、正文、附件内容、权限与验收齐全</text>
+<path class="edge" d="M1315 563V580"/><text class="label" x="1330" y="576">确认准备与发送</text>
+
+<rect class="human" x="930" y="585" width="770" height="98" rx="12"/>
+<text class="head" x="955" y="622">T2 材料就绪 → 用户确认真正发送</text>
+<text class="body" x="955" y="653">网页挂附件不等于发送；API 按已授权请求发送</text>
+<text class="small" x="955" y="676">缺附件或结果不确定：暂停，不假报成功／不盲目重发</text>
+<path class="edge" d="M1315 683V701"/><text class="label" x="1330" y="697">用户确认开始编码</text>
+
+<rect class="human" x="930" y="706" width="770" height="88" rx="12"/>
+<text class="head" x="955" y="741">T3 编码 AI 执行 → 提交候选产物</text>
+<text class="body" x="955" y="772">只改授权范围；回复、文件和任务精确关联</text>
+<path class="edge" d="M1315 794V811"/><text class="label" x="1330" y="807">核对实际证据</text>
+
+<rect class="human" x="930" y="816" width="770" height="88" rx="12"/>
+<text class="head" x="955" y="851">T4 用户确认产物与验证证据齐全</text>
+<text class="body" x="955" y="882">缺文件／失败／旧版：回本任务补齐；不凭口头通过</text>
+<path class="edge" d="M1315 904V921"/><text class="label" x="1330" y="917">用户发起审查</text>
+
+<rect class="human" x="930" y="926" width="770" height="100" rx="12"/>
+<text class="head" x="955" y="963">T5 用户选 2–3 个独立 AI 审查</text>
+<text class="body" x="955" y="994">同一版代码；排除本任务作者与修正者</text>
+<text class="small" x="955" y="1018">人数不足时等待／换人；不能假装审查齐全</text>
+<path class="edge" d="M1315 1026V1043"/><text class="label" x="1330" y="1039">用户核对审查意见</text>
+
+<rect class="human" x="930" y="1048" width="770" height="112" rx="12"/>
+<text class="head" x="955" y="1085">T6 用户决定修正、驳回或复审</text>
+<text class="body" x="955" y="1117">有问题：回编码 → 重验 → 必要时再审</text>
+<text class="small" x="955" y="1145">无阻塞问题：不制造修正；反复未解则暂停决策</text>
+<path class="edge" d="M1315 1160V1177"/><text class="label" x="1330" y="1173">用户确认任务通过</text>
+
+<rect class="human" x="930" y="1182" width="770" height="90" rx="12"/>
+<text class="head" x="955" y="1219">T7 当前任务通过 → 解锁下游依赖</text>
+<text class="body" x="955" y="1250">一个任务失败不打回无关任务</text>
+
+<path class="return" d="M1700 854H1715V750H1700"/><text class="tag" x="1605" y="739">补代码／证据</text>
+<path class="return" d="M1700 1103H1715V750H1700"/><text class="tag" x="1605" y="1083">修正后新版本</text>
+<path class="edge" d="M930 1227H865V1280H760"/><text class="label" x="780" y="1257">已通过任务汇集</text>
+<path class="return" d="M760 1280H850V519H930"/><text class="tag" x="785" y="1268">未通过：继续就绪任务</text>
+
+<!-- Stop / progress facts -->
+<rect x="900" y="1700" width="830" height="440" rx="18" fill="#eff6ff" stroke="#93b4d7" stroke-width="1.5"/>
+<text class="head" x="930" y="1745">流程信息要清楚，但表现方式由设计师决定</text>
+<text class="body" x="930" y="1790">材料准备好 ≠ 消息发出 ≠ 模型收到有效内容</text>
+<text class="body" x="930" y="1830">回复结束 ≠ 文件齐全 ≠ 代码／测试通过</text>
+<text class="body" x="930" y="1870">任务通过 ≠ 项目验收通过 ≠ 仓库同步完成</text>
+<text class="body" x="930" y="1920">用户要能理解：当前谁在做、证据在哪、为何等待、</text>
+<text class="body" x="930" y="1955">下一步是什么，以及退回后什么会保留或失效。</text>
+<text class="body" x="930" y="2005">9 网页 AI＋3 API AI 是可选资源池，不是固定数量的</text>
+<text class="body" x="930" y="2040">强制并行窗口，也不是设计布局要求。</text>
+<text class="small" x="930" y="2095">仅供流程理解的分区示意；不规定页面、导航、控件或视觉风格。</text>
+
+<rect x="70" y="2180" width="1660" height="195" rx="16" fill="#fffbeb" stroke="#d4a645" stroke-width="1.5"/>
+<text class="head" x="100" y="2225">全流程的安全底线</text>
+<text class="body" x="100" y="2265">内容变更 → 新版本并影响分析　｜　发送不确定 → 待核实，不盲目重发　｜　必需材料／权限／证据不足 → 暂停受影响部分</text>
+<text class="body" x="100" y="2305">用户确认某一版本不等于验证通过；备用自动模式也不能越过最终验收、GitHub 同步或高风险授权。</text>
+<text class="small" x="100" y="2345">流程摘要：逐节点人工确认是默认；自动推进是用户主动开启、可随时收回的受限备用模式。</text>
+<text class="sub" x="70" y="2440">目标业务规范 · 不复刻现有界面 · 页面组织和视觉方案由设计师自由设计</text>
+</svg>

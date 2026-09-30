@@ -16,6 +16,7 @@ const path = require('path');
 const { app } = require('electron');
 
 const { createHarnessServer, DEFAULT_PORT } = require('./harness/server/index.js');
+const registry = require('./harness/registry');
 const { HarnessClient } = require('./browser/session/harnessClient');
 const { generateToken } = require('./browser/session/token');
 const { registerIpc, handleConfirmationRequest } = require('./electron/ipc/handlers');
@@ -78,27 +79,25 @@ async function createAgentRuntime(opts = {}) {
       note: `会话就绪 sessionId=${p.sessionId}，可用工具 ${(p.availableTools || []).length} 个`,
     });
 
-    // 会话就绪后，把工具清单+调用格式作为系统提示注入网页，让 AI 知道要输出 <agent> 块
+    // 会话就绪后，把工具检索用法+调用格式作为系统提示注入网页，让 AI 知道要输出 <agent> 块。
+    // 不把全部工具描述塞进提示词——模型先用 _meta.search_tools 检索。
     try {
       const tools = p.availableTools || [];
-      const toolDesc = {
-        'filesystem.list': '列出目录内容或单个文件信息',
-        'filesystem.read': '读取文本文件内容',
-        'filesystem.search': '按文件名子串搜索文件',
-        'filesystem.write': '写入/追加文本文件',
-        'filesystem.mkdir': '递归创建目录',
-        'shell.exec': '执行 shell 命令（Windows=PowerShell）',
-        'git.status': '查看 git 状态',
-        'git.diff': '查看 git diff',
-        'git.log': '查看 git 提交历史',
-        'git.commit': '执行 git commit',
-      };
-      const toolLines = tools.map((t) => `- ${t}: ${toolDesc[t] || ''}`).join('\n');
+      const metaName = registry.META_TOOL_NAME || '_meta.search_tools';
+      const realToolCount = tools.filter((t) => t !== metaName).length;
       const sysPrompt = [
-        '你现在是一个可以操作电脑的智能体助手。你可以调用以下工具来完成用户的任务：',
+        '你现在是一个可以操作电脑的智能体助手。你可以通过调用工具来完成用户的任务。',
         '',
-        '【可用工具】',
-        toolLines,
+        '【如何发现工具——必须先做】',
+        '你不知道当前有哪些工具可用。你必须先调用 `_meta.search_tools` 来检索工具：',
+        '传入关键词，它会返回匹配工具的名称、描述和参数 schema，再据此调用真正的工具。',
+        '调用示例：',
+        '',
+        '<agent>',
+        '{"tool":"_meta.search_tools","arguments":{"query":"读取文件"}}',
+        '</agent>',
+        '',
+        `当前 taskContext 下共有 ${realToolCount} 个可用工具（不含 _meta.search_tools 本身）。`,
         '',
         '【调用格式——必须严格遵守】',
         '当你需要调用工具时，在你的回复末尾输出一个完整的工具调用块，格式如下：',
@@ -113,7 +112,7 @@ async function createAgentRuntime(opts = {}) {
         '3. 不要在 <agent> 块外面解释工具调用，直接在末尾输出块即可',
         '',
         '【工作方式】',
-        '1. 用户给你任务，你分析需要哪些工具',
+        '1. 用户给你任务，你先调用 _meta.search_tools 检索需要的工具',
         '2. 在回复末尾输出 <agent>...</agent> 块调用工具',
         '3. 工具执行结果会作为下一条消息发回给你',
         '4. 根据结果继续工作，直到任务完成',

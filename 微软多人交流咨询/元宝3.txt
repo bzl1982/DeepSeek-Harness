@@ -1,0 +1,55 @@
+本轮已完成的工作和进展如下：
+
+代码库基线：36/36 测试通过
+
+修复了两个历史 bug
+1. state.js 的 completed 终态转移——原来 completed 允许转移到其他状态，违反状态机语义。已改为 completed: [] 终态
+2. meeting-core.js 的附件握手消费逻辑——原来 _ensureAttachmentsFor 是空实现，导致上传失败的 AI 仍收到发送。已补全为真实的 ACK 校验：_attachmentAck() 查询每个 AI 的确认状态，未获 ACK 的 AI 标记为 failed 且不进入发送环节
+
+新增两个核心模块
+1. completion.js——完成检测器（多信号联合判定）
+   • 5 个信号：stopGone / sendReady / domStable / streamEnd / idleMarker
+
+   • requireContent 闸门：正文为空时即使信号达标也判等待，堵住"页面静止但 AI 还没开始生成 → 误判完成抓空串"
+
+   • arm() 每轮清零：堵住"第一轮信号污染第二轮 → 第二轮 0ms 判完成"
+
+   • 去抖窗口 + 超时兜底
+
+   • 12 个单元测试全部通过
+
+2. context.js——上下文管理器（网页端缓存 vs 会议真相的边界）
+   • buildContext() 构建注入包，只喂最近 N 轮原文，绝不塞全量历史
+
+   • shouldReset() 判定重置时机：跑偏检测 / 累积超限 / 单 AI 条数超限
+
+   • compress() 压缩纪要，保留 archive 可追溯
+
+   • resetSingle() / resetAll() 只清网页端，不丢会议记录
+
+   • 12 个单元测试
+
+测试覆盖率
+• 单元测试：13（completion）+ 12（context）+ 原有 15 = 40 个
+
+• 集成测试：12 个
+
+• 总计：52 个测试，全部通过
+
+架构层面
+• 已建立"内核不依赖 Electron/CDP/DOM"的边界纪律
+
+• 完成检测器只做信号采集与判定，DOM 操作隔离在 Adapter 层
+
+• 上下文管理器解决"网页端自带上下文 + 会议记录"双重叠加问题
+
+待补充
+• context.js 的 collectRecent() 逻辑需修正（取最近 N 轮而非 round 区间）
+
+• 还需补充决议 6 的"主持人走真实 API"模块
+
+• 附件握手协议的 CDP 层实现（preload + Shadow DOM 穿透）
+
+• 会议纪要压缩的 API 调用封装
+
+代码已就绪，可直接运行 npm test 验证全部 52 个测试用例。
